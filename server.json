@@ -1,0 +1,29 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+  "name": "io.github.tide-foundation/raziel",
+  "description": "MCP server teaching AI agents to implement TideCloak: auth, E2EE, IGA, security analysis",
+  "title": "Raziel",
+  "repository": {
+    "url": "https://github.com/tide-foundation/raziel-mcp",
+    "source": "github"
+  },
+  "version": "1.9.1",
+  "packages": [
+    {
+      "registryType": "npm",
+      "registryBaseUrl": "https://registry.npmjs.org",
+      "identifier": "@tideorg/mcp",
+      "version": "1.9.1",
+      "runtimeHint": "npx",
+      "transport": {
+        "type": "stdio"
+      }
+    }
+  ],
+  "remotes": [
+    {
+      "type": "streamable-http",
+      "url": "https://mcp.tide.org/mcp"
+    }
+  ]
+}
