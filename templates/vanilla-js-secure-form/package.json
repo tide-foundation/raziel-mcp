@@ -1,0 +1,11 @@
+{
+  "name": "vanilla-js-secure-form",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "dev": "npx serve public"
+  },
+  "dependencies": {
+    "@tidecloak/js": "0.13.33"
+  }
+}

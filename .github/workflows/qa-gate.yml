@@ -1,0 +1,41 @@
+name: MCP QA Gate
+
+# Pre-release quality gate for the Tide MCP pack.
+# Runs `npm test` (build + protocol smoke tests + content-consistency checks).
+# A red gate blocks the PR / flags main. See skills/tide-mcp-qa for the full QA role.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: qa-gate-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  qa-gate:
+    name: Deterministic gate (npm test)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22 # matches the Dockerfile runtime (node:22-alpine)
+          cache: npm
+          cache-dependency-path: mcp-server/package-lock.json
+
+      - name: Install dependencies
+        working-directory: mcp-server
+        run: npm ci
+
+      - name: Run QA gate
+        working-directory: mcp-server
+        run: npm test

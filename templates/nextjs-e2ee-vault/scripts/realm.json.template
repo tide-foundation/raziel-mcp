@@ -1,0 +1,150 @@
+{
+  "realm": "REALM_NAME",
+  "accessTokenLifespan": 600,
+  "enabled": true,
+  "sslRequired": "external",
+  "registrationAllowed": false,
+  "duplicateEmailsAllowed": true,
+  "roles": {
+    "realm": [
+      { "name": "appUser", "description": "Standard application user" },
+      { "name": "_tide_enabled", "description": "Represents a tide user thats allowed perform actions on tide" },
+      { "name": "_tide_vault.selfencrypt", "description": "Encrypt data with tag: vault" },
+      { "name": "_tide_vault.selfdecrypt", "description": "Decrypt data with tag: vault" },
+      {
+        "name": "default-roles-REALM_NAME",
+        "description": "${role_default-roles}",
+        "composite": true,
+        "composites": { "realm": ["_tide_enabled", "appUser", "_tide_vault.selfencrypt", "_tide_vault.selfdecrypt"] }
+      }
+    ],
+    "client": { "CLIENT_NAME": [] }
+  },
+  "defaultRole": {
+    "name": "default-roles-REALM_NAME",
+    "description": "${role_default-roles}",
+    "composite": true,
+    "clientRole": false
+  },
+  "clients": [
+    {
+      "clientId": "CLIENT_NAME",
+      "enabled": true,
+      "redirectUris": [
+        "CLIENT_APP_URL",
+        "CLIENT_APP_URL/*",
+        "CLIENT_APP_URL/silent-check-sso.html",
+        "CLIENT_APP_URL/auth/redirect"
+      ],
+      "webOrigins": ["CLIENT_APP_URL"],
+      "standardFlowEnabled": true,
+      "implicitFlowEnabled": false,
+      "publicClient": true,
+      "fullScopeAllowed": true,
+      "attributes": {
+        "dpop.bound.access.tokens": "true"
+      },
+      "protocolMappers": [
+        {
+          "name": "Tide User Key",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-usermodel-attribute-mapper",
+          "consentRequired": false,
+          "config": {
+            "introspection.token.claim": "true",
+            "userinfo.token.claim": "true",
+            "user.attribute": "tideUserKey",
+            "lightweight.claim": "true",
+            "id.token.claim": "true",
+            "access.token.claim": "true",
+            "claim.name": "tideuserkey",
+            "jsonType.label": "String"
+          }
+        },
+        {
+          "name": "Tide IGA Role Mapper",
+          "protocol": "openid-connect",
+          "protocolMapper": "tide-roles-mapper",
+          "consentRequired": false,
+          "config": {
+            "lightweight.claim": "true",
+            "access.token.claim": "true"
+          }
+        },
+        {
+          "name": "Tide vuid",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-usermodel-attribute-mapper",
+          "consentRequired": false,
+          "config": {
+            "introspection.token.claim": "true",
+            "userinfo.token.claim": "true",
+            "user.attribute": "vuid",
+            "lightweight.claim": "true",
+            "id.token.claim": "true",
+            "access.token.claim": "true",
+            "claim.name": "vuid",
+            "jsonType.label": "String"
+          }
+        }
+      ]
+    }
+  ],
+  "components": {
+    "org.keycloak.userprofile.UserProfileProvider": [
+      {
+        "providerId": "declarative-user-profile",
+        "config": {
+          "kc.user.profile.config": [
+            "{\"attributes\":[{\"name\":\"username\",\"displayName\":\"${username}\",\"validations\":{\"length\":{\"min\":3,\"max\":255},\"username-prohibited-characters\":{},\"up-username-not-idn-homograph\":{}},\"permissions\":{\"view\":[\"admin\",\"user\"],\"edit\":[\"admin\",\"user\"]},\"multivalued\":false},{\"name\":\"email\",\"displayName\":\"${email}\",\"validations\":{\"email\":{},\"length\":{\"max\":255}},\"permissions\":{\"view\":[\"admin\",\"user\"],\"edit\":[\"admin\",\"user\"]},\"multivalued\":false},{\"name\":\"firstName\",\"displayName\":\"${firstName}\",\"permissions\":{\"view\":[\"admin\",\"user\"],\"edit\":[\"admin\",\"user\"]},\"multivalued\":false},{\"name\":\"lastName\",\"displayName\":\"${lastName}\",\"permissions\":{\"view\":[\"admin\",\"user\"],\"edit\":[\"admin\",\"user\"]},\"multivalued\":false}],\"groups\":[{\"name\":\"user-metadata\",\"displayHeader\":\"User metadata\",\"displayDescription\":\"Attributes, which refer to user metadata\"}],\"unmanagedAttributePolicy\":\"ENABLED\"}"
+          ]
+        }
+      }
+    ]
+  },
+  "authenticationFlows": [
+    {
+      "alias": "tidebrowser",
+      "providerId": "basic-flow",
+      "topLevel": true,
+      "authenticationExecutions": [
+        {
+          "authenticator": "auth-cookie",
+          "authenticatorFlow": false,
+          "requirement": "ALTERNATIVE",
+          "priority": 10,
+          "userSetupAllowed": false
+        },
+        {
+          "authenticatorConfig": "tide browser",
+          "authenticator": "identity-provider-redirector",
+          "authenticatorFlow": false,
+          "requirement": "ALTERNATIVE",
+          "priority": 25,
+          "userSetupAllowed": false
+        }
+      ]
+    }
+  ],
+  "authenticatorConfig": [
+    {
+      "alias": "tide browser",
+      "config": { "defaultProvider": "tide" }
+    }
+  ],
+  "browserFlow": "tidebrowser",
+  "requiredActions": [
+    {
+      "alias": "link-tide-account-action",
+      "name": "Link Tide Account",
+      "providerId": "link-tide-account-action",
+      "enabled": true
+    },
+    {
+      "alias": "UPDATE_PASSWORD",
+      "name": "Update Password",
+      "providerId": "UPDATE_PASSWORD",
+      "enabled": false
+    }
+  ]
+}

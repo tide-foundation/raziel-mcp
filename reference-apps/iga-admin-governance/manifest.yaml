@@ -1,0 +1,87 @@
+# IGA Admin Governance Panel — Scenario Manifest
+
+id: iga-admin-governance
+title: IGA Admin Governance Panel
+category: admin-governance
+description: Admin dashboard for reviewing, approving, and committing IGA change requests with multi-admin quorum enforcement
+
+frameworks:
+  - nextjs
+  - react-vite
+  - vanilla
+
+core_patterns:
+  - iga
+  - change-set
+  - quorum
+  - multi-admin
+  - enclave-signing
+  - dpop
+  - oidc
+  - admin-panel
+  - governance
+  - approval-workflow
+  - policy-management
+  - forseti
+  - role-policy
+
+match_keywords:
+  - admin panel
+  - admin dashboard
+  - admin governance
+  - iga panel
+  - iga dashboard
+  - iga admin
+  - change request
+  - change requests
+  - approval workflow
+  - approval dashboard
+  - governance panel
+  - governance dashboard
+  - review and approve
+  - multi-admin
+  - quorum approval
+  - admin approval
+  - change-set management
+  - change set management
+  - policy management panel
+  - manage change requests
+  - approve changes
+  - admin console
+
+bootstrap_required: true
+requires_admin_preapproval: true
+requires_iga: true
+requires_e2ee: false
+governance_mode: multi-admin-quorum
+
+default_roles:
+  - _tide_enabled
+  - tide-realm-admin
+
+admin_role: tide-realm-admin
+admin_role_type: client
+admin_role_client: realm-management
+min_admins_for_quorum: 2
+
+default_playbooks:
+  - start-tidecloak-dev
+  - bootstrap-realm-from-template
+  - initialize-admin-and-link-account
+  - add-auth-nextjs-fresh
+  - protect-routes-nextjs
+  - protect-api-nextjs
+  - verify-jwt-server-side
+  - setup-iga-admin-panel
+  - add-rbac-nextjs
+
+default_skills:
+  - tide-setup
+  - tide-integration
+  - tide-route-and-api-protection
+  - tide-rbac-and-e2ee
+
+discriminating_question: Does the app need a custom admin UI for reviewing and approving IGA change requests (user/role/group/client mutations)? If the built-in TideCloak Admin Console is sufficient, this scenario is not needed.
+valid_only_when: App requires a custom governance dashboard for IGA change request lifecycle management. Not needed if built-in TideCloak Admin Console handles all governance.
+
+notes: No encryption layer. This is a governance/admin tool. At least two linked admin users required for quorum. Content-type asymmetry between endpoints (JSON for sign/commit, FormData for add-review/add-rejection). Enclave popup flow required for MultiAdmin signing mode.

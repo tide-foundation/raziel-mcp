@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "tide-pack": {
+      "command": "node",
+      "args": ["/CHANGE_THIS/tide-agent-pack/mcp-server/dist/index.js"]
+    }
+  }
+}

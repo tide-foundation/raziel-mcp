@@ -1,0 +1,48 @@
+{
+  "name": "@tideorg/mcp",
+  "version": "1.9.1",
+  "description": "MCP server exposing Tide operational guidance — canon, playbooks, skills, prompts, adapters, and scenarios for AI coding agents",
+  "type": "module",
+  "bin": {
+    "tide-agent-pack": "mcp-server/dist/index.js"
+  },
+  "scripts": {
+    "build": "cd mcp-server && npm run build",
+    "test": "cd mcp-server && npm test",
+    "prepublishOnly": "npm run build"
+  },
+  "files": [
+    "mcp-server/dist/",
+    "canon/",
+    "playbooks/",
+    "skills/",
+    "prompts/",
+    "adapters/",
+    "reference-apps/",
+    "GAP_REGISTER.md",
+    "PRIVACY.md",
+    "CHANGELOG.md"
+  ],
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.12.1",
+    "zod": "^3.24.0"
+  },
+  "keywords": [
+    "mcp",
+    "tidecloak",
+    "tide",
+    "auth",
+    "security",
+    "threshold-cryptography",
+    "ai-agent",
+    "coding-agent"
+  ],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/tide-foundation/raziel-mcp"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}

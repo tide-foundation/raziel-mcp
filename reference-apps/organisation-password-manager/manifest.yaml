@@ -1,0 +1,86 @@
+# Organisation Password Manager — Scenario Manifest
+
+id: organisation-password-manager
+title: Organisation Password Manager
+category: credential-vault
+description: Shared credential vault with self-encryption plus policy-governed encryption via Forseti contracts
+
+frameworks:
+  - nextjs
+  - react-vite
+  - rust
+  - vanilla
+
+core_patterns:
+  - self-encryption
+  - self-decryption
+  - policy-governed-encryption
+  - forseti
+  - doken
+  - dpop
+  - iga
+  - oidc
+  - vvk
+  - credential-vault
+  - password-manager
+  - e2ee
+  - org-scoped-roles
+
+match_keywords:
+  - password manager
+  - credential vault
+  - shared secrets
+  - team vault
+  - org vault
+  - shared password store
+  - secret store
+  - vaultwarden
+  - bitwarden
+  - encrypted sharing
+  - share encrypted data
+  - cross-user decryption
+  - shared encryption
+  - encrypt and share
+  - chosen recipients
+  - selective sharing
+  - encrypt for others
+  - sharing of encrypted
+  - sharing encrypted
+  - people can decrypt
+  - others can decrypt
+  - secure data sharing
+  - data sharing
+  - share selectively
+
+bootstrap_required: true
+requires_admin_preapproval: true
+requires_iga: true
+requires_e2ee: true
+encryption_mode: self-encryption + policy-governed
+
+default_roles:
+  - _tide_enabled
+  - _tide_<tag>.selfencrypt
+  - _tide_<tag>.selfdecrypt
+
+policy_roles:
+  - appUser
+  - orgOwner
+
+org_role_pattern: "org:{uuid}:{owner|admin|user|manager}"
+
+default_playbooks:
+  - start-tidecloak-dev
+  - bootstrap-realm-from-template
+  - initialize-admin-and-link-account
+  - configure-e2ee-roles-and-policies
+  - add-auth-nextjs-fresh
+  - protect-routes-nextjs
+  - protect-api-nextjs
+  - verify-jwt-server-side
+  - add-rbac-nextjs
+
+discriminating_question: Do multiple users need to encrypt/decrypt the same data (shared credentials, team secrets)? If only the encrypting user decrypts, use self-encryption instead of this scenario.
+valid_only_when: Cross-user decryptability is required. At least two users share encrypted data.
+
+notes: Two encryption layers. Self-encryption for per-user vault data. Policy-governed encryption via appUser/orgOwner Forseti contracts for org-scoped access control. Replace <tag> with app name.

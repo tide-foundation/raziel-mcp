@@ -1,0 +1,30 @@
+{
+  "name": "tide-agent-pack",
+  "owner": {
+    "name": "Tide Foundation",
+    "email": "support@tide.org"
+  },
+  "metadata": {
+    "description": "Tide Foundation plugins for building on TideCloak — auth, threshold cryptography, E2EE, IGA governance, security gap analysis, and hosting guidance."
+  },
+  "plugins": [
+    {
+      "name": "tide-agent-pack",
+      "description": "MCP server + skills for implementing TideCloak correctly: canon, playbooks, reference scenarios, security gap analysis, and self-host vs hosted guidance",
+      "category": "security",
+      "source": "./",
+      "version": "1.9.1",
+      "homepage": "https://github.com/tide-foundation/raziel-mcp",
+      "author": {
+        "name": "Tide Foundation"
+      },
+      "tags": [
+        "tidecloak",
+        "auth",
+        "security",
+        "mcp",
+        "threshold-cryptography"
+      ]
+    }
+  ]
+}

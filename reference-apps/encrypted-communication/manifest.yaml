@@ -1,0 +1,100 @@
+# Encrypted Real-Time Communication — Scenario Manifest
+
+id: encrypted-communication
+title: Encrypted Real-Time Communication
+category: e2e-communication
+description: Chat or video app with Tide-protected private keys and external crypto for runtime E2E encryption
+
+frameworks:
+  - nextjs
+  - react-vite
+  - vanilla
+
+core_patterns:
+  - self-encryption
+  - self-decryption
+  - oidc
+  - iga
+  - dpop
+  - e2e
+  - encrypted-chat
+  - encrypted-video
+  - encrypted-messaging
+  - key-storage
+  - key-exchange
+  - forward-secrecy
+  - zero-knowledge-server
+  - hybrid-encryption
+  - private-key-protection
+  - real-time
+  - websocket
+  - webrtc
+
+match_keywords:
+  - encrypted chat
+  - encrypted messaging
+  - encrypted video
+  - encrypted calls
+  - encrypted communication
+  - e2e chat
+  - e2e messaging
+  - e2e video
+  - e2e communication
+  - end to end encrypted
+  - end-to-end encrypted
+  - secure chat
+  - secure messaging
+  - secure video
+  - private messaging
+  - private chat
+  - zero knowledge
+  - zero-knowledge
+  - real-time encryption
+  - encrypted group chat
+  - encrypted video call
+  - signal-like
+  - whatsapp-like
+  - chat app with encryption
+  - video app with encryption
+  - tidetalk
+  - encrypted collaboration
+  - forward secrecy
+  - key exchange
+  - encryption and decryption
+  - encrypt decrypt share
+  - encryption with sharing
+  - encrypt and share
+  - shared encryption
+
+bootstrap_required: true
+requires_admin_preapproval: true
+requires_iga: true
+requires_e2ee: true
+encryption_mode: self-encryption
+
+default_roles:
+  - _tide_enabled
+  - _tide_<tag>.selfencrypt
+  - _tide_<tag>.selfdecrypt
+
+default_playbooks:
+  - start-tidecloak-dev
+  - bootstrap-realm-from-template
+  - initialize-admin-and-link-account
+  - configure-e2ee-roles-and-policies
+  - add-auth-nextjs-fresh
+  - protect-routes-nextjs
+  - protect-api-nextjs
+  - verify-jwt-server-side
+  - add-rbac-nextjs
+
+default_skills:
+  - tide-setup
+  - tide-integration
+  - tide-route-and-api-protection
+  - tide-rbac-and-e2ee
+
+discriminating_question: Does the app need real-time encrypted communication (chat, video, or audio) where the server never sees plaintext? If the app only stores encrypted data without real-time streaming, use organisation-password-manager instead.
+valid_only_when: App requires runtime E2E encryption for real-time content (messages, media frames) using external crypto, with Tide protecting the private key material at rest.
+
+notes: Two encryption layers. Layer 1 is Tide self-encryption for private key storage. Layer 2 is an external client-side crypto library for runtime E2E. Tide does not handle Layer 2 directly. Replace <tag> with app-specific tag name.

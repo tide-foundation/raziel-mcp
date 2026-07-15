@@ -1,0 +1,80 @@
+# Git PR Signing Service — Scenario Manifest
+
+id: git-pr-signing-service
+title: Git PR Signing Service
+category: threshold-signing
+description: Enterprise PR-based commit signing service. GitHub webhook triggers admin review in web UI; Forseti-governed threshold signing produces signed merge commits with GitHub "Verified" badge. No developer holds a signing key.
+
+frameworks:
+  - nextjs
+
+core_patterns:
+  - forseti
+  - doken
+  - dpop
+  - iga
+  - oidc
+  - threshold-signing
+  - policy-signing
+  - basic-custom-request
+  - policy-sign-request
+  - client-roles
+  - signing
+  - github-webhook
+  - github-api
+  - ssh-signature-format
+
+match_keywords:
+  - git signing
+  - git commit signing
+  - commit signing
+  - signed commits
+  - verified commits
+  - github signing
+  - github verified
+  - pr signing
+  - merge signing
+  - sign commits
+  - sign merges
+  - code signing service
+  - enterprise commit signing
+  - verified badge
+  - git tag signing
+  - sign git tags
+  - sign pull requests
+
+bootstrap_required: true
+requires_admin_preapproval: true
+requires_iga: true
+requires_e2ee: false
+signing_mode: policy-governed
+
+default_roles:
+  - _tide_enabled
+
+policy_roles: []
+
+signing_role_pattern: "git-sign:<branch>"
+
+default_playbooks:
+  - start-tidecloak-dev
+  - bootstrap-realm-from-template
+  - initialize-admin-and-link-account
+  - add-auth-nextjs-fresh
+  - protect-routes-nextjs
+  - protect-api-nextjs
+  - verify-jwt-server-side
+  - add-rbac-nextjs
+  - setup-github-app-signing
+
+discriminating_question: Does the app sign git commits or merges via a server-side service with admin approval? If the app signs SSH challenges, documents, or transactions directly, use `policy-governed-signing` instead.
+valid_only_when: App is a server-side service that receives GitHub webhooks, collects admin approvals, and threshold-signs merge commits via the GitHub API.
+
+notes: >
+  This is a specialization of policy-governed-signing for the git/GitHub domain.
+  The signing service is a Next.js web app — admins authenticate via browser OIDC.
+  Developers never interact with Tide directly; they push code and open PRs as normal.
+  The service signs merge commits via GitHub Git Data API after Forseti-governed admin approval.
+  Ed25519 threshold signatures must be wrapped in SSH wire format for GitHub verification.
+  Requires a GitHub App (or bot account) with the threshold Ed25519 public key registered as an SSH signing key.
+  cosign and gitsign are NOT used — they target container images and local git signing respectively.

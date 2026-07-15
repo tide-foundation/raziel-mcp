@@ -1,0 +1,31 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Secure Form</title>
+</head>
+<body>
+  <div id="auth-section">
+    <button id="login-btn" style="display:none">Login with Tide</button>
+    <button id="logout-btn" style="display:none">Logout</button>
+    <p id="user-info"></p>
+  </div>
+
+  <div id="form-section" style="display:none">
+    <h2>Submit Data</h2>
+    <form id="secure-form">
+      <label>Name: <input type="text" id="name-input" required /></label>
+      <br />
+      <label>Email: <input type="email" id="email-input" required /></label>
+      <br />
+      <button type="submit">Submit</button>
+    </form>
+    <p id="form-result"></p>
+  </div>
+
+  <!-- Auth and form logic -->
+  <script type="module" src="/auth.js"></script>
+  <script type="module" src="/form.js"></script>
+</body>
+</html>

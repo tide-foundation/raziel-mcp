@@ -1,0 +1,38 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Completing login...</title>
+</head>
+<body>
+  <p id="status">Completing login...</p>
+  <script type="module">
+    // Process OIDC callback and redirect.
+    // The SDK handles the auth code exchange during init.
+    // After init, check auth state and redirect accordingly.
+    import { IAMService } from "@tidecloak/js";
+
+    // IAMService is a singleton — use directly, do NOT call getInstance(). (AP-51)
+    const iam = IAMService;
+    const status = document.getElementById("status");
+
+    try {
+      // Pass full adapter JSON config, not {configUrl}. (AP-52)
+      const configRes = await fetch("/tidecloak.json");
+      const config = await configRes.json();
+      await iam.initIAM(config);
+
+      if (iam.isAuthenticated()) {
+        status.textContent = "Redirecting...";
+        window.location.assign("/");
+      } else {
+        status.textContent = "Authentication failed. Redirecting to login...";
+        setTimeout(() => window.location.assign("/"), 2000);
+      }
+    } catch (err) {
+      status.textContent = "Authentication error: " + err.message;
+      setTimeout(() => window.location.assign("/"), 3000);
+    }
+  </script>
+</body>
+</html>

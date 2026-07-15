@@ -1,0 +1,78 @@
+# Policy-Governed Signing — Scenario Manifest
+
+id: policy-governed-signing
+title: Policy-Governed Signing
+category: threshold-signing
+description: Cryptographic signing authorized by Forseti contracts on the ORK network; no single entity holds the signing key
+
+frameworks:
+  - nextjs
+  - react-vite
+  - vanilla
+
+core_patterns:
+  - forseti
+  - doken
+  - dpop
+  - iga
+  - oidc
+  - threshold-signing
+  - policy-signing
+  - custom-request
+  - basic-custom-request
+  - dynamic-custom-request
+  - policy-sign-request
+  - client-roles
+  - signing
+  - ssh
+  - keyless
+
+match_keywords:
+  - policy signing
+  - threshold signing
+  - keyless ssh
+  - keyless signing
+  - ssh signing
+  - challenge signing
+  - document signing
+  - transaction signing
+  - forseti signing
+  - ork signing
+  - decentralised signing
+  - decentralized signing
+  - policy-governed
+  - sign with tide
+  - blockchain signing
+  - cryptocurrency wallet
+  - wallet signing
+  - blockchain transaction
+  - crypto wallet
+  - tide signing
+
+bootstrap_required: true
+requires_admin_preapproval: true
+requires_iga: true
+requires_e2ee: false
+signing_mode: policy-governed
+
+default_roles:
+  - _tide_enabled
+
+policy_roles: []
+
+signing_role_pattern: "<prefix>:<name>"
+
+default_playbooks:
+  - start-tidecloak-dev
+  - bootstrap-realm-from-template
+  - initialize-admin-and-link-account
+  - add-auth-nextjs-fresh
+  - protect-routes-nextjs
+  - protect-api-nextjs
+  - verify-jwt-server-side
+  - add-rbac-nextjs
+
+discriminating_question: Does the app produce cryptographic signatures (SSH challenges, document signing, transaction approval)? If the app encrypts/decrypts data instead, use an encryption scenario.
+valid_only_when: App needs ORK-mediated threshold signing, not encryption.
+
+notes: No encryption layer. Signing roles and policies are created by admin at runtime via app UI or API. Forseti contracts validate data, approvers, and executor before ORKs produce signature. Uses BasicCustomRequest or DynamicCustomRequest pattern. Replace <prefix>:<name> with app-specific pattern (e.g., ssh:root, sign:document, tx:payment).

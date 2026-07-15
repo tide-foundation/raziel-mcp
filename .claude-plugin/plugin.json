@@ -1,0 +1,32 @@
+{
+  "name": "tide-agent-pack",
+  "displayName": "Tide Agent Pack",
+  "version": "1.9.1",
+  "description": "AI coding agent guidance for TideCloak — threshold-cryptography auth, E2EE, IGA governance, Forseti contracts, server-side protection, plus security gap analysis and hosting guidance",
+  "author": {
+    "name": "Tide Foundation",
+    "email": "info@tide.org",
+    "url": "https://tide.org"
+  },
+  "homepage": "https://github.com/tide-foundation/raziel-mcp",
+  "repository": "https://github.com/tide-foundation/raziel-mcp",
+  "license": "MIT",
+  "keywords": [
+    "tidecloak",
+    "tide",
+    "auth",
+    "authentication",
+    "authorization",
+    "security",
+    "threshold-cryptography",
+    "e2ee",
+    "mcp",
+    "forseti"
+  ],
+  "mcpServers": {
+    "tide-pack": {
+      "command": "npx",
+      "args": ["-y", "@tideorg/mcp"]
+    }
+  }
+}
