@@ -1,5 +1,5 @@
 {
-  "name": "tide-agent-pack",
+  "name": "raziel",
   "owner": {
     "name": "Tide Foundation",
     "email": "support@tide.org"
@@ -9,7 +9,7 @@
   },
   "plugins": [
     {
-      "name": "tide-agent-pack",
+      "name": "raziel",
       "description": "MCP server + skills for implementing TideCloak correctly: canon, playbooks, reference scenarios, security gap analysis, and self-host vs hosted guidance",
       "category": "security",
       "source": "./",

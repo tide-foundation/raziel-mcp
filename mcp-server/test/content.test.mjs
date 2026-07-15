@@ -111,11 +111,11 @@ export async function run() {
   const plugin = parseJson(".claude-plugin/plugin.json");
   const market = parseJson(".claude-plugin/marketplace.json");
   c.ok(".claude-plugin/plugin.json parses", plugin !== null);
-  c.ok("plugin.json name is tide-agent-pack", plugin?.name === "tide-agent-pack");
+  c.ok("plugin.json name is raziel", plugin?.name === "raziel");
   c.ok("plugin.json declares the MCP server", !!plugin?.mcpServers && Object.keys(plugin.mcpServers).length > 0);
   c.ok(".claude-plugin/marketplace.json parses", market !== null);
-  c.ok("marketplace lists the tide-agent-pack plugin", Array.isArray(market?.plugins) && market.plugins.some((p) => p.name === "tide-agent-pack"));
-  const src = market?.plugins?.find((p) => p.name === "tide-agent-pack")?.source;
+  c.ok("marketplace lists the raziel plugin", Array.isArray(market?.plugins) && market.plugins.some((p) => p.name === "raziel"));
+  const src = market?.plugins?.find((p) => p.name === "raziel")?.source;
   c.ok("marketplace plugin source is a relative './' path", typeof src === "string" && src.startsWith("./"), `source=${JSON.stringify(src)}`);
   c.ok("marketplace name is not an Anthropic-reserved name", !["claude-plugins-official", "claude-plugins-community", "claude-community", "anthropic-plugins", "first-party-plugins"].includes(market?.name));
 
