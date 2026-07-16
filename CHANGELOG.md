@@ -2,6 +2,14 @@
 
 All notable changes to `@tideorg/mcp` (the Tide Agent Pack) are documented here.
 
+## 1.9.2 — 2026-07-16
+
+- **MCP Registry ready** — added the `mcpName` field (`io.github.tide-foundation/raziel`)
+  to the npm package plus a `server.json` listing both the npm package (stdio via `npx`)
+  and the hosted `mcp.tide.org` remote, for publishing to the official MCP Registry.
+- **Renamed to Raziel** — the Claude Code plugin is now `raziel` (install id) / **Raziel**.
+- **Relicensed** under the Tide Community Open Code License (TCOC v2), replacing MIT.
+
 ## 1.9.1 — 2026-07-15
 
 - Docs: refreshed `README.md` (the npm package page) for the 1.9.0 feature set —

@@ -13,7 +13,7 @@
       "description": "MCP server + skills for implementing TideCloak correctly: canon, playbooks, reference scenarios, security gap analysis, and self-host vs hosted guidance",
       "category": "security",
       "source": "./",
-      "version": "1.9.1",
+      "version": "1.9.2",
       "homepage": "https://github.com/tide-foundation/raziel-mcp",
       "author": {
         "name": "Tide Foundation"
