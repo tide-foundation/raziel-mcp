@@ -2,6 +2,15 @@
 
 All notable changes to `@tideorg/mcp` (the Tide Agent Pack) are documented here.
 
+## 1.9.3 — 2026-07-30
+
+- **Red-team suite** — a `tide-red-team` skill, `canon/breach-precedents.md` and
+  `canon/tide-neutralization.md`, a `red-team-review` prompt, and a `red-team-report`
+  template for adversarial security review of a system's trust concentration.
+- **Bootstrap refinements** — updates to `init-tidecloak.sh`, the realm templates, and
+  the IGA/admin initialization playbooks.
+- Ships the VSCode extension source in-repo (published separately as **Raziel** 1.9.2).
+
 ## 1.9.2 — 2026-07-16
 
 - **MCP Registry ready** — added the `mcpName` field (`io.github.tide-foundation/raziel`)
