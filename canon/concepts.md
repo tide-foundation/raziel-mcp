@@ -664,7 +664,7 @@ Also add the `@tidecloak/react` ESM alias. See `canon/framework-matrix.md` for t
 
 **Anti-pattern**: Destructuring `{ ApprovalType, ExecutionType }` from `Models.Policy` instead of `Models`. `Models.Policy` is the Policy class itself. This gives `undefined`, causing `Cannot read properties of undefined (reading 'IMPLICIT')`.
 
-### `@tideorg/js` Export Reference (v0.13.33)
+### `@tideorg/js` Export Reference (v0.14.11)
 
 `@tideorg/js` exports 8 namespaces. Only `Models` and `Contracts` are needed for app-level policy work. The others are internal SDK plumbing.
 

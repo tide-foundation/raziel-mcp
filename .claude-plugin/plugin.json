@@ -1,7 +1,7 @@
 {
   "name": "raziel",
   "displayName": "Raziel",
-  "version": "1.9.3",
+  "version": "1.9.4",
   "description": "AI coding agent guidance for TideCloak — threshold-cryptography auth, E2EE, IGA governance, Forseti contracts, server-side protection, plus security gap analysis and hosting guidance",
   "author": {
     "name": "Tide Foundation",

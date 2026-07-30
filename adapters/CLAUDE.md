@@ -130,7 +130,7 @@ For code patterns and full details, see `canon/framework-matrix.md`.
 - **`silent-check-sso.html`**: Must exist in `public/`. See playbook `add-auth-nextjs-fresh`.
 - **Redirect handler**: Must exist at configured `redirectUri` path. Without it, login ends on 404. See `canon/redirect-handler.md`.
 - **Setup order**: License → IGA → E2EE. No other sequence works. See `canon/tidecloak-bootstrap.md`.
-- **Version policy**: Tide packages at `0.13.33`. No 0.99.x. See `canon/version-policy.md`.
+- **Version policy**: Tide packages at `0.14.11`. No 0.99.x. See `canon/version-policy.md`.
 - **Docker images**: `tidecloak-dev` is production (full protocol). `tidecloak-stg-dev` is staging. Images are under `tideorg/` org (e.g. `tideorg/tidecloak-dev:latest`), NOT `tidecloak/`. Do NOT append `start-dev` to docker run — TideCloak images have a pre-configured entrypoint.
 - **`_tide_enabled`**: Declare in realm.json. Not auto-created.
 - **`tide-realm-admin`**: Client role on `realm-management`, not a realm role.

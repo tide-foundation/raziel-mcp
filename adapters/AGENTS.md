@@ -239,4 +239,4 @@ These are implementation pitfalls not covered by invariants or anti-patterns. Fo
 - **Token refresh delay**: After IGA commit, roles appear in JWT/doken after next token refresh (up to 120s).
 - **`tide-realm-admin`**: Client role on `realm-management`, not a realm role.
 - **Post-auth redirect handler**: Must exist at configured `redirectUri` path. Missing handler = login appears to fail (404 after auth). See `canon/redirect-handler.md`.
-- **Version policy**: All `@tidecloak/*` packages pin to `0.13.33`. No 0.99.x. See `canon/version-policy.md`.
+- **Version policy**: All `@tidecloak/*` packages pin to `0.14.11`. No 0.99.x. See `canon/version-policy.md`.

@@ -2,6 +2,21 @@
 
 All notable changes to `@tideorg/mcp` (the Tide Agent Pack) are documented here.
 
+## 1.9.4 — 2026-07-30
+
+Release-hardening — fixes the exact failure modes that made shipping 1.9.3 bumpy.
+
+- **`.gitattributes` (`*.sh text eol=lf`)** — shell scripts always check out with
+  LF, so `deploy.sh` and the user-facing `init-tidecloak.sh` /
+  `bootstrap-tidecloak.sh` stop shipping with CRLF and breaking under bash/WSL
+  (`$'\r': command not found`).
+- **Self-healing `deploy.sh`** — re-binds the `mcp.tide.org` custom domain on
+  every deploy (idempotent), so the binding stops silently dropping and taking
+  the hosted endpoint down at the TLS layer.
+- **`scripts/bump-version.mjs`** — one command bumps the version across every
+  version-bearing file (core packages, plugin, marketplace, extension, and
+  raziel's `server.json`), replacing the error-prone hand-editing.
+
 ## 1.9.3 — 2026-07-30
 
 - **Red-team suite** — a `tide-red-team` skill, `canon/breach-precedents.md` and
