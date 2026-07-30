@@ -1,0 +1,5 @@
+# Shell scripts must always check out with LF endings. On Windows the default
+# autocrlf converts them to CRLF, which breaks them under bash/WSL/Linux with
+# `$'\r': command not found` (bit us on deploy.sh and would break the
+# user-facing init-tidecloak.sh / bootstrap-tidecloak.sh on Linux/Mac).
+*.sh text eol=lf

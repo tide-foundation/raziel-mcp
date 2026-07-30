@@ -530,7 +530,7 @@ No application-level max payload size **VERIFIED** (vendor confirmation, GAP-013
 > grep -n "useDPoP" node_modules/@tidecloak/js/dist/cjs/lib/tidecloak.js
 > grep -rn "dpop.bound.access.tokens" .                           # server/realm side
 > ```
-> **VERIFIED** against @tidecloak/js 0.13.27 (2026-07-22). Whatever a given SDK version defaults to, the recommendation is unchanged: DPoP on, always.
+> **VERIFIED** against @tidecloak/js 0.13.27 (2026-07-22), and **re-confirmed unchanged on the 0.14.x line**: verified against an installed 0.14.9 (`dist/{esm,cjs}/lib/tidecloak.js` assigns `this.useDPoP` only inside `if (initOptions.useDPoP)`; no `mode: 'strict'` default), and confirmed for the pinned **0.14.11** (Tide, 2026-07-30). DPoP is still opt-in through 0.14.11, and omitting `useDPoP` still yields plain bearer tokens with no error. Whatever a given SDK version defaults to, the recommendation is unchanged: DPoP on, always.
 
 **Server/client must agree (lockstep)**:
 - **Server-side** (realm template): `"dpop.bound.access.tokens": "true"` on the OIDC client, and the realm must advertise `dpop_signing_alg_values_supported`. Because the client defaults to strict, a realm that does not advertise DPoP makes SDK init fail.

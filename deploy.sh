@@ -53,6 +53,23 @@ az containerapp update \
   --max-replicas 3 \
   --output none
 
+# Re-bind the custom domain (idempotent). The mcp.tide.org binding has been
+# observed to drop on some deploy operations; re-applying it here keeps the
+# hosted endpoint self-healing. Requires the DNS CNAME + asuid TXT already set.
+CUSTOM_DOMAIN="mcp.tide.org"
+if ! az containerapp hostname list --name $APP_NAME --resource-group $RESOURCE_GROUP \
+     --query "[].name" -o tsv 2>/dev/null | grep -qx "$CUSTOM_DOMAIN"; then
+  echo "=== Re-binding custom domain ${CUSTOM_DOMAIN} ==="
+  az containerapp hostname bind \
+    --hostname $CUSTOM_DOMAIN \
+    --name $APP_NAME \
+    --resource-group $RESOURCE_GROUP \
+    --environment $ENVIRONMENT \
+    --validation-method CNAME \
+    --output none 2>/dev/null \
+    || echo "  (bind skipped — check DNS CNAME + asuid.${CUSTOM_DOMAIN} TXT)"
+fi
+
 # Get the URL
 FQDN=$(az containerapp show --name $APP_NAME --resource-group $RESOURCE_GROUP --query "properties.configuration.ingress.fqdn" -o tsv)
 

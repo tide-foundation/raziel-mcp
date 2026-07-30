@@ -156,7 +156,7 @@ So: **"we resolve roles from our own database instead of the token" is a finding
 
 **DPoP is Tide best practice — its absence is a finding, full stop.** Do not treat "DPoP on vs off" as a configuration choice to note neutrally. Tide recommends DPoP always; unbound bearer tokens are not a supported configuration (I-12). If a Tide app is not using DPoP on both halves, that is a High finding (SG-03), whatever the SDK version happens to default to.
 
-**Verify it is actually enabled against the installed package, never assume the SDK did it.** The failure is silent — omitting `useDPoP` in `@tidecloak/js` 0.13.27 yields plain bearer tokens with no error. Check both halves:
+**Verify it is actually enabled against the installed package, never assume the SDK did it.** The failure is silent — omitting `useDPoP` yields plain bearer tokens with no error. This is opt-in behaviour confirmed from 0.13.27 through the pinned 0.14.11 (`this.useDPoP` set only inside `if (initOptions.useDPoP)`, no `mode: 'strict'` default), so it holds for the current pin, not just an old version. Check both halves:
 
 ```bash
 grep -rn "useDPoP" src/                    # client: must be present, mode 'strict'

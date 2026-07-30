@@ -83,7 +83,7 @@ ls -la app/ 2>/dev/null && echo "App Router" || echo "Pages Router"
 npm install @tidecloak/nextjs
 ```
 
-**Verify version**: `@tidecloak/*` packages are currently at `0.13.33` (run `npm view @tidecloak/nextjs version` to confirm/pin). Do not assume `1.0.0`.
+**Verify version**: `@tidecloak/*` packages are currently at `0.14.11` (run `npm view @tidecloak/nextjs version` to confirm/pin). Do not assume `1.0.0`.
 
 **Next.js 16+ bundler**: Next.js 16 defaults to Turbopack. The Tide SDK requires webpack for `strictExportPresence = false` and `@tidecloak/react` ESM alias. Update `package.json` scripts:
 ```json

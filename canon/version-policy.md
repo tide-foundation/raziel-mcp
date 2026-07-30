@@ -8,17 +8,17 @@ All other pack files point here. Do not duplicate version numbers in playbooks o
 
 ## Tide SDK Packages
 
-Resolved from npm registry on 2026-07-07. npm is the release source of truth. Repo `package.json` version fields lag npm (e.g. `tidecloak-js` source on `main` reads 0.12.15); always confirm against npm, not the checked-out source tree.
+Resolved from npm registry on 2026-07-30. npm is the release source of truth. Repo `package.json` version fields lag npm (e.g. `tidecloak-js` source on `main` reads 0.12.15); always confirm against npm, not the checked-out source tree.
 
 | Package | Stable version | Range for templates | Purpose |
 |---------|---------------|--------------------| --------|
-| `@tidecloak/js` | 0.13.33 | `0.13.33` | Core SDK (vanilla JS, IAMService) |
-| `@tidecloak/react` | 0.13.33 | `0.13.33` | React hooks and guard components |
-| `@tidecloak/nextjs` | 0.13.33 | `0.13.33` | Next.js provider and hooks |
-| `@tidecloak/verify` | 0.13.33 | `0.13.33` | Server-side JWT verification (CJS) |
-| `heimdall-tide` | 0.13.33 | `0.13.33` | Policy signing, BasicCustomRequest |
-| `@tideorg/js` | 0.13.33 | `0.13.33` | Models, Contracts (Forseti). `tide-js` `main` package.json reads 0.13.32; npm latest is 0.13.33. |
-| `asgard-tide` | 0.13.33 | `0.13.33` | Signing request builders (`BasicCustomRequest`, `DynamicPayloadCustomRequest`) |
+| `@tidecloak/js` | 0.14.11 | `0.14.11` | Core SDK (vanilla JS, IAMService) |
+| `@tidecloak/react` | 0.14.11 | `0.14.11` | React hooks and guard components |
+| `@tidecloak/nextjs` | 0.14.11 | `0.14.11` | Next.js provider and hooks |
+| `@tidecloak/verify` | 0.14.11 | `0.14.11` | Server-side JWT verification (CJS) |
+| `heimdall-tide` | 0.14.11 | `0.14.11` | Policy signing, BasicCustomRequest |
+| `@tideorg/js` | 0.14.11 | `0.14.11` | Models, Contracts (Forseti). `tide-js` `main` package.json reads 0.13.32; npm latest is 0.14.11. |
+| `asgard-tide` | 0.14.11 | `0.14.11` | Signing request builders (`BasicCustomRequest`, `DynamicPayloadCustomRequest`) |
 
 **Pin to exact version in templates.** Tide packages are pre-1.0. Minor bumps can break. Run `npm view <package> version` before installing to confirm the latest stable.
 

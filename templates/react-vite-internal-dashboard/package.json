@@ -9,7 +9,7 @@
     "preview": "vite preview"
   },
   "dependencies": {
-    "@tidecloak/react": "0.13.33",
+    "@tidecloak/react": "0.14.11",
     "react": "^19.0.0",
     "react-dom": "^19.0.0"
   },
