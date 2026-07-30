@@ -185,7 +185,7 @@ const REFERENCE_APP_DIRS = listDirectories("reference-apps");
 export function createServer(): McpServer {
   const server = new McpServer({
     name: "@tideorg/mcp",
-    version: "1.9.2",
+    version: "1.9.3",
   });
 
   // 1. List available content
