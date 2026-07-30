@@ -89,12 +89,22 @@ This activates the Tide license and generates the VRK. No manual "Manage License
 
 ### Step 5: Enable IGA
 
+Stamp `iga.attestor=tide` on the realm BEFORE enabling IGA so governance comes up
+in Tide (cryptographic) mode rather than Tideless:
+
 ```bash
 TOKEN="$(get_token)"
+REALM_REP=$(curl -s "$TIDECLOAK_URL/admin/realms/$REALM_NAME" -H "Authorization: Bearer $TOKEN")
+UPDATED_REALM=$(echo "$REALM_REP" | jq '.attributes = ((.attributes // {}) + {"iga.attestor":"tide"})')
+curl -s -X PUT "$TIDECLOAK_URL/admin/realms/$REALM_NAME" \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  --data-binary "$UPDATED_REALM"
+
 curl -s -X POST "$TIDECLOAK_URL/admin/realms/$REALM_NAME/tide-admin/toggle-iga" \
   -H "Authorization: Bearer $TOKEN" \
-  -H "Content-Type: application/x-www-form-urlencoded" \
-  --data-urlencode "isIGAEnabled=true"
+  -H "Content-Type: application/json" \
+  -d '{"enabled":true}'
 ```
 
 ### Step 6: Approve and commit client change requests
@@ -171,7 +181,7 @@ approve_and_commit clients
 
 If re-running bootstrap against an existing realm, delete the old realm first. On the H2 dev database, `DELETE /admin/realms/{realm}` fails with FK constraint violations on composite roles. Use this sequence:
 
-1. Disable IGA: `POST /tide-admin/toggle-iga` with `isIGAEnabled=false`
+1. Disable IGA: `POST /tide-admin/toggle-iga` with JSON body `{"enabled":false}`
 2. Delete Tide IdP: `DELETE /identity-provider/instances/tide`
 3. Strip ALL composite roles (realm-level and per-client) — remove composites from `default-roles-*`, `realm-admin`, `manage-account`, etc.
 4. Delete realm: `DELETE /admin/realms/{realm}`

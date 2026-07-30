@@ -1,0 +1,74 @@
+{
+  "name": "tide-agent-pack",
+  "displayName": "Raziel",
+  "description": "AI coding agents that implement TideCloak correctly — auth, threshold cryptography, E2EE, IGA governance, Forseti contracts, plus security gap analysis and hosting guidance",
+  "version": "1.9.2",
+  "publisher": "Tide",
+  "icon": "icon.png",
+  "engines": {
+    "vscode": "^1.99.0"
+  },
+  "categories": [
+    "AI",
+    "Other"
+  ],
+  "keywords": [
+    "mcp",
+    "raziel",
+    "tidecloak",
+    "tide",
+    "auth",
+    "security",
+    "threshold-cryptography",
+    "ai-agent",
+    "copilot"
+  ],
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "main": "./dist/extension.js",
+  "contributes": {
+    "mcpServerDefinitionProviders": [
+      {
+        "id": "tideMcp",
+        "label": "Raziel"
+      }
+    ],
+    "configuration": {
+      "title": "Raziel",
+      "properties": {
+        "tide.mcp.mode": {
+          "type": "string",
+          "enum": [
+            "remote",
+            "local"
+          ],
+          "default": "remote",
+          "description": "How to run the Raziel (Tide) MCP server. 'remote' connects to mcp.tide.org (no install needed). 'local' runs via npx (works offline)."
+        },
+        "tide.mcp.remoteUrl": {
+          "type": "string",
+          "default": "https://mcp.tide.org/mcp",
+          "description": "URL of the remote Raziel MCP server. Only used when mode is 'remote'."
+        }
+      }
+    }
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/tide-foundation/raziel-mcp"
+  },
+  "license": "SEE LICENSE IN LICENSE.txt",
+  "scripts": {
+    "vscode:prepublish": "npm run build",
+    "build": "tsc",
+    "watch": "tsc -w",
+    "package": "vsce package",
+    "publish": "vsce publish"
+  },
+  "devDependencies": {
+    "@types/vscode": "^1.99.0",
+    "typescript": "^5.7.0",
+    "@vscode/vsce": "^3.0.0"
+  }
+}

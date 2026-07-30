@@ -24,7 +24,7 @@ All steps must complete before the service can sign merge commits. Order matters
    - Content-Type: `application/x-www-form-urlencoded`. Body: `email=admin@example.com`.
 
 5. **Enable IGA**
-   - `POST /admin/realms/{realm}/tide-admin/toggle-iga` with form-urlencoded `isIGAEnabled=true`.
+   - First stamp `iga.attestor=tide` on the realm (GET then PUT `/admin/realms/{realm}`) so governance comes up in Tide mode, then `POST /admin/realms/{realm}/tide-admin/toggle-iga` with JSON body `{"enabled":true}`.
    - Must happen after licensing.
 
 ## Phase 3: Approve initial change requests

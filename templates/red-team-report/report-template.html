@@ -1,0 +1,446 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Blast Radius Assessment — {{TARGET_NAME}}</title>
+<style>
+/* ============================================================
+  Tide Red Team — report stylesheet
+  ZERO DEPENDENCIES. No web fonts, no CDN, no JS, no images.
+  Output: open in any browser, Ctrl/Cmd-P, Destination "Save as PDF".
+  ============================================================ */
+
+/* --- Page geometry. Swap A4 for `letter` if your reader is US-based. --- */
+@page { size: A4; margin: 16mm 15mm 18mm 15mm; }
+@page :first { margin: 0; }
+
+:root{
+ --ink:#14161a; --ink-soft:#42474f; --ink-faint:#6b7280;
+ --rule:#d6dae0; --rule-soft:#e8ebef; --paper:#fff; --wash:#f6f7f9;
+ --crit:#8b1a1a; --high:#a4500f; --med:#7a6206; --low:#2f5d3a;
+ --accent:#123a63;
+}
+
+*{box-sizing:border-box}
+html{-webkit-text-size-adjust:100%}
+body{
+ margin:0; background:var(--wash); color:var(--ink);
+ font-family:"Segoe UI",-apple-system,BlinkMacSystemFont,Roboto,"Helvetica Neue",Arial,sans-serif;
+ font-size:10.5pt; line-height:1.55;
+ -webkit-font-smoothing:antialiased;
+}
+.sheet{
+ background:var(--paper); max-width:190mm; margin:0 auto; padding:18mm 16mm;
+ box-shadow:0 1px 4px rgba(0,0,0,.10);
+}
+
+/* --- Typography --- */
+h1,h2,h3,h4{ line-height:1.25; margin:0 0 .4em; font-weight:640; letter-spacing:-.01em; }
+h1{ font-size:23pt; }
+h2{
+ font-size:14pt; margin-top:1.9em; padding-bottom:.28em;
+ border-bottom:1.5px solid var(--ink); break-after:avoid; page-break-after:avoid;
+}
+h3{ font-size:11.5pt; margin-top:1.5em; break-after:avoid; page-break-after:avoid; }
+h4{ font-size:10.5pt; margin-top:1.1em; color:var(--ink-soft); break-after:avoid; }
+p{ margin:0 0 .7em; }
+strong{ font-weight:640; }
+a{ color:var(--accent); text-decoration:none; }
+code,.mono{
+ font-family:"Cascadia Mono",Consolas,"SF Mono",Menlo,monospace;
+ font-size:9pt; background:var(--wash); padding:.1em .35em;
+ border:1px solid var(--rule-soft); border-radius:2px;
+}
+.lede{ font-size:11.5pt; line-height:1.6; color:var(--ink-soft); }
+.small{ font-size:9pt; color:var(--ink-faint); }
+
+/* --- Cover --- */
+.cover{
+ min-height:257mm; padding:26mm 22mm; display:flex; flex-direction:column;
+ break-after:page; page-break-after:always;
+}
+.cover .rule{ height:5px; background:var(--ink); width:64mm; margin-bottom:12mm; }
+.cover h1{ font-size:31pt; margin-bottom:.25em; }
+.cover .sub{ font-size:14pt; color:var(--ink-soft); font-weight:400; margin-bottom:auto; }
+.cover dl{
+ display:grid; grid-template-columns:38mm 1fr; gap:.45em 0;
+ margin:0 0 11mm; padding-top:11mm; border-top:1px solid var(--rule); font-size:10pt;
+}
+.cover dt{ color:var(--ink-faint); }
+.cover dd{ margin:0; font-weight:600; }
+.classif{
+ display:inline-block; align-self:flex-start;
+ border:2px solid var(--crit); color:var(--crit);
+ padding:.3em 1em; font-weight:700; font-size:9.5pt;
+ letter-spacing:.14em; text-transform:uppercase; margin-bottom:8mm;
+}
+
+/* --- Callouts --- */
+.callout{
+ border:1px solid var(--rule); border-left:4px solid var(--accent);
+ background:var(--wash); padding:.85em 1.05em; margin:1.1em 0;
+ break-inside:avoid; page-break-inside:avoid;
+}
+.callout.warn{ border-left-color:var(--high); }
+.callout.stop{ border-left-color:var(--crit); }
+.callout h4{ margin:0 0 .3em; color:var(--ink); }
+.callout p:last-child{ margin-bottom:0; }
+
+/* --- Severity chips. Never colour alone: label + weight + border carry it in greyscale. --- */
+.sev{
+ display:inline-block; font-size:8pt; font-weight:700; letter-spacing:.07em;
+ text-transform:uppercase; padding:.16em .6em; border:1.5px solid currentColor;
+ border-radius:2px; white-space:nowrap;
+}
+.sev-crit{ color:var(--crit); background:#fbeaea; }
+.sev-high{ color:var(--high); background:#fdf1e3; }
+.sev-med { color:var(--med); background:#fbf6e0; }
+.sev-low { color:var(--low); background:#e9f3ec; }
+.sev-none{ color:var(--ink-faint); background:var(--wash); }
+
+/* --- Evidence tags --- */
+.tag{
+ display:inline-block; font-size:7.5pt; font-weight:700; letter-spacing:.08em;
+ padding:.1em .45em; border:1px solid var(--ink-faint); color:var(--ink-faint);
+ border-radius:2px; vertical-align:.1em;
+}
+.tag-v{ color:var(--low); border-color:var(--low); }
+.tag-i{ color:var(--high); border-color:var(--high); }
+
+/* --- Tables --- */
+table{ width:100%; border-collapse:collapse; margin:1em 0; font-size:9.5pt; }
+caption{ text-align:left; font-weight:640; padding-bottom:.4em; }
+th,td{ text-align:left; padding:.5em .6em; border-bottom:1px solid var(--rule-soft); vertical-align:top; }
+thead th{
+ border-bottom:1.5px solid var(--ink); font-size:8.5pt; text-transform:uppercase;
+ letter-spacing:.06em; color:var(--ink-soft);
+}
+tbody tr:nth-child(even){ background:var(--wash); }
+thead{ display:table-header-group; }  /* repeat header across page breaks */
+tr{ break-inside:avoid; page-break-inside:avoid; }
+.tbl-wrap{ overflow-x:auto; }
+
+/* --- Finding card. The core unit; must never split across pages. --- */
+.finding{
+ border:1px solid var(--rule); border-top:3px solid var(--ink);
+ margin:1.3em 0; break-inside:avoid; page-break-inside:avoid;
+}
+.finding.c-crit{ border-top-color:var(--crit); }
+.finding.c-high{ border-top-color:var(--high); }
+.finding.c-med { border-top-color:var(--med); }
+.finding.c-low { border-top-color:var(--low); }
+.finding > header{
+ padding:.7em .95em; background:var(--wash); border-bottom:1px solid var(--rule);
+ display:flex; justify-content:space-between; align-items:flex-start; gap:1em;
+}
+.finding > header h3{ margin:0; font-size:11pt; }
+.finding .id{ font-size:8.5pt; color:var(--ink-faint); letter-spacing:.08em; font-weight:700; }
+.finding .body{ padding:.3em .95em .85em; }
+.finding dl{ display:grid; grid-template-columns:44mm 1fr; gap:0; margin:0; }
+.finding dt{
+ padding:.45em .7em .45em 0; font-size:8.5pt; font-weight:700;
+ text-transform:uppercase; letter-spacing:.05em; color:var(--ink-faint);
+ border-bottom:1px solid var(--rule-soft);
+}
+.finding dd{ margin:0; padding:.45em 0; border-bottom:1px solid var(--rule-soft); }
+.finding dl > dt:last-of-type, .finding dl > dd:last-of-type{ border-bottom:0; }
+.spf{ font-weight:640; }
+.notfix{ color:var(--ink-soft); }
+
+/* --- Pentest-format extras: PoC code block, standards chips, category headers --- */
+.poc{
+ font-family:"Cascadia Mono",Consolas,"SF Mono",Menlo,monospace; font-size:8.3pt; line-height:1.45;
+ background:var(--wash); border:1px solid var(--rule-soft); border-left:3px solid var(--ink-faint);
+ padding:.55em .75em; white-space:pre-wrap; word-break:break-word; margin:.15em 0 .5em;
+}
+.mapchip{
+ display:inline-block; font-weight:700; font-size:7.5pt; letter-spacing:.04em;
+ padding:.12em .5em; border:1px solid var(--accent); color:var(--accent);
+ border-radius:2px; margin:0 .3em .3em 0; white-space:nowrap;
+}
+.mapchip.owasp{ border-color:var(--crit); color:var(--crit); }
+.cathead{
+ margin-top:1.7em; padding:.3em 0 .25em; border-bottom:1px solid var(--rule);
+ font-size:11pt; font-weight:640; break-after:avoid;
+}
+
+/* --- Blast radius two-column --- */
+.cols{ display:grid; grid-template-columns:1fr 1fr; gap:0 1.4em; }
+.cols > div{ break-inside:avoid; }
+.cols h4{ margin-top:0; }
+
+/* --- Misc --- */
+ul,ol{ margin:0 0 .8em; padding-left:1.25em; }
+li{ margin-bottom:.28em; }
+hr{ border:0; border-top:1px solid var(--rule); margin:1.8em 0; }
+.pagebreak{ break-before:page; page-break-before:always; }
+.avoid{ break-inside:avoid; page-break-inside:avoid; }
+footer.doc{ margin-top:2.4em; padding-top:.8em; border-top:1px solid var(--rule); }
+
+/* --- Screen-only instructions --- */
+.no-print{
+ max-width:190mm; margin:14px auto; padding:12px 16px; background:#123a63; color:#fff;
+ border-radius:4px; font-size:10pt;
+}
+.no-print b{ letter-spacing:.02em; }
+.no-print code{ background:rgba(255,255,255,.16); border-color:transparent; color:#fff; }
+
+/* --- PRINT --- */
+@media print{
+ html,body{ background:#fff; font-size:10pt; }
+ .sheet{ box-shadow:none; margin:0; padding:0; max-width:none; }
+ .no-print{ display:none !important; }
+ /* Keep chip/severity fills in the PDF instead of dropping to white */
+ *{ -webkit-print-color-adjust:exact !important; print-color-adjust:exact !important; }
+ a{ color:var(--ink); }
+ /* Show link targets so a printed copy stays verifiable */
+ a[href^="http"]::after{ content:" (" attr(href) ")"; font-size:7.5pt; color:var(--ink-faint); word-break:break-all; }
+ h2{ margin-top:1.4em; }
+ .finding{ border-color:#b9bec6; }
+}
+</style>
+</head>
+<body>
+
+<!-- ============ SCREEN-ONLY: how to make the PDF. Never printed. ============ -->
+<div class="no-print">
+ <b>To produce the PDF:</b> press <code>Ctrl+P</code> (Windows/Linux) or <code>Cmd+P</code> (Mac) →
+ Destination <b>Save as PDF</b> → Margins <b>Default</b> → tick <b>Background graphics</b>.
+ For page numbers, tick <b>Headers and footers</b>. No software to install.
+</div>
+
+<!-- =========================== COVER =========================== -->
+<section class="cover">
+ <div class="rule"></div>
+ <h1>Blast Radius Assessment</h1>
+ <p class="sub">{{TARGET_NAME}}<br>Where authority is concentrated into a single point — mapped across Identity, Governance, and Access</p>
+
+ <div class="classif">{{CLASSIFICATION}}</div>
+ <dl>
+  <dt>Target</dt><dd>{{TARGET_DESCRIPTION}}</dd>
+  <dt>Scope</dt><dd>{{SCOPE}}</dd>
+  <dt>Review date</dt><dd>{{DATE}}</dd>
+  <dt>Prepared by</dt><dd>{{AUTHOR}}</dd>
+  <dt>Evidence basis</dt><dd>Static inspection{{RUNTIME_NOTE}}</dd>
+ </dl>
+</section>
+
+<div class="sheet">
+
+<!-- =================== 1. EXECUTIVE SUMMARY =================== -->
+<h2>1. Executive summary</h2>
+<p class="small">This is an <strong>Blast Radius Assessment</strong>, not a security risk assessment. It maps where authority is concentrated into a single artifact or party — such that whoever obtains that one thing obtains everything it governs — across three cores: <strong>Identity</strong>, <strong>Governance</strong>, <strong>Access</strong>. OWASP/CWE tags are supporting detail, not the frame.</p>
+
+<p class="lede">{{ONE_LINE_VERDICT}}</p>
+
+<p>{{EXEC_PARA_1}}</p>
+<p>{{EXEC_PARA_2}}</p>
+
+<div class="callout avoid">
+ <h4>Headline numbers</h4>
+ <table style="margin:.3em 0 0">
+  <tbody>
+   <tr><td>Findings raised</td><td><strong>{{N_FINDINGS}}</strong> ({{N_CRIT}} critical, {{N_HIGH}} high, {{N_MED}} medium, {{N_LOW}} low)</td></tr>
+   <tr><td>Architectural liabilities (the artifact is the exposure)</td><td><strong>{{N_ARCH}}</strong></td></tr>
+   <tr><td>Fixable in application / ops / config</td><td><strong>{{N_APP}}</strong></td></tr>
+  </tbody>
+ </table>
+</div>
+
+<h3>What a reader should take away</h3>
+<ul>
+ <li>{{TAKEAWAY_1}}</li>
+ <li>{{TAKEAWAY_2}}</li>
+ <li>{{TAKEAWAY_3}}</li>
+</ul>
+
+<h3>Contents</h3>
+<ol class="small">
+ <li>Executive summary</li>
+ <li>Attacker model</li>
+ <li>Coverage — verdict per surface</li>
+ <li>Findings</li>
+ <li>Breach blast radius</li>
+ <li>Appendix — severity table, precedents, verification</li>
+</ol>
+
+<!-- =================== 2. ATTACKER MODEL =================== -->
+<h2 class="pagebreak">2. Attacker model</h2>
+
+<p>The attacker is not a particular profile — it is <strong>anyone</strong>. Most findings below can be
+exploited by anyone who can clone the repository, replay a stolen token, or point now-commonplace AI tooling
+at the code: no privileged position, no insider access, and no special skill is needed for the worst of
+them. The range runs from a random opportunist at the low end up to a privileged insider at the high end —
+but the exposure that matters is at the <em>low</em> end, and that is where this review holds the bar. A
+control that assumes either “this component is not compromised” <em>or</em> “nobody will find this” fails the
+design test.</p>
+
+<div class="tbl-wrap">
+<table>
+ <caption>Assumed adversary capabilities — from the lowest realistic bar upward</caption>
+ <thead><tr><th style="width:48mm">Capability</th><th>Meaning</th></tr></thead>
+ <tbody>
+  <tr><td>Low-skill / AI-assisted opportunist</td><td>No privileged position and little expertise. Uses off-the-shelf and AI tooling to scan a leaked or cloned repository, replay a stolen token, or hit an open endpoint. Enough, on its own, to exploit findings such as committed secrets, default/shipped accounts, and open endpoints.</td></tr>
+  <tr><td>Supply-chain maintainer / repo reader</td><td>Rogue developer, compromised vendor, or anyone with read access to the source repository — a direct path to production when secrets are committed.</td></tr>
+  <tr><td>Root access holder</td><td>Total control of one or more components — server, database, network segment, or codebase.</td></tr>
+  <tr><td>Collusion-capable &amp; persistent</td><td>Coordinates multiple compromised components; observes traffic, dumps memory, and runs campaigns over months.</td></tr>
+ </tbody>
+</table>
+</div>
+<p class="small">Findings reachable at the lowest bar — a cloned repo, one leaked credential, one stolen
+token — are marked as such, because those need no foothold and no skill to hit today. Checking that controls
+also survive a privileged insider is added rigour, not the primary threat: the primary threat is that these
+are reachable by anyone.</p>
+
+<!-- =================== 3. COVERAGE =================== -->
+<h2 class="pagebreak">3. Single-point map (coverage)</h2>
+
+<p>Every surface below was examined. A recorded verdict is given for each, including where nothing was
+found — a review that omits a surface silently is indistinguishable from one that found it clean.</p>
+
+<div class="tbl-wrap">
+<table>
+ <thead><tr><th style="width:8mm">#</th><th style="width:52mm">Surface</th><th style="width:24mm">Verdict</th><th>Evidence</th></tr></thead>
+ <tbody>
+  <tr><td>1</td><td>Credential verification</td><td>{{V1}}</td><td>{{E1}}</td></tr>
+  <tr><td>2</td><td>Token signing <em>and</em> verification</td><td>{{V2}}</td><td>{{E2}}</td></tr>
+  <tr><td>3</td><td>Session and token binding (DPoP)</td><td>{{V3}}</td><td>{{E3}}</td></tr>
+  <tr><td>4</td><td>Authorization placement and role source</td><td>{{V4}}</td><td>{{E4}}</td></tr>
+  <tr><td>5</td><td>Data at rest</td><td>{{V5}}</td><td>{{E5}}</td></tr>
+  <tr><td>6</td><td>Privileged operations and fan-out</td><td>{{V6}}</td><td>{{E6}}</td></tr>
+  <tr><td>7</td><td>Machine identity and secrets</td><td>{{V7}}</td><td>{{E7}}</td></tr>
+  <tr><td>8</td><td>Recovery path and client integrity</td><td>{{V8}}</td><td>{{E8}}</td></tr>
+ </tbody>
+</table>
+</div>
+<p class="small">Verdict is one of <strong>Concentrated</strong> (authority is concentrated to a single point here),
+<strong>Sound</strong> (genuinely distributed or absent), <strong>N/A</strong> or <strong>Not checked</strong>.
+A Sound verdict carries evidence of the control that was found, not merely the absence of a problem.</p>
+
+<!-- =================== 4. FINDINGS =================== -->
+<h2 class="pagebreak">4. Single points of compromise</h2>
+<p class="small">Grouped by core — Governance, Identity, Access — worst gap first within each; adjacent config weaknesses that are <em>not</em> central points are listed separately.</p>
+
+<p class="small">
+ Findings are ordered worst-first. Each is tagged with its <strong>OWASP Top 10:2025</strong> category
+ and primary <strong>CWE</strong> in its Standards &amp; mappings row; the appendix severity table (§7.1)
+ groups them by category. Each also names its <strong>single point of failure</strong> — the one
+ artifact or party whose compromise defeats the control — and carries a documented <strong>precedent</strong>
+ for the failure class, cited for its mechanism, never as a forecast of this organisation’s losses.
+ Evidence is tagged <span class="tag tag-v">Verified</span> (observed in source) or
+ <span class="tag tag-i">Inferred</span> (implied, not confirmed).
+</p>
+
+<!-- ####################################################################
+   EXAMPLE CARD — the required six-section pentest shape. DELETE before issuing.
+   Duplicate one <article> per finding, worst severity first.
+   Card class + chip must match severity: c-crit/c-high/c-med/c-low.
+   The .id line carries the internal cross-refs (SG-xx, I-xx, T-xx).
+   PHASE 1 report: does NOT mention Tide/TideCloak anywhere. The Tide explanation
+   is a separate opt-in companion (phase 2). Keep this report vendor-neutral.
+   #################################################################### -->
+<article class="finding c-high">
+ <header>
+  <h3>Access tokens are unbound bearer tokens — proof-of-possession is not enabled</h3>
+  <span class="sev sev-high">High</span>
+ </header>
+ <div class="body">
+  <div class="id">F-01 &middot; SG-03 &middot; I-12 &middot; T-05</div>
+  <dl>
+   <dt>Overview</dt>
+   <dd><strong>Single point of failure: the access token.</strong> Possession is sufficient — any
+    place the token passes through (browser memory, an XSS payload, a proxy or log, an uploaded
+    support file) is a full-session takeover until it expires, replayable from any machine.
+    <span class="tag tag-v">Verified</span></dd>
+
+   <dt>Description</dt>
+   <dd>What the control is, why it is absent here, and what the attacker gains. State the mechanism
+    in plain language a director can follow. State that an architectural artifact cannot be patched away — the liability exists as long as it does.</dd>
+
+   <dt>Proof of concept</dt>
+   <dd><span class="small">Static-analysis evidence — no live exploit was run. Re-runnable from the repository root.</span>
+    <div class="poc">src/api/client.ts:17
+ config.headers.Authorization = `Bearer ${token}`;  // no proof-of-possession header
+
+$ grep -rni "dpop|cnf|jkt" src/  # → no matches (server never checks)</div></dd>
+
+   <dt>Business impact</dt>
+   <dd>For an architectural / concentrated-trust finding, frame it as an inherent liability + historical
+    breach + average cost — no vendor named. Example: <em>Because the token is an unbound bearer
+    credential, the application is inherently exposed to replay — this is not a bug to patch; the
+    liability exists as long as possession alone grants access. It has played out in history
+    (<strong>BP-KEY-05, CircleCI</strong> — a stolen token replayed remotely, every customer forced to
+    rotate every secret). Breaches of this class cost, on average, <strong>USD&nbsp;$4.44M</strong>
+    (IBM Cost of a Data Breach 2025).</em> Put the average cost on EVERY finding (pick the sector
+    figure); cite the breach for the mechanism, never its one-off total for the cost. For a
+    coding/config finding, give the impact, a relatable breach if one fits, the average cost, and the
+    real fix. <strong>Do not mention Tide/TideCloak in this report</strong> — that is the phase-2
+    companion.</dd>
+
+   <dt>Standards &amp; mappings</dt>
+   <dd>
+    <span class="mapchip owasp">OWASP A07 Authentication Failures</span>
+    <span class="mapchip">CWE-294 Authentication Bypass by Capture-replay</span>
+    <span class="mapchip">RFC 9449</span>
+    <span class="mapchip">BP-KEY-05</span></dd>
+  </dl>
+ </div>
+</article>
+<!-- ################## END EXAMPLE CARD ################## -->
+
+<!-- =================== 5. BLAST RADIUS =================== -->
+<h2 class="pagebreak">5. Breach blast radius</h2>
+
+<p>What a full compromise of the application environment yields today, versus after remediation.</p>
+
+<div class="avoid">
+ <div>
+  <h4>Exposed today</h4>
+  <ul>{{EXPOSED_LIST}}</ul>
+ </div>
+</div>
+<h2 class="pagebreak">6. Appendix</h2>
+
+<h3>6.1 Severity summary — grouped by OWASP Top 10:2025</h3>
+<div class="tbl-wrap">
+<table>
+ <thead>
+  <tr><th style="width:12mm">ID</th><th>Finding</th><th style="width:24mm">CWE</th><th style="width:20mm">Severity</th><th style="width:28mm">Precedent</th></tr>
+ </thead>
+ <!-- Group rows under a full-width category header per OWASP category present, worst category first.
+    Category header row:
+     <tr><td colspan="6" style="background:var(--wash);font-weight:640;">A0X — Category name <span class="small" style="font-weight:400;">(N)</span></td></tr>
+    Then one row per finding in that category. {{SEVERITY_ROWS}} = the whole grouped body.
+    Category header row uses colspan="5" (ID, Finding, CWE, Severity, Precedent). -->
+ <tbody>{{SEVERITY_ROWS}}</tbody>
+</table>
+</div>
+<p class="small">Findings grouped by OWASP Top 10:2025 category, worst category first. Severity is rated
+against the current build. CWE follows the list published for each OWASP category. The
+precedent column is what makes each row checkable rather than asserted; internal <code>SG-xx</code>/<code>BP-xx</code>
+identifiers are cross-references to the review methodology.</p>
+
+<h3>6.2 Precedents cited</h3>
+<div class="tbl-wrap">
+<table>
+ <thead><tr><th style="width:26mm">ID</th><th>Incident</th><th style="width:24mm">Confidence</th><th>Source</th></tr></thead>
+ <tbody>{{PRECEDENT_ROWS}}</tbody>
+</table>
+</div>
+<p class="small">Confidence reflects source quality: <strong>High</strong> — multiple primary sources
+(regulator filings, SEC 8-K, government reports). <strong>Medium</strong> — secondary reporting.
+<strong>Low</strong> — contested or attacker-claimed figures, flagged in text wherever used.</p>
+
+<h3>6.3 Verification commands</h3>
+<p class="small">Commands used to establish the findings above, for independent re-execution.</p>
+<pre style="font-family:'Cascadia Mono',Consolas,monospace;font-size:8.5pt;background:var(--wash);border:1px solid var(--rule-soft);padding:.8em;white-space:pre-wrap;word-break:break-word;">{{VERIFICATION_COMMANDS}}</pre>
+
+<footer class="doc small">
+ <p><strong>Scope.</strong> {{LIMITATIONS}} Verified findings were observed directly in source; Inferred findings were derived from static inspection and not confirmed against a running system.</p>
+ <p>{{TARGET_NAME}} &middot; {{DATE}} &middot; {{CLASSIFICATION}}</p>
+</footer>
+
+</div><!-- /.sheet -->
+</body>
+</html>

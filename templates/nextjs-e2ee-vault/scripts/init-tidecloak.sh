@@ -171,12 +171,23 @@ curl -s -X POST "$TIDECLOAK_URL/admin/realms/$REALM_NAME/vendorResources/setUpTi
   --data-urlencode "email=$ADMIN_EMAIL" \
   --data-urlencode "isRagnarokEnabled=true" > /dev/null
 
+# Stamp iga.attestor=tide on the realm BEFORE enabling IGA. Required so IGA
+# comes up in Tide (cryptographic) governance mode rather than Tideless.
+echo "==> Stamping iga.attestor=tide..."
+TOKEN="$(get_token)"
+REALM_REP=$(curl -s "$TIDECLOAK_URL/admin/realms/$REALM_NAME" -H "Authorization: Bearer $TOKEN")
+UPDATED_REALM=$(echo "$REALM_REP" | jq '.attributes = ((.attributes // {}) + {"iga.attestor":"tide"})')
+curl -s -X PUT "$TIDECLOAK_URL/admin/realms/$REALM_NAME" \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  --data-binary "$UPDATED_REALM" > /dev/null
+
 echo "==> Enabling IGA..."
 TOKEN="$(get_token)"
 curl -s -X POST "$TIDECLOAK_URL/admin/realms/$REALM_NAME/tide-admin/toggle-iga" \
   -H "Authorization: Bearer $TOKEN" \
-  -H "Content-Type: application/x-www-form-urlencoded" \
-  --data-urlencode "isIGAEnabled=true" > /dev/null
+  -H "Content-Type: application/json" \
+  -d '{"enabled":true}' > /dev/null
 
 # --- Step 6: Approve client change requests ---
 echo "==> Approving client change requests..."
@@ -189,7 +200,7 @@ TOKEN="$(get_token)"
 curl -s -X POST "$TIDECLOAK_URL/admin/realms/$REALM_NAME/users" \
   -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
-  -d "{\"username\":\"admin\",\"email\":\"$ADMIN_EMAIL\",\"enabled\":true}"
+  -d "{\"username\":\"admin\",\"email\":\"$ADMIN_EMAIL\",\"firstName\":\"Admin\",\"lastName\":\"User\",\"enabled\":true,\"emailVerified\":false,\"attributes\":{\"tideInvitable\":[\"true\"]}}"
 
 # Approve user creation change request before proceeding
 echo "==> Approving user change requests..."
@@ -205,31 +216,9 @@ if [ -z "$USER_ID" ] || [ "$USER_ID" = "null" ]; then
   exit 1
 fi
 
-# --- Step 7b: Assign tide-realm-admin role ---
-echo "==> Assigning tide-realm-admin role..."
-TOKEN="$(get_token)"
-CLIENT_UUID=$(curl -s "$TIDECLOAK_URL/admin/realms/$REALM_NAME/clients?clientId=realm-management" \
-  -H "Authorization: Bearer $TOKEN" | jq -r '.[0].id')
-
-if [ -z "$CLIENT_UUID" ] || [ "$CLIENT_UUID" = "null" ]; then
-  echo "ERROR: realm-management client not found."
-  exit 1
-fi
-
-ROLE_JSON=$(curl -s "$TIDECLOAK_URL/admin/realms/$REALM_NAME/clients/$CLIENT_UUID/roles/tide-realm-admin" \
-  -H "Authorization: Bearer $TOKEN")
-
-# Verify we got a valid role, not an error
-if echo "$ROLE_JSON" | jq -e '.error' > /dev/null 2>&1; then
-  echo "ERROR: tide-realm-admin role not found: $ROLE_JSON"
-  exit 1
-fi
-
-TOKEN="$(get_token)"
-curl -s -X POST "$TIDECLOAK_URL/admin/realms/$REALM_NAME/users/$USER_ID/role-mappings/clients/$CLIENT_UUID" \
-  -H "Authorization: Bearer $TOKEN" \
-  -H "Content-Type: application/json" \
-  -d "[$ROLE_JSON]"
+# NOTE: tide-realm-admin is granted LAST (after enrollment + signed IdP settings),
+# because committing that grant flips the realm firstAdmin -> multiAdmin. No
+# server-driven governed write may run after the flip. See Step 11b below.
 
 # --- Step 8: Generate invite link ---
 echo "==> Generating invite link..."
@@ -263,18 +252,53 @@ sleep 2
 approve_and_commit users
 approve_and_commit roles
 
-# --- Step 11: Update CustomAdminUIDomain ---
-echo "==> Configuring CustomAdminUIDomain..."
+# --- Step 11: Point the tide IdP at this realm's console origin, then sign it ---
+# CustomAdminUIDomain must be the TideCloak console origin for THIS realm, not
+# the app URL. sign-idp-settings needs healthy ORKs. Both run while still
+# firstAdmin (before the grant flip below).
+echo "==> Configuring CustomAdminUIDomain (console origin) + signing IdP settings..."
+TIDE_CONSOLE_ORIGIN="$TIDECLOAK_URL/realms/$REALM_NAME/tide-console/"
 TOKEN="$(get_token)"
 INST=$(curl -s "$TIDECLOAK_URL/admin/realms/$REALM_NAME/identity-provider/instances/tide" \
   -H "Authorization: Bearer $TOKEN")
-UPDATED=$(echo "$INST" | jq --arg d "$CLIENT_APP_URL" '.config.CustomAdminUIDomain=$d')
+UPDATED=$(echo "$INST" | jq --arg d "$TIDE_CONSOLE_ORIGIN" '.config.CustomAdminUIDomain=$d')
 curl -s -X PUT "$TIDECLOAK_URL/admin/realms/$REALM_NAME/identity-provider/instances/tide" \
   -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" -d "$UPDATED" > /dev/null
 
 curl -s -X POST "$TIDECLOAK_URL/admin/realms/$REALM_NAME/vendorResources/sign-idp-settings" \
   -H "Authorization: Bearer $TOKEN" > /dev/null
+
+# --- Step 11b: Grant tide-realm-admin LAST, then final drain (flips to multiAdmin) ---
+echo "==> Granting tide-realm-admin to the enrolled admin..."
+TOKEN="$(get_token)"
+RM_UUID=$(curl -s "$TIDECLOAK_URL/admin/realms/$REALM_NAME/clients?clientId=realm-management" \
+  -H "Authorization: Bearer $TOKEN" | jq -r '.[0].id')
+
+if [ -z "$RM_UUID" ] || [ "$RM_UUID" = "null" ]; then
+  echo "ERROR: realm-management client not found."
+  exit 1
+fi
+
+ROLE_JSON=$(curl -s "$TIDECLOAK_URL/admin/realms/$REALM_NAME/clients/$RM_UUID/roles/tide-realm-admin" \
+  -H "Authorization: Bearer $TOKEN")
+
+if echo "$ROLE_JSON" | jq -e '.error' > /dev/null 2>&1; then
+  echo "ERROR: tide-realm-admin role not found: $ROLE_JSON"
+  exit 1
+fi
+
+TOKEN="$(get_token)"
+curl -s -X POST "$TIDECLOAK_URL/admin/realms/$REALM_NAME/users/$USER_ID/role-mappings/clients/$RM_UUID" \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d "[$ROLE_JSON]" > /dev/null
+
+# Final drain: commits GRANT_ROLES and flips firstAdmin -> multiAdmin.
+# No governed write may run after this point.
+echo "==> Final drain (commit grant + firstAdmin -> multiAdmin flip)..."
+sleep 2
+approve_and_commit roles
 
 # --- Step 12: Export adapter JSON ---
 echo "==> Exporting adapter config..."
