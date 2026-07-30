@@ -513,7 +513,24 @@ No application-level max payload size **VERIFIED** (vendor confirmation, GAP-013
 
 ## I-12: DPoP Token Binding (Bidirectional Lockstep)
 
-**Rule**: DPoP is **ENABLED and ENFORCED by default** in the TideCloak SDK. `useDPoP` defaults to `{ mode: 'strict' }` in `IAMService` — it is opt-OUT, not opt-in. Disabling it requires setting `useDPoP: false` (or `{ mode: 'auto' }`) explicitly, and in strict mode init fails if the realm does not advertise DPoP support. **VERIFIED** (`tidecloak-js: packages/tidecloak-js/src/IAMService.js` — "DPoP is enabled and ENFORCED by default across all TideCloak SDKs").
+**Rule**: DPoP is **Tide best practice and the only recommended configuration**. Every Tide application must enable and enforce it in **bidirectional lockstep** — client proofs *and* server-side verification. Running without DPoP is **not a supported configuration**; unbound bearer tokens are a finding (SG-03, severity HIGH), never a valid choice. Do not present "DPoP off" as an option, and do not describe a deployment without it as merely under-configured — it deviates from the recommended architecture.
+
+> ⚠️ **The SDK not defaulting it on is a trap, not a licence.** DPoP-off is still wrong even where the SDK does not turn it on for you — you must set it explicitly.
+>
+> Earlier pack text stated DPoP is "ENABLED and ENFORCED by default … opt-OUT, not opt-in", citing `packages/tidecloak-js/src/IAMService.js`. **That does not hold for `@tidecloak/js` / `@tidecloak/react` 0.13.27**, verified against an installed copy:
+> - `js/dist/cjs/lib/tidecloak.js` assigns `this.useDPoP` only inside `if (initOptions.useDPoP)` — no default.
+> - `js/dist/cjs/src/IAMService.js` initialises DPoP only `if (this._config?.useDPoP)` — no default.
+> - No `mode: 'strict'` default exists anywhere in the installed package.
+>
+> **In 0.13.27, omitting `useDPoP` yields plain bearer tokens with no error and no warning** — the app works and the binding simply is not there. This makes the deviation silent, which is exactly why it must be checked explicitly rather than assumed. "The SDK does it for us" is an unverified claim in every review.
+>
+> Confirm it is actually set, on both halves:
+> ```bash
+> grep -rn "useDPoP" src/                                         # must be present, mode: 'strict'
+> grep -n "useDPoP" node_modules/@tidecloak/js/dist/cjs/lib/tidecloak.js
+> grep -rn "dpop.bound.access.tokens" .                           # server/realm side
+> ```
+> **VERIFIED** against @tidecloak/js 0.13.27 (2026-07-22). Whatever a given SDK version defaults to, the recommendation is unchanged: DPoP on, always.
 
 **Server/client must agree (lockstep)**:
 - **Server-side** (realm template): `"dpop.bound.access.tokens": "true"` on the OIDC client, and the realm must advertise `dpop_signing_alg_values_supported`. Because the client defaults to strict, a realm that does not advertise DPoP makes SDK init fail.

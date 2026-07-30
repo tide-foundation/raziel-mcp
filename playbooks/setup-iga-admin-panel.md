@@ -43,7 +43,7 @@ Example: `http://localhost:8080/admin/realms/myrealm`
 
 The consolidated IGA REST surface is rooted at `/admin/realms/{realm}/iga` (server class `IgaAdminResource`). Change requests live under `/iga/change-requests`.
 
-> **Legacy bootstrap-compat surface.** The canonical bootstrap script (`localtest/init/init_tidecloak.sh`) and the `tidecloak-js` `AdminAPI` still call an older `/tide-admin/change-set/{type}/requests`, `/tide-admin/change-set/sign`, and `/tide-admin/change-set/commit` surface. That path still exists for backward compatibility and is fine for scripted bootstrap approval, but the `/iga/*` surface documented below is the current API for a live admin panel. Do not mix the two.
+> **Legacy `change-set` surface — do not use for new scripted provisioning.** The `tidecloak-js` `AdminAPI` client (`packages/tidecloak-js/src/AdminAPI.js`) still targets the older `/tide-admin/change-set/{type}/requests`, `/tide-admin/change-set/sign`, `/tide-admin/change-set/commit` surface (SDK not yet migrated). **However, the current `@tidecloak/create-nextjs` scaffolder (`tcinit.sh`) has been rewritten OFF that path onto the native `/iga/change-requests` surface**, and the legacy `change-set/{type}/sign|commit` endpoints 404 on current iga-core. New scripted bootstrap/provisioning MUST use `/iga/change-requests` (list `?status=PENDING` -> `POST .../{id}/approve` with body `{}`, which records and, at firstAdmin threshold-1, auto-commits). The `/iga/*` surface documented below is the current API for both scripted bootstrap and a live admin panel. Do not mix the two.
 
 ---
 

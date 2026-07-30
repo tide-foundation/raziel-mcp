@@ -174,13 +174,13 @@ Replace `REALM_NAME` and `CLIENT_NAME` with your values. Replace `CLIENT_APP_URL
           }
         },
         {
-          "name": "Tide IGA Role Mapper",
+          "name": "audience (self): CLIENT_NAME",
           "protocol": "openid-connect",
-          "protocolMapper": "tide-roles-mapper",
-          "consentRequired": false,
+          "protocolMapper": "oidc-audience-mapper",
           "config": {
-            "lightweight.claim": "true",
-            "access.token.claim": "true"
+            "included.client.audience": "CLIENT_NAME",
+            "access.token.claim": "true",
+            "id.token.claim": "false"
           }
         },
         {
@@ -367,10 +367,19 @@ curl -s -X POST "$TIDECLOAK_URL/admin/realms/$REALM_NAME/vendorResources/setUpTi
   --data-urlencode "email=admin@yourorg.com" \
   --data-urlencode "isRagnarokEnabled=true"
 
+# Stamp iga.attestor=tide on the realm BEFORE enabling IGA so governance comes
+# up in Tide (cryptographic) mode rather than Tideless.
+REALM_REP=$(curl -s "$TIDECLOAK_URL/admin/realms/$REALM_NAME" -H "Authorization: Bearer $TOKEN")
+UPDATED_REALM=$(echo "$REALM_REP" | jq '.attributes = ((.attributes // {}) + {"iga.attestor":"tide"})')
+curl -s -X PUT "$TIDECLOAK_URL/admin/realms/$REALM_NAME" \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  --data-binary "$UPDATED_REALM"
+
 curl -s -X POST "$TIDECLOAK_URL/admin/realms/$REALM_NAME/tide-admin/toggle-iga" \
   -H "Authorization: Bearer $TOKEN" \
-  -H "Content-Type: application/x-www-form-urlencoded" \
-  --data-urlencode "isIGAEnabled=true"
+  -H "Content-Type: application/json" \
+  -d '{"enabled":true}'
 
 # 5. Auto-approve change requests created during realm setup.
 #    Uses the current /iga/change-requests/... surface (replaces the legacy
@@ -405,18 +414,24 @@ approve_all_pending() {
 
 approve_all_pending
 
-# 6. Create admin user
+# 6. Create admin user. tideInvitable + emailVerified:false mark the user as
+#    pending Tide enrollment (the link-tide-account required action).
 TOKEN="$(get_token)"
 curl -s -X POST "$TIDECLOAK_URL/admin/realms/$REALM_NAME/users" \
   -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
-  -d '{"username":"admin","email":"admin@yourorg.com","enabled":true}'
+  -d '{"username":"admin","email":"admin@yourorg.com","firstName":"Admin","lastName":"User","enabled":true,"emailVerified":false,"attributes":{"tideInvitable":["true"]}}'
 
 # 6b. Approve user creation (user is not queryable until committed with IGA enabled)
 sleep 2
 approve_all_pending
 
 # 6c. Assign tide-realm-admin role
+# ORDERING: committing this grant flips the realm firstAdmin -> multiAdmin, after
+# which no server-driven governed write may run. The canonical scaffolder grants
+# tide-realm-admin LAST — after enrollment (step 8) and after the IdP settings are
+# re-signed (step 10) — then does a final drain. For a fully firstAdmin-safe run,
+# move this grant to after step 10 and add a final approve_all_pending.
 TOKEN="$(get_token)"
 USER_ID=$(curl -s -X GET "$TIDECLOAK_URL/admin/realms/$REALM_NAME/users?username=admin" \
   -H "Authorization: Bearer $TOKEN" | jq -r '.[0].id')
@@ -467,14 +482,19 @@ done
 sleep 2
 approve_all_pending
 
-# 10. Update CustomAdminUIDomain for enclave approval popups
-#     CustomAdminUIDomain is OPTIONAL and APP-SPECIFIC: only needed when a separate
-#     application (not the built-in Admin Console) hosts the change-set approval UI.
-#     sign-idp-settings is ALWAYS required after any Tide IDP config change.
+# 10. Point the tide IdP at THIS realm's TideCloak console origin, then sign it.
+#     CustomAdminUIDomain must be the TideCloak console origin for this realm
+#     ({base}/realms/{realm}/tide-console/) so enclave approval popups target the
+#     built-in console. sign-idp-settings is ALWAYS required after any Tide IDP
+#     config change and needs healthy ORKs.
+#     ORDERING: do this BEFORE granting tide-realm-admin (step below). Committing
+#     that grant flips the realm firstAdmin -> multiAdmin, after which no
+#     server-driven governed write may run.
 TOKEN="$(get_token)"
+TIDE_CONSOLE_ORIGIN="$TIDECLOAK_URL/realms/$REALM_NAME/tide-console/"
 INST=$(curl -s -X GET "$TIDECLOAK_URL/admin/realms/$REALM_NAME/identity-provider/instances/tide" \
   -H "Authorization: Bearer $TOKEN")
-UPDATED=$(echo "$INST" | jq --arg d "$CLIENT_APP_URL" '.config.CustomAdminUIDomain=$d')
+UPDATED=$(echo "$INST" | jq --arg d "$TIDE_CONSOLE_ORIGIN" '.config.CustomAdminUIDomain=$d')
 curl -s -X PUT "$TIDECLOAK_URL/admin/realms/$REALM_NAME/identity-provider/instances/tide" \
   -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" -d "$UPDATED"

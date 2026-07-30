@@ -42,7 +42,8 @@
       "publicClient": true,
       "fullScopeAllowed": true,
       "attributes": {
-        "dpop.bound.access.tokens": "true"
+        "dpop.bound.access.tokens": "true",
+        "tide.createdViaConsole": "true"
       },
       "protocolMappers": [
         {
@@ -62,13 +63,13 @@
           }
         },
         {
-          "name": "Tide IGA Role Mapper",
+          "name": "audience (self): CLIENT_NAME",
           "protocol": "openid-connect",
-          "protocolMapper": "tide-roles-mapper",
-          "consentRequired": false,
+          "protocolMapper": "oidc-audience-mapper",
           "config": {
-            "lightweight.claim": "true",
-            "access.token.claim": "true"
+            "included.client.audience": "CLIENT_NAME",
+            "access.token.claim": "true",
+            "id.token.claim": "false"
           }
         },
         {

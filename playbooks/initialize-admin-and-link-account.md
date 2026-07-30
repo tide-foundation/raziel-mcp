@@ -43,8 +43,11 @@ TOKEN="$(get_token)"
 curl -s -X POST "$TIDECLOAK_URL/admin/realms/$REALM_NAME/users" \
   -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
-  -d "{\"username\":\"admin\",\"email\":\"$ADMIN_EMAIL\",\"enabled\":true}"
+  -d "{\"username\":\"admin\",\"email\":\"$ADMIN_EMAIL\",\"firstName\":\"Admin\",\"lastName\":\"User\",\"enabled\":true,\"emailVerified\":false,\"attributes\":{\"tideInvitable\":[\"true\"]}}"
 ```
+
+`tideInvitable:["true"]` + `emailVerified:false` mark the user as pending Tide
+enrollment (the `link-tide-account-action` required action).
 
 ### Step 1b: Approve user creation change request (if any)
 
@@ -62,6 +65,13 @@ approve_and_commit users
 ### Step 2: Assign tide-realm-admin role
 
 `tide-realm-admin` is a **client role** on the `realm-management` client, not a realm role.
+
+> **ORDERING (important).** Committing this grant flips the realm
+> firstAdmin -> multiAdmin, after which no server-driven governed write may run.
+> In a full provisioning run, perform the grant + its commit LAST: after the admin
+> has enrolled (Step 4) and after the IdP settings are re-signed (Step 6). The
+> canonical scaffolder order is: create user -> drain -> mint invite -> enroll ->
+> drain -> sign IdP settings -> grant tide-realm-admin -> final drain (flip).
 
 ```bash
 TOKEN="$(get_token)"
@@ -163,15 +173,18 @@ approve_and_commit clients
 
 **Sweep all types.** Account linking generates a user change request for the `tideUserKey` attribute write. The IGA toggle and setUpTideRealm may also have generated accumulated client change requests. Approve all three types here. VERIFIED (atproto-learnings L-06, L-07).
 
-### Step 6: Update CustomAdminUIDomain
+### Step 6: Point the tide IdP at the console origin and sign IdP settings
 
-Required for enclave approval popups to work from the app origin.
+Set `CustomAdminUIDomain` to THIS realm's TideCloak console origin
+(`{base}/realms/{realm}/tide-console/`) so enclave approval popups target the
+built-in console, then re-sign. `sign-idp-settings` needs healthy ORKs.
 
 ```bash
 TOKEN="$(get_token)"
+TIDE_CONSOLE_ORIGIN="$TIDECLOAK_URL/realms/$REALM_NAME/tide-console/"
 INST=$(curl -s "$TIDECLOAK_URL/admin/realms/$REALM_NAME/identity-provider/instances/tide" \
   -H "Authorization: Bearer $TOKEN")
-UPDATED=$(echo "$INST" | jq --arg d "$CLIENT_APP_URL" '.config.CustomAdminUIDomain=$d')
+UPDATED=$(echo "$INST" | jq --arg d "$TIDE_CONSOLE_ORIGIN" '.config.CustomAdminUIDomain=$d')
 curl -s -X PUT "$TIDECLOAK_URL/admin/realms/$REALM_NAME/identity-provider/instances/tide" \
   -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" -d "$UPDATED"

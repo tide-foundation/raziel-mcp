@@ -42,12 +42,17 @@
    ```
    **Content-Type**: `application/x-www-form-urlencoded`, NOT JSON.
 
-5. Enable IGA:
+5. Enable IGA (stamp `iga.attestor=tide` first so governance comes up in Tide mode):
    ```bash
+   REALM_REP=$(curl -s "http://localhost:8080/admin/realms/$REALM" -H "Authorization: Bearer $TOKEN")
+   echo "$REALM_REP" | jq '.attributes = ((.attributes // {}) + {"iga.attestor":"tide"})' \
+     | curl -s -X PUT "http://localhost:8080/admin/realms/$REALM" \
+       -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" --data-binary @-
+
    curl -s -X POST "http://localhost:8080/admin/realms/$REALM/tide-admin/toggle-iga" \
      -H "Authorization: Bearer $TOKEN" \
-     -H "Content-Type: application/x-www-form-urlencoded" \
-     -d "isIGAEnabled=true"
+     -H "Content-Type: application/json" \
+     -d '{"enabled":true}'
    ```
 
 6. Approve/commit initial change requests (current `/iga/change-requests/...` surface; see `canon/iga-change-requests-api.md`):
