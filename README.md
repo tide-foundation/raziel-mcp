@@ -111,6 +111,21 @@ Add to `~/.codex/config.json`:
 
 Note: Codex CLI currently supports stdio-based MCP servers only — use the npx command.
 
+### Lovable
+
+Lovable's build agent can use Raziel through a **Custom MCP** connector (available on all plans). In your Lovable project, open **Connectors → Custom MCP** (the card at the bottom) and add:
+
+- **Server name:** `Raziel`
+- **Server URL:** `https://mcp.tide.org/mcp`
+- **Authentication:** `No authentication`
+
+Then tell the agent to use it — e.g. *"Use the Raziel connector to pull the TideCloak playbook before writing any auth code."*
+
+Two things that trip people up:
+
+- **You attach it, not the agent.** Lovable's agent can't add connectors and won't find Tide in the prebuilt catalog (Tide isn't a catalog partner). Add it yourself in the **Connectors** panel, then point the agent at it — otherwise it will say it "has no way to connect."
+- **It's a build-time connector.** It gives Lovable's agent verified Tide knowledge while it generates your app; it does not run inside the published app. You still wire TideCloak into the generated app the normal way.
+
 ## What your AI can do with this
 
 Once connected, your AI assistant can:
