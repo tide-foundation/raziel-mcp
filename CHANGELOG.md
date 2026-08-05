@@ -2,6 +2,18 @@
 
 All notable changes to `@tideorg/mcp` (the Tide Agent Pack) are documented here.
 
+## 1.9.5 — 2026-07-31
+
+- **Usage geography (hosted endpoint only)** — `mcp.tide.org` now records aggregate
+  request telemetry with the caller's approximate location (country/city, via Azure
+  Application Insights) so we can see where the service is used. Local/`npx` and
+  self-hosted runs collect **nothing** unless `APPLICATIONINSIGHTS_CONNECTION_STRING`
+  is set. Request bodies and tool arguments are never captured; the raw IP is masked
+  to coarse geography. **`PRIVACY.md` updated** to disclose this — review it.
+- **`deploy.sh` deploys the versioned image tag** — Azure Container Apps won't
+  re-pull an unchanged `:latest`, so deploying `:latest` silently no-oped (three
+  deploys, zero rollouts). Deploying `tideorg/mcp:$VERSION` makes every deploy roll.
+
 ## 1.9.4 — 2026-07-30
 
 Release-hardening — fixes the exact failure modes that made shipping 1.9.3 bumpy.

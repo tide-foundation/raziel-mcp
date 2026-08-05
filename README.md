@@ -212,7 +212,7 @@ No TideCloak instance needed to start — the agent will guide you through setup
 
 ## Privacy
 
-The MCP server is **read-only** and collects no data — no accounts, no telemetry, no storage, no third-party sharing. Tool arguments are used transiently in memory to select bundled guidance. See [PRIVACY.md](PRIVACY.md).
+The MCP server is **read-only**. Run locally (`npx`), it collects nothing — no accounts, no telemetry, no storage. The hosted `mcp.tide.org` endpoint records aggregate usage geography (approximate location only, never request content or tool arguments) to see where it's used. Full details in [PRIVACY.md](PRIVACY.md).
 
 ## Links
 
