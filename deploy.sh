@@ -9,12 +9,13 @@ RESOURCE_GROUP="tide-mcp-rg"
 LOCATION="australiaeast"
 ENVIRONMENT="tide-mcp-env"
 APP_NAME="tide-mcp"
-IMAGE="tideorg/mcp:latest"
+VERSION=$(node -p "require('./package.json').version")
+IMAGE="tideorg/mcp:$VERSION"   # deploy the VERSIONED tag: Azure Container Apps won't re-pull an unchanged :latest, so deploying :latest silently no-ops
 
-echo "=== Building and pushing Docker image ==="
-docker build -t tideorg/mcp:latest -t tideorg/mcp:$(node -p "require('./package.json').version") .
+echo "=== Building and pushing Docker image ($VERSION) ==="
+docker build -t tideorg/mcp:latest -t "$IMAGE" .
 docker push tideorg/mcp:latest
-docker push tideorg/mcp:$(node -p "require('./package.json').version")
+docker push "$IMAGE"
 
 echo "=== Deploying to Azure Container Apps (${LOCATION}) ==="
 
