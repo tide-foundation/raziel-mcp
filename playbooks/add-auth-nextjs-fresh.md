@@ -83,7 +83,7 @@ ls -la app/ 2>/dev/null && echo "App Router" || echo "Pages Router"
 npm install @tidecloak/nextjs
 ```
 
-**Verify version**: `@tidecloak/*` packages are currently at `0.14.11` (run `npm view @tidecloak/nextjs version` to confirm/pin). Do not assume `1.0.0`.
+**Resolve the version, do not hardcode it**: run `npm view @tidecloak/nextjs version` and pin exactly what it returns. If npm is unreachable, use `0.14.17` (last version verified end-to-end by the pack). Never assume `1.0.0`, never use a `0.99.x` pre-release, and never install below `0.14.17`. **Match the SDK version to the TideCloak server version** — they share a numbering line, and a mismatch stales `tide_dpop_auth.html` (see T-26).
 
 **Next.js 16+ bundler**: Next.js 16 defaults to Turbopack. The Tide SDK requires webpack for `strictExportPresence = false` and `@tidecloak/react` ESM alias. Update `package.json` scripts:
 ```json
@@ -171,24 +171,73 @@ export function Providers({ children }: { children: React.ReactNode }) {
 
 **`useDPoP` goes inside the config object**, not as a separate JSX prop. The `TideCloakProvider` only accepts `config` and `children`. VERIFIED (session-002).
 
+### DPoP is ON by default — configure it or login breaks
+
+**`templates/shared/realm.json.template` sets `"dpop.bound.access.tokens": "true"` on the client.** If you bootstrapped from that template — which every pack playbook does — DPoP is **already enabled server-side**. It is not opt-in. An app that skips the client-side half does not "just work without DPoP"; it fails at the token exchange.
+
 **DPoP is a bidirectional lockstep requirement** (I-12):
-1. **Server-side**: Realm template sets client attribute `"dpop.bound.access.tokens": "true"`.
-2. **Client-side**: `useDPoP` in the config object tells the SDK to generate DPoP proofs.
-3. **Both must be set simultaneously.** Server-side without client-side → token endpoint returns 400 "DPoP proof is missing." Client-side without server-side → proofs generated but ignored.
+1. **Server-side**: the client attribute `"dpop.bound.access.tokens": "true"` (on by default from the template).
+2. **Client-side**: `useDPoP` in the config object, plus the three supporting pieces below.
+3. **Both must be set simultaneously.** Server-side without client-side → token endpoint returns **400 "DPoP proof is missing"**. Client-side without server-side → proofs generated but ignored.
 
-**`tide_dpop_auth.html` required** (when DPoP is enabled):
-- Copy `tide_dpop_auth.html` to `public/`. This file is loaded by the Tide enclave during login to prove DPoP key possession to the ORKs. **Do not modify it** — its content is integrity-checked. VERIFIED (learning-batch-004, L-07).
-- **The HTML must match the SDK version.** The only source for this file is the pack template (`templates/*/public/tide_dpop_auth.html`). It is NOT shipped inside `@tidecloak/*` npm packages. If the pack template is stale and the enclave rejects it with `Popup DPoP verification failed to load`, contact the Tide team for the updated file. VERIFIED (LEARNINGS-batch-005 L-05, LEARNINGS-batch-007 L-03).
-- The SDK requests it at `/tide_dpop/iss/<hex-issuer>/aud/<hex-client>/tide_dpop_auth.html` — a path that doesn't map to the static file in `public/`. Use `next.config.ts` `rewrites()` to map `/tide_dpop/:path*` → `/tide_dpop_auth.html`.
-- **Do NOT use a route handler** (`app/tide_dpop/[...path]/route.ts`). Next.js 16 dev server injects its own hash-based CSP on route handler responses, overriding `script-src 'unsafe-inline'`. The DPoP page's inline script gets blocked. Static files served via rewrites are not affected. VERIFIED (LEARNINGS-batch-005 L-04).
-- **Do NOT validate issuer/client hex params** in the handler. The enclave already integrity-checks the HTML. Server-side validation that fails (config loading, path resolution) returns 400 before the HTML loads, killing the popup. VERIFIED (LEARNINGS-batch-005 L-03).
-- Set CSP via `next.config.ts` `headers()` targeting `/tide_dpop/:path*`: `Content-Security-Policy: default-src 'self'; script-src 'unsafe-inline'` and `Allow-CSP-From: *`.
-- Without this file and rewrite, DPoP login fails with: `Tide user did not provided a dpop bound token but a dpop cnf claim was found in requested token`.
+All **four** pieces are required together. Missing any one breaks login, usually with a misleading error:
 
-**`secureFetch` usage rules** (when `useDPoP` is enabled):
-- Use `IAMService.secureFetch` from `@tidecloak/js` with `await IAMService.getToken()` for the managed token. **`getToken()` returns a Promise** — you must `await` it. Without `await`, the Authorization header becomes `Bearer [object Promise]` and the server rejects with `JWSInvalid: Invalid Compact JWS`. VERIFIED (LEARNINGS-batch-005 L-07).
-- `secureFetch` requires **absolute URLs** — relative paths throw. Use `\`\${window.location.origin}/api/vault\``.
-- **Recommended**: Create an `appFetch` wrapper. See canon/anti-patterns.md for the pattern.
+| # | Piece | Where |
+|---|---|---|
+| 1 | `useDPoP: { mode: 'strict', alg: 'ES256' }` **inside** `config` | `app/providers.tsx` |
+| 2 | `tide_dpop_auth.html` | `public/` |
+| 3 | rewrite `/tide_dpop/:path*` → `/tide_dpop_auth.html` | `next.config.ts` |
+| 4 | CSP + `Allow-CSP-From` on `/tide_dpop/:path*` | `next.config.ts` |
+
+**`tide_dpop_auth.html`:**
+- Copy it from a pack template (`templates/*/public/tide_dpop_auth.html`) into `public/`. The Tide enclave loads it during login to prove DPoP key possession to the ORKs. **Do not modify it** — its content is integrity-checked. VERIFIED (learning-batch-004, L-07).
+- **The HTML must match the SDK version.** It is NOT shipped inside the `@tidecloak/*` npm packages, so upgrading the SDK does not update it — a mismatch is a real failure mode after a version bump. The only sources are the pack template and the Tide team. If the enclave rejects it (`Popup DPoP verification failed to load`), or the token exchange returns an unexplained **500** after an SDK upgrade, suspect this file first. VERIFIED (LEARNINGS-batch-005 L-05, LEARNINGS-batch-007 L-03).
+- The enclave requests it at `/tide_dpop/iss/<hex-issuer>/aud/<hex-client>/tide_dpop_auth.html`, which does not map to the static file — hence the rewrite. Note the **SDK itself never references this path**; the enclave fetches it from your origin, so grepping the SDK for `tide_dpop` finds nothing and proves nothing.
+- **Do NOT use a route handler** (`app/tide_dpop/[...path]/route.ts`). Next.js injects a hash-based CSP on route-handler responses that blocks the page's inline script. Static files via rewrites are unaffected. VERIFIED (LEARNINGS-batch-005 L-04).
+- **Do NOT validate the issuer/client hex params.** The enclave already integrity-checks the HTML; server-side validation that fails returns 400 before the HTML loads, killing the popup. VERIFIED (LEARNINGS-batch-005 L-03).
+
+**CSP rule order matters — put the `/tide_dpop` rule LAST.** Both rules match `/tide_dpop/*`, and for a given header key the **last matching rule wins**. A generic `/:path*` CSP placed *after* the DPoP rule silently overrides it. VERIFIED 2026-08-06.
+
+```typescript
+// next.config.ts
+async rewrites() {
+  return [{ source: '/tide_dpop/:path*', destination: '/tide_dpop_auth.html' }];
+},
+async headers() {
+  return [
+    { // generic app CSP — SWE iframe may load from any ORK the user re-homes to
+      source: '/:path*',
+      headers: [{ key: 'Content-Security-Policy', value: "frame-src 'self' *" }],
+    },
+    { // MUST come after the generic rule or it gets overridden
+      source: '/tide_dpop/:path*',
+      headers: [
+        { key: 'Content-Security-Policy', value: "default-src 'self'; script-src 'unsafe-inline'" },
+        { key: 'Allow-CSP-From', value: '*' },
+      ],
+    },
+  ];
+},
+```
+
+**Verify all four before debugging anything else:**
+
+```bash
+grep -q "useDPoP" app/providers.tsx           && echo "1 provider OK"
+test -f public/tide_dpop_auth.html            && echo "2 page OK"
+grep -q "tide_dpop" next.config.*             && echo "3 rewrite OK"
+# 4: the DPoP-specific CSP must survive, not the generic one:
+curl -s -D - -o /dev/null "http://localhost:3000/tide_dpop/iss/a/aud/b/tide_dpop_auth.html" \
+  | grep -i "content-security-policy"
+#   want: default-src 'self'; script-src 'unsafe-inline'    (NOT frame-src 'self' *)
+```
+
+**`secureFetch` usage rules** (required once DPoP is on — a plain `fetch` with a Bearer header has no proof and is rejected):
+- `secureFetch` is available directly on the `useTideCloak()` hook, and also as `IAMService.secureFetch` from `@tidecloak/js`. VERIFIED against `@tidecloak/react` `0.14.17` types.
+- It requires **absolute URLs** — relative paths throw. Wrap it: ``const api = (p, init) => secureFetch(`${window.location.origin}${p}`, init)``.
+- If you use `IAMService.secureFetch` with a manual token, **`getToken()` returns a Promise** — you must `await` it. Without `await` the header becomes `Bearer [object Promise]` and the server rejects with `JWSInvalid: Invalid Compact JWS`. VERIFIED (LEARNINGS-batch-005 L-07).
+
+**Turning DPoP off is a governed change.** Removing `useDPoP` client-side alone does not disable it — the server still demands proofs, and login breaks with the 400. You must also flip the client attribute to `false`, which on an IGA realm is a change request. After the realm goes multiAdmin that needs a human enclave approval. Keep DPoP on unless you have a specific reason.
 
 Edit `app/layout.tsx`:
 ```typescript

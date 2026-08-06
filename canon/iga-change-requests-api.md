@@ -142,26 +142,40 @@ POST /iga-tve/tve-bundle   {"mode":"synthesize|pasted","clientId":"...","userId"
 
 ## Bootstrap pattern (FirstAdmin / Tideless — fully automatable)
 
-During bootstrap the realm is in FirstAdmin (or Tideless) mode, so `authorize` signs server-side and the whole loop is scriptable. Replace the legacy per-type `sign`+`commit` calls with: **authorize all pending → commit the ready ones, in dependency passes.**
+During bootstrap the realm is in FirstAdmin (or Tideless) mode, so `authorize` signs server-side and the whole loop is scriptable: **authorize every pending CR → commit the ready ones, in dependency passes.**
+
+> **Use the per-id form. Do NOT filter `bulk-authorize` by `actionTypeIn: ["CREATE","DELETE"]`.**
+> `CREATE` and `DELETE` are **not** action-type values. Real values are granular:
+> `CREATE_USER`, `DELETE_REALM`, `UPDATE_PROTOCOL_MAPPER`, `ADOPT_SCOPE_MAPPING`,
+> `ADOPT_DEFAULT_CLIENT_SCOPE`, `GRANT_ROLES`, …
+> That filter matches nothing and **silently authorizes zero CRs** — `summary.total: 0`
+> and a 200, so the bootstrap looks like it worked and then fails later when the
+> admin user "doesn't exist". Omitting `actionTypeIn` entirely returns **400**.
+> VERIFIED on a live instance 2026-08-04.
 
 ```bash
 # $TC = base url, $REALM = realm, get_token() mints a fresh admin token.
 approve_all_pending() {
-  local TOKEN
-  # 1. Authorize every pending CREATE/DELETE change request in one call.
-  #    FirstAdmin/Tideless: server signs with VRK / records username — no enclave.
-  TOKEN="$(get_token)"
-  curl -s -X POST "$TC/admin/realms/$REALM/iga/change-requests/bulk-authorize" \
-    -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
-    -d '{"actionTypeIn":["CREATE","DELETE"],"limit":100}' > /dev/null
-
-  # 2. Commit everything that is ready. Loop a few passes so dependent CRs
-  #    (e.g. a role must exist before its assignment) become ready and commit.
+  local TOKEN ids id ready
   for pass in 1 2 3 4 5; do
+    # 1. Authorize every pending CR individually. FirstAdmin/Tideless: the server
+    #    signs with the VRK / records the username — no enclave popup.
     TOKEN="$(get_token)"
-    local ready
+    ids=$(curl -s "$TC/admin/realms/$REALM/iga/change-requests?status=PENDING" \
+      -H "Authorization: Bearer $TOKEN" | jq -r 'if type=="array" then .[].id else empty end')
+    [ -z "$ids" ] && break
+    for id in $ids; do
+      TOKEN="$(get_token)"
+      curl -s -X POST "$TC/admin/realms/$REALM/iga/change-requests/$id/authorize" \
+        -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" -d '{}' > /dev/null
+    done
+
+    # 2. Commit everything now ready. Looping passes lets dependent CRs
+    #    (a role must exist before its assignment) become ready and commit.
+    TOKEN="$(get_token)"
     ready=$(curl -s "$TC/admin/realms/$REALM/iga/change-requests?status=PENDING" \
-      -H "Authorization: Bearer $TOKEN" | jq -r '.[] | select(.readyToCommit==true) | .id')
+      -H "Authorization: Bearer $TOKEN" \
+      | jq -r 'if type=="array" then (.[] | select(.readyToCommit==true) | .id) else empty end')
     [ -z "$ready" ] && break
     for id in $ready; do
       TOKEN="$(get_token)"
@@ -172,22 +186,33 @@ approve_all_pending() {
 }
 ```
 
-Call `approve_all_pending` at each stage that produces CRs (after client creation, after user creation, after role assignment) — the same stage points as the legacy script, but it now lists **all** pending CRs at once rather than per type.
+Call `approve_all_pending` at each stage that produces CRs (after client creation, after user creation, after role assignment).
 
-**Per-id alternative** (if you prefer not to use bulk-authorize):
+**Realm deletion is itself a governed CR.** On an IGA-enabled realm, `DELETE /admin/realms/{realm}` returns **202** with a `DELETE_REALM` change request rather than deleting. Authorize + commit it, then re-check for a 404. Disabling IGA first may return **409**, so go through the CR.
+
+**Verify, don't assume.** After a drain, assert `PENDING` is 0 — a silently-zero authorize is the failure mode this pattern exists to prevent:
 
 ```bash
-TOKEN="$(get_token)"
-for id in $(curl -s "$TC/admin/realms/$REALM/iga/change-requests?status=PENDING" \
-              -H "Authorization: Bearer $TOKEN" | jq -r '.[].id'); do
-  TOKEN="$(get_token)"
-  curl -s -X POST "$TC/admin/realms/$REALM/iga/change-requests/$id/authorize" \
-    -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" -d '{}' > /dev/null
-done
-# then the same commit-in-passes loop as above
+curl -s "$TC/admin/realms/$REALM/iga/change-requests?status=PENDING" \
+  -H "Authorization: Bearer $(get_token)" | jq 'length'   # → 0
 ```
 
-**Status of the bootstrap pattern: VERIFIED against the API spec; REQUIRES_RUNTIME_VALIDATION against a live iga-core instance.** The endpoint paths, payloads, and status codes are from the canonical `qea-iga-api.md`; the exact loop/ordering has not yet been run end-to-end here. Validate on a live instance and adjust the pass count / dependency handling if a CR stays `blocked`.
+**Status: VERIFIED end-to-end on a live instance (TideCloak 0.14.17, hosted + local, 2026-08-06).**
+
+### The automation cliff — grant `tide-realm-admin` LAST
+
+Committing the `tide-realm-admin` grant flips the realm **FirstAdmin → MultiAdmin**. From that moment the simple lane is closed forever:
+
+```
+409 MULTIADMIN_REQUIRES_APPROVAL_ENCLAVE
+"multiAdmin change requests must be approved via the approval enclave
+ (POST /iga/change-requests/{id}/approve); the simple authorize/commit path
+ cannot sign a multiAdmin change request."
+```
+
+This is the security model working: governed changes need a browser enclave signature so a stolen automation credential cannot rewrite realm config.
+
+**Do every governed write before the grant** — realm import, licensing, IGA enablement, `_tide_*` roles, client config including **all** redirect URIs and web origins, and the admin user. Grant `tide-realm-admin` last, then drain once. Anything you forget becomes a manual enclave approval in the admin console (`{base}/admin/{realm}/console/` → Change Requests) for the life of the realm.
 
 ---
 

@@ -52,7 +52,11 @@ export async function run() {
   c.ok("feature-mapping references the IGA API ref", (packRead("canon/feature-mapping.md") || "").includes("iga-change-requests-api"));
   c.ok("invariants I-10 references the IGA API ref", (packRead("canon/invariants.md") || "").includes("iga-change-requests-api"));
 
-  // 4. Bootstrap scripts use the new surface (authorize/commit via bulk-authorize), not the legacy calls.
+  // 4. Bootstrap scripts use the new /iga/change-requests surface, NOT the legacy
+  //    /tide-admin/change-set calls. They must authorize per-id: bulk-authorize with
+  //    actionTypeIn:["CREATE","DELETE"] matches no real action type (real ones are
+  //    granular — CREATE_USER, DELETE_REALM, GRANT_ROLES, ADOPT_*), so it silently
+  //    authorizes ZERO change requests and still returns 200. VERIFIED live 2026-08-06.
   const scripts = [
     "templates/nextjs-customer-portal/scripts/init-tidecloak.sh",
     "templates/nextjs-e2ee-vault/scripts/init-tidecloak.sh",
@@ -61,7 +65,14 @@ export async function run() {
   ];
   for (const s of scripts) {
     const t = packRead(s) || "";
-    c.ok(`${s} uses /iga/change-requests/bulk-authorize`, t.includes("/iga/change-requests/bulk-authorize"), "missing new-surface authorize call");
+    c.ok(`${s} authorizes change requests per-id`, t.includes("/iga/change-requests/$id/authorize"), "missing per-id authorize call");
+    c.ok(`${s} commits change requests`, t.includes("/iga/change-requests/$id/commit"), "missing commit call");
+    c.ok(`${s} avoids the no-op CREATE/DELETE actionTypeIn filter`, !t.includes('"actionTypeIn":["CREATE","DELETE"]'), "uses a filter that authorizes zero CRs");
+    // Only flag real invocations — comments legitimately mention the superseded surface.
+    const legacyCall = t.split("\n").some(
+      (ln) => ln.includes("/tide-admin/change-set/") && !ln.trimStart().startsWith("#")
+    );
+    c.ok(`${s} does not call the legacy change-set surface`, !legacyCall, "legacy change-set call present");
   }
 
   // 5. Security gap mapping is complete: SG-01 .. SG-18 all present.

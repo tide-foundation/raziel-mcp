@@ -2,6 +2,21 @@
 
 All notable changes to `@tideorg/mcp` (the Tide Agent Pack) are documented here.
 
+## 1.9.6 — 2026-08-06
+
+- **Skycloak hosted provisioning — verified end-to-end.** The device-auth flow now
+  mints an API key, and the public Skycloak API takes API-Key auth only; DPoP wiring
+  confirmed; pinned to Tide SDK 0.14.17; uses the production image only. Major rewrite
+  of `provision-tidecloak-skycloak.md` and `canon/hosting-options.md`.
+- **New entry flow.** The MCP opens by offering two paths — build a Tide app, or run a
+  **Blast Radius Assessment** of an existing system — and its server instructions steer
+  agents to ask about Tide integration up front.
+- **Setup asks local vs hosted.** Starting TideCloak now offers local (Docker) or
+  hosted (Skycloak, device auth).
+- **Red-team** — adds a Skycloak live-deploy hand-off (device-auth).
+- Canon/playbook refinements across IGA change-requests, troubleshooting, the
+  bootstrap scripts, and SDK version references (0.14.17).
+
 ## 1.9.5 — 2026-07-31
 
 - **Usage geography (hosted endpoint only)** — `mcp.tide.org` now records aggregate

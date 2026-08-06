@@ -1147,15 +1147,17 @@ PUC-092, PUC-093, PUC-094, PUC-095 in `notes/pack-update-candidates.md` planned 
 
 ## Key Dependencies
 
+> **Resolve versions at build time** — `npm view <pkg> version`. The numbers below are a 2026-08-06 snapshot; if npm is unreachable, default to `0.14.17`, and never install below it. Match the SDK version to the TideCloak server version. See `canon/version-policy.md`.
+
 | Package | Stable version | Purpose |
 |---------|---------------|---------|
-| `@tidecloak/js` | 0.14.11 | Core SDK (vanilla JS) |
-| `@tidecloak/react` | 0.14.11 | React hooks and guards |
-| `@tidecloak/nextjs` | 0.14.11 | Next.js provider and hooks |
-| `@tidecloak/verify` | 0.14.11 | Server-side JWT verification (CJS) |
-| `heimdall-tide` | 0.14.11 | Policy signing, BasicCustomRequest |
-| `@tideorg/js` | 0.14.11 | Models, Contracts (Forseti) |
-| `asgard-tide` | 0.14.11 | Vendor validation |
+| `@tidecloak/js` | 0.14.17 | Core SDK (vanilla JS) |
+| `@tidecloak/react` | 0.14.17 | React hooks and guards |
+| `@tidecloak/nextjs` | 0.14.17 | Next.js provider and hooks |
+| `@tidecloak/verify` | 0.14.17 | Server-side JWT verification (CJS) |
+| `heimdall-tide` | 0.14.17 | Policy signing, BasicCustomRequest |
+| `@tideorg/js` | 0.14.17 | Models, Contracts (Forseti) |
+| `asgard-tide` | 0.14.17 | Vendor validation |
 | `Tide.Asgard.AspNetCore.Authentication` (.NET) | 0.1.0 | ASP.NET Core JWT bearer + Token Exchange. NuGet publication unverified — consume via `<ProjectReference>` from `github.com/tide-foundation/asgard`. See [.NET / ASP.NET Core](#net--aspnet-core-via-asgard). |
 | `Tide.Asgard.Core` (.NET) | 0.1.0 | EdDSA `SignatureProvider` for `Microsoft.IdentityModel.Tokens`. Same repo, same caveat. |
 

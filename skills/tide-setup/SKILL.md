@@ -25,6 +25,7 @@ Before running any checks or writing code, resolve these branches if ambiguous:
 | Generated app vs manual bootstrap | Check for `"init"` script in `package.json` or `scripts/init-tidecloak.sh` |
 | Setup vs diagnosis | Is something broken (login hangs, roles missing)? Or does auth not exist yet? |
 | App-only integration vs full TideCloak bootstrap | Is TideCloak already running and configured, or does it need to be started? |
+| Local vs hosted TideCloak | If an instance must be started, ask the user: **local Docker** (dev/staging on this machine) or **hosted Skycloak** (managed, stable URL, device-authorization sign-in). Do not default silently — see Path 0. |
 
 If multiple paths are plausible and the repo does not resolve it, ask the user before proceeding.
 
@@ -119,7 +120,25 @@ If no scenario matches, continue with the standard detection flow below.
 
 ### Path 0: TideCloak not running (CHECK-0 fails)
 
-The user needs infrastructure before app integration. Choose the right bootstrap path:
+The user needs infrastructure before app integration. **Ask where it should run BEFORE starting any bootstrap — this is a required choice (I-17), never default silently to local.** Ask once, up front; do not deploy locally and then discover they wanted hosted, because the realm cannot be moved.
+
+> *"TideCloak isn't running yet. Where should it live?"*
+> - **Local (Docker)** — a container on this machine. Fastest loop, no account, no plan limits, and change requests stay scriptable. Best for dev and for learning. → the bootstrap chain below.
+> - **Hosted (Skycloak)** — managed, stable public URL, nothing to run or upgrade. Needed for anything others must reach. → `playbooks/provision-tidecloak-skycloak.md`.
+
+Use `AskUserQuestion` where the harness supports it. Honour the pick; fall back to **Local (Docker)** only if they decline to choose or explicitly want the quickest path.
+
+**Say this when they ask "which should I pick?"** — the honest trade, not a sales pitch:
+- Local is faster to stand up (a few minutes), has no account, no plan limits, and no per-change human approval. It is only reachable from this machine.
+- Hosted gives a stable HTTPS URL others can reach, but needs a Skycloak account, **TideCloak enabled for the workspace** (off by default in prod — a support request, and it can take a day), and a plan allowing the cluster (**trial = 1 cluster**).
+- **The wiring is identical either way.** Only `auth-server-url` in the adapter differs, so an app built against local moves to hosted by swapping one file. Starting local and migrating later is a legitimate, low-cost strategy — say so if they are blocked on hosted access.
+
+**If Hosted:** read `canon/hosting-options.md` first (trust model and honest caveats), then follow `provision-tidecloak-skycloak`. Surface these before starting, because each has bitten a real deployment:
+- **Version is load-bearing.** Use `0.14.17+`. Older versions provision happily and then fail at licensing or at the automation client.
+- **The cluster type field is `type: "tidecloak"`, not `identityPlatform`** — the latter is silently ignored and yields plain Keycloak.
+- **Plan every redirect URI and web origin now.** Granting `tide-realm-admin` flips the realm to multiAdmin, after which every config change needs a human enclave approval in the admin console.
+
+Either way the realm-bootstrap and app-wiring steps that follow are identical; only *where the instance runs* and *how you get an admin token* differ. Continue with the local bootstrap sub-path below only if the user chose Local.
 
 **If the project has an init script** (`npm run init` in package.json or `scripts/init-tidecloak.sh` exists):
 

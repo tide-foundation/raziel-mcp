@@ -1640,3 +1640,47 @@ VERIFIED (asgard `TokenExchangeService.cs:28-35` routes to stub at line 93).
 **Verification:** Decode an SPA-issued token (e.g. at jwt.io); confirm `aud` array contains `backend`.
 
 VERIFIED (asgard `README.md:55-62`).
+
+---
+
+## T-26: Login Fails at the Token Exchange — DPoP Not Fully Wired
+
+**Symptoms** (any of these, all from the same root cause):
+- `POST /realms/{realm}/protocol/openid-connect/token` returns **400** `{"error":"invalid_request","error_description":"DPoP proof is missing"}`.
+- The same call returns an unexplained **500** after an SDK upgrade.
+- The browser console reports a **CORS** failure on the token endpoint. This is usually a *symptom, not the cause*: error responses omit CORS headers, so any rejected request surfaces as a CORS error. Read the **Network tab's Response body**, not the console message.
+- Login redirects back to `/auth/redirect` repeatedly (200 each time) but no authenticated API call ever fires.
+
+**Cause:** `templates/shared/realm.json.template` sets `"dpop.bound.access.tokens": "true"`, so **DPoP is enabled server-side by default**. The realm demands a proof. If the client half is missing or partial, the exchange fails. DPoP is lockstep (I-12) — it is not optional for template-bootstrapped realms.
+
+**Diagnosis — check all four pieces:**
+
+```bash
+grep -q "useDPoP" app/providers.tsx  && echo "1 provider OK"   || echo "1 MISSING useDPoP"
+test -f public/tide_dpop_auth.html   && echo "2 page OK"       || echo "2 MISSING tide_dpop_auth.html"
+grep -q "tide_dpop" next.config.*    && echo "3 rewrite OK"    || echo "3 MISSING /tide_dpop rewrite"
+curl -s -D - -o /dev/null "http://localhost:3000/tide_dpop/iss/a/aud/b/tide_dpop_auth.html" \
+  | grep -i "content-security-policy"
+#   want: default-src 'self'; script-src 'unsafe-inline'
+#   if you see the generic app CSP instead, the rule ORDER is wrong (see fix 4)
+```
+
+Confirm the server side really does want DPoP:
+
+```bash
+curl -s "$TIDECLOAK_URL/admin/realms/$REALM/clients?clientId=$CLIENT" \
+  -H "Authorization: Bearer $TOKEN" | jq -r '.[0].attributes["dpop.bound.access.tokens"]'   # → "true"
+```
+
+**Fix:**
+1. Add `useDPoP: { mode: 'strict', alg: 'ES256' }` **inside** the `config` object (not as a JSX prop).
+2. Copy `tide_dpop_auth.html` from a pack template into `public/`.
+3. Add the `/tide_dpop/:path*` → `/tide_dpop_auth.html` rewrite.
+4. Add the DPoP CSP **after** any generic CSP rule — the last matching rule wins for a header key, so a generic `/:path*` rule placed later silently overrides it.
+5. Switch API calls to `secureFetch` (absolute URLs only). A plain `fetch` with a Bearer header carries no proof and will be rejected.
+
+**If all four are correct and it still 500s:** suspect a **`tide_dpop_auth.html` version mismatch**. That file is not shipped in the `@tidecloak/*` npm packages, so an SDK upgrade does not update it. Obtain the copy matching your SDK version from the Tide team.
+
+**Do not "fix" this by removing `useDPoP` alone.** The server still demands proofs and login stays broken. Disabling DPoP requires flipping the client attribute to `false` as well, which on an IGA realm is a change request — and after the realm goes multiAdmin, a human enclave approval.
+
+See `playbooks/add-auth-nextjs-fresh.md` (Step 4) for the full configuration, and I-12.

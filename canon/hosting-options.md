@@ -46,45 +46,88 @@ This is the load-bearing point, and it must be stated honestly: **hosting the Ti
 
 **Base URL**: `https://api.skycloak.io` **VERIFIED** (docs).
 
-**Authentication** **VERIFIED** (docs):
-- Header `API-Key: <key>` — created in the Skycloak dashboard (Workspace → API keys), shown once, treat as a secret.
+**Authentication** — the public API accepts **only** the `API-Key` header; the pack's default is to **mint that key with a device-authorization token** (no dashboard key needed). Two distinct credentials:
+- **Device access token → mints the key.** OAuth 2.0 device flow against `https://login.app.skycloak.io/realms/skycloak/protocol/openid-connect/auth/device` with the public client `skycloak-mcp` (no secret); the operator approves in their browser. This token is **not** an API credential — its only job is to mint an API key: `POST https://app.skycloak.io/api/cli/keys` (Bearer device token, body `{name, scopes}`) returns `201` with `full_key` (shown once). Omitting `scopes` yields a read-only key; write scopes imply reads. The mint enforces four `403`s: workspace membership, the API-keys permission (owner/admin), a verified email, and the plan's key quota. An `aud: lambda-authorizer` claim on the device token is expected.
+- **Minted API key → authenticates the API.** Header `API-Key: <full_key>`. **`API-Key` is the only header the public gateway (`https://api.skycloak.io`) accepts — a `Bearer` token never authenticates there.** A dashboard-created key (Workspace → API keys) works identically and is the headless alternative.
 - Header `API-Version: 2026-06-01.beta` — **required** on every request.
-- Scopes: write includes read (e.g. `clusters:write` implies `clusters:read`). Credentials retrieval needs `clusters:credentials:read`. Missing scope → `403` with `API key does not have the required scope: <scope>`.
-- Separately, an **OAuth2 client-credentials** path exists for cluster-level automation (Terraform/CI) — distinct from the Public API key. Each cluster provisions a confidential automation client `skycloak-automation-<cluster-id>` in the `master` realm.
+- Scopes: write includes read (e.g. `clusters:write` implies `clusters:read`). Credentials retrieval needs `clusters:credentials:read`. Missing scope → `403` with `does not have the required scope: <scope>`.
+- Separately, an **OAuth2 client-credentials** path exists for cluster-level automation (Terraform/CI) inside a cluster's own `master` realm — distinct from Public API auth. Each cluster provisions a confidential automation client `skycloak-automation-<cluster-id>` (used in provisioning Step 3 for the admin token).
 
 **Endpoints** **VERIFIED** (docs; request/response field names below are **INFERRED** — confirm against the live response, they are not fully specified in the public docs):
 
-| Method | Path | Purpose | Scope |
+| Method | Path | Host | Purpose | Scope |
+|---|---|---|---|---|
+| POST | `/api/cli/keys` | `app.skycloak.io` | Mint an API key (Bearer device token; `{name, scopes}`; `201` `full_key`) | device token + API-keys permission |
+| GET | `/clusters` | `api.skycloak.io` | List clusters | `clusters:read` |
+| POST | `/clusters` | `api.skycloak.io` | Create a cluster (async) | `clusters:write` |
+| GET | `/clusters/{id}` | `api.skycloak.io` | Get cluster status | `clusters:read` |
+| GET | `/clusters/{id}/credentials` | `api.skycloak.io` | Get cluster/automation credentials | `clusters:credentials:read` |
+| POST | `/clusters/{id}/realms` | `api.skycloak.io` | Create a realm (`{name, display_name}`; cluster must be `available`) | `realms:write` |
+| POST | `/clusters/{id}/realms/{realm}/applications` | `api.skycloak.io` | Create an application/client | `applications:write` |
+| POST | `/clusters/{id}/realms/{realm}/users` | `api.skycloak.io` | Create a realm user | `realm-users:write` |
+| POST | `/clusters/{id}/realms/{realm}/identity-providers` | `api.skycloak.io` | Add an identity provider | `identity-providers:write` |
+| POST | `/clusters/{id}/realms/import` | `api.skycloak.io` | Bulk import realm + apps + users + IdPs | `realms:write` |
+
+**Create-cluster body** — **VERIFIED against the live API 2026-08-06.** These values were confirmed by running them and reading the 422s. Several **contradict the public docs**; trust this table.
+
+| Field | Value | Note |
+|---|---|---|
+| `type` | `tidecloak` \| `keycloak` | **lowercase**. NOT `identityPlatform` |
+| `name` | string | |
+| `size` | `small` \| `medium` \| `large` | **lowercase**. `Small` → 422 |
+| `location` | `us` \| `ca` \| `au` \| `eu` | the field is **`location`**, NOT `region` |
+| `version` | semver, required | namespace **follows `type`** |
+
+Three traps, each of which cost real debugging time:
+
+1. **`identityPlatform` is not schema-validated.** The docs name it, but the API accepts, ignores it, and hands back a **plain Keycloak cluster with no Tide extensions**. Always assert `jq -r '.type'` is `tidecloak`.
+2. **Version namespace follows type.** TideCloak clusters take TideCloak versions (`0.14.x`), Keycloak clusters take Keycloak versions (`26.x`). Crossing them → `400 invalid cluster version`. There is no versions endpoint.
+3. **TideCloak is enabled per workspace and is off by default in prod.** Without the entitlement, creation returns an opaque `500 "Failed to create cluster"` rather than a clean 402/403 — the dashboard gates it behind a `has_access` flag with a "Contact" link.
+
+**Version matters more than anything else here** — **VERIFIED**:
+
+| Version | Provisions | Automation client | `setUpTideRealm` |
 |---|---|---|---|
-| GET | `/clusters` | List clusters | `clusters:read` |
-| POST | `/clusters` | Create a cluster (async) | `clusters:write` |
-| GET | `/clusters/{id}` | Get cluster status | `clusters:read` |
-| GET | `/clusters/{id}/credentials` | Get cluster/automation credentials | `clusters:credentials:read` |
+| `0.13.13` | yes | **500 — unusable** | untestable |
+| `0.14.11` | yes | works | **500 KEYGEN_FAILED** |
+| `0.14.17` | yes | works | **works** |
 
-**Create-cluster inputs** **VERIFIED** (feature docs; exact JSON field names **INFERRED**):
-- **Identity platform**: `Keycloak` or **`TideCloak`** — choose TideCloak for a Tide deployment. This is the field that makes the cluster a Tide broker.
-- **Name**: descriptive identifier.
-- **Version**: a latest-stable Keycloak/TideCloak version.
-- **Size**: `Small` (DEV, 1 site), `Medium` (STAGING, 2 sites), `Large` (PROD, 3 sites).
-- **Location/region**: US East Coast, Canada, Europe, Australia. Trial workspaces provision in the US; non-US regions need Developer plan or higher.
+A broken automation client also breaks Skycloak's own `/clusters/{id}/realms` API, since that proxies through it. Match the `@tidecloak/*` npm SDK version to the cluster version.
 
-**Lifecycle** **VERIFIED** (docs): creation is asynchronous. Cluster goes `provisioning`/"Creating" → `available` or `failed` (~2–4 min; email on completion). **Poll `GET /clusters/{id}` until status is `available` before bootstrapping.**
+**Lifecycle** **VERIFIED**: creation is asynchronous, `provisioning`/`updating` → `available` or `failed` (45s–4min). Poll before bootstrapping.
 
-**Result** **VERIFIED** (docs): cluster is reachable at `https://<cluster-id>.app.skycloak.io`. **No Keycloak admin username/password is issued** — admin console is reached via Admin Console SSO (Skycloak account); programmatic admin access uses the `skycloak-automation-<cluster-id>` OAuth2 client.
+**Result** **VERIFIED**: the cluster is reachable at `https://<cluster-id>.<location>.skycloak.io` (e.g. `.us.skycloak.io` — the host mirrors `location`, it is not `.app.`). **No Keycloak admin username/password is issued** — the admin console uses SSO; programmatic access uses the per-cluster automation client from `GET /clusters/{id}/credentials`. That client's UUID does **not** match the cluster id, despite the `skycloak-automation-<cluster-id>` phrasing in the docs.
+
+**Plan limits** are enforced cleanly: `402` with `{"current_limit":1,"current_plan":"trial","required_plan":"business"}`. **Trial = 1 cluster.**
+
+**The trial realm path is a dead end for Tide.** The dashboard's `POST /api/trial/realm/provision` (browser-only, cookie+CSRF, accepts only `{slug}`) yields a **plain Keycloak** cluster on shared infrastructure — no Tide vendor surface, and no cluster ID, so none of the realm APIs apply. It cannot be used to run a Tide app.
 
 **Errors** **VERIFIED** (docs): RFC 9457 Problem Details JSON (`type`, `title`, `detail`, `status`, `instance`; validation adds an `errors[]` array with `field`/`detail`/`code`/`value`). Notable codes: `402 Payment Required` (action not on current plan), `403` (scope), `409` (name/state conflict), `422` (validation), `429` (rate limit, with `Retry-After`).
 
 ---
 
-## The critical open question (verify before promising a turnkey Tide setup)
+## GAP-066 — RESOLVED (2026-08-06)
 
-Skycloak lists TideCloak as a cluster identity platform, but the public docs do **not** confirm that a hosted TideCloak cluster exposes the full **Tide vendor surface** the pack's bootstrap depends on:
-- `POST /admin/realms/{realm}/vendorResources/setUpTideRealm` (creates Tide IDP, `tide-vendor-key`, provisions the free-tier license, generates VVK/VRK)
-- IGA toggle and the change-request/change-set governance API
-- Adapter export enriched with `jwk`/`vendorId`/`homeOrkUrl`
-- Whether Tide **licensing** (the Stripe free-tier flow) is handled by Skycloak or still required from the operator
+**A hosted TideCloak cluster does expose the full Tide vendor surface, provided the version is new enough.** Verified end-to-end on a live `0.14.17` cluster:
 
-**Status: STILL_UNRESOLVED** — tracked in `GAP_REGISTER.md` (GAP-066). Until confirmed against a live hosted TideCloak cluster, treat the hosted path as: *provisioning is VERIFIED via Skycloak's API; the Tide-realm bootstrap on top of it is ASSUMED to use the same vendor endpoints and must be verified on the actual instance.* Do not tell a user the hosted path is fully turnkey for Tide until this is confirmed. If the vendor endpoints are absent, the honest answer is that Skycloak hosts the broker but Tide-realm setup needs the partner's Tide-specific provisioning (raise with the Tide/Skycloak teams).
+- `POST .../vendorResources/setUpTideRealm` — **works**. Creates the Tide IdP and `tide-vendor-key`, provisions the free-tier subscription, generates the gVRK. Takes **10–15 seconds** because it genuinely reaches Tide's licensing service.
+- `tide-admin/toggle-iga` and the `iga/change-requests` governance API — **200**.
+- Adapter export carries `jwk`, `vendorId`, `homeOrkUrl` — **confirmed**.
+- Tide **licensing is handled automatically** by `setUpTideRealm`; the operator does nothing extra.
+
+**Licensing is version-gated, and the error lies about its own cause.** On `0.14.11` the same call fails with `TIDE-IDPEXT-VENDOR-KEYGEN_FAILED` / "Initial VRK generation failed". Key generation is not the problem: re-running with `skipLicense=true` returns `200 {"status":"idp-created"}`, isolating the failure to **license activation**. `skipLicense` is a diagnostic only — it mints no VRK, so the adapter export then 500s with no `jwk`.
+
+**Two diagnostic rules learned the hard way:**
+- **Always retest on a freshly created realm.** A failed `setUpTideRealm` leaves `tide-vendor-key` and the `tide` IdP behind; retrying in place then returns `TIDE-IDPEXT-VENDOR-REALM_SETUP_FAILED`, a different and misleading error.
+- **Compare against local.** Running the same call on a local Docker TideCloak is the cleanest control. Timing alone is diagnostic: ~7–15s means a real outbound licensing call, ~1s means it failed before making one.
+
+**Verification before promising a working hosted setup** — assert all three:
+
+```bash
+jq -r '.type' cluster-create.json                                   # → tidecloak
+# toggle-iga on master                                              # → 200, not 404
+jq 'has("jwk") and has("vendorId") and has("homeOrkUrl")' data/tidecloak.json   # → true
+```
 
 ---
 
@@ -92,14 +135,15 @@ Skycloak lists TideCloak as a cluster identity platform, but the public docs do 
 
 A hosting-choice step is done when:
 1. The self-host vs hosted branch was resolved **before** bootstrap (I-17).
-2. If hosted: the cluster reports `available` and is reachable at its `*.app.skycloak.io` URL.
+2. If hosted: the cluster reports `available`, is reachable at `https://<id>.<location>.skycloak.io`, and **`type` is `tidecloak`** (not silently Keycloak).
 3. The trust-model caveats (availability, metadata, admin-path, Tideless-IGA) were stated to the operator, not just the benefits.
-4. The adapter JSON exported from the hosted instance still contains `jwk`, `vendorId`, `homeOrkUrl` (I-05, I-13) — same requirement as self-hosted. If it doesn't, GAP-066 applies.
+4. The adapter JSON exported from the hosted instance contains `jwk`, `vendorId`, `homeOrkUrl` (I-05, I-13) — same requirement as self-hosted. If it doesn't, licensing did not complete: check the cluster version is `0.14.17+`.
 
 ## Anti-patterns
 
 - **AP-HOST-1** — Presenting partner-hosting as a security *downgrade* ("now a third party holds your auth"). It isn't, because of the threshold model — but state the real caveats (availability, metadata, Tideless-IGA), don't overcorrect into either fear or false comfort.
-- **AP-HOST-2** — Claiming the hosted Tide path is fully turnkey before GAP-066 is resolved. Provisioning the cluster is verified; the Tide-realm bootstrap on top is not.
+- **AP-HOST-2** — Claiming the hosted Tide path works without checking `type`, the vendor surface, and the adapter's `jwk`. GAP-066 is resolved *for `0.14.17`*; older versions provision happily and then fail at licensing.
+- **AP-HOST-5** — Granting `tide-realm-admin` before finishing every governed write. It flips the realm to multiAdmin, after which no change request can be approved from a script (`409 MULTIADMIN_REQUIRES_APPROVAL_ENCLAVE`) and every later config change needs a human enclave approval. Register all redirect URIs and web origins during bootstrap.
 - **AP-HOST-3** — Putting the Skycloak API key or the `skycloak-automation-*` client secret in application code or the repo. These are operator/bootstrap secrets (like master admin creds, AP-41) — never in app runtime.
 - **AP-HOST-4** — Hardcoding `API-Version` omission. Every Skycloak API call needs the `API-Version` header or it fails.
 
@@ -107,5 +151,7 @@ A hosting-choice step is done when:
 
 - **VERIFIED** — from Skycloak public docs or Tide canon that carries its own sourcing
 - **INFERRED** — strongly implied but not explicitly specified (e.g. exact JSON field names)
-- **ASSUMED** — operator guidance where sources are silent (e.g. Tide vendor endpoints on hosted clusters)
-- **STILL_UNRESOLVED** — open gap (GAP-066)
+- **ASSUMED** — operator guidance where sources are silent
+- **STILL_UNRESOLVED** — open gap
+
+GAP-066 (Tide vendor surface + licensing on hosted clusters) is **RESOLVED** as of 2026-08-06 — see the section above. Where this file says VERIFIED against the live API, that beats the public docs, which are wrong on several field names.

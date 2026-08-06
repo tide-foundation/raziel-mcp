@@ -55,6 +55,10 @@ Troubleshoot broken Tide integrations. Own login failures, missing roles/claims,
 | Login hangs or blank screen | CSP missing `frame-src '*'`, redirect handler missing, DPoP auth page missing | `diagnose-broken-login` |
 | Login redirect loop | `@tidecloak/react` ESM alias missing (AP-42), provider not wired | `diagnose-broken-login` |
 | DPoP login fails | `tide_dpop_auth.html` missing, or its `app/tide_dpop/[...path]/route.ts` catch-all route handler / hash-pinned CSP / `Allow-CSP-From: *` header not configured (I-12, L-07) | `diagnose-broken-login` |
+| Token endpoint 400 `"DPoP proof is missing"` | DPoP is ON server-side by default (realm template sets `dpop.bound.access.tokens: true`) but the client half is missing. Check all four pieces: provider `useDPoP`, `public/tide_dpop_auth.html`, `/tide_dpop` rewrite, DPoP CSP **ordered last** | See **T-26** |
+| Token endpoint 500 after an SDK upgrade | `tide_dpop_auth.html` version mismatch — it is NOT shipped in `@tidecloak/*` npm packages, so upgrading the SDK does not update it | See **T-26** |
+| Console shows CORS error on the token endpoint | Usually a *symptom*: error responses carry no CORS headers, so any rejection reads as CORS. Read the Network tab **Response body** before believing it. If genuinely CORS, the client's `webOrigins` lacks your app origin | See **T-26** |
+| Login returns to `/auth/redirect` repeatedly, no API calls follow | Code-for-token exchange is failing — the redirect leg works, the exchange does not. Almost always DPoP | See **T-26** |
 | 401 on all API calls | JWT verification not implemented, or DPoP proof missing | `diagnose-missing-roles-or-claims` |
 | 403 on API calls | Role not assigned, IGA change-set not committed, or 120s refresh delay | `diagnose-missing-roles-or-claims` |
 | Roles missing from JWT | IGA change-set not committed, token not refreshed (up to 120s) | `diagnose-missing-roles-or-claims` |

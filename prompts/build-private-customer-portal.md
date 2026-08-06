@@ -48,7 +48,7 @@ Copy-paste this prompt to an AI coding agent to scaffold a customer portal with 
 > **If TideCloak is running but checks 2-4 fail**, follow the `tide-setup` skill to complete setup. Use playbook `add-auth-nextjs-fresh`.
 >
 > **Package versions** (before writing package.json):
-> 1. Run `npm view @tidecloak/nextjs version` to get the current stable version. Pin it exactly (e.g., `"0.14.11"`). Do not use `"latest"` or `"^"` for `@tidecloak/*` packages.
+> 1. Run `npm view @tidecloak/nextjs version` to get the current stable version and pin it exactly (e.g. `"0.14.17"`). If npm is unreachable, use `"0.14.17"`. Do not use `"latest"` or `"^"` for `@tidecloak/*` packages, and never install below `0.14.17`.
 > 2. If the resolved version is 0.99.x, skip it. Use the highest non-0.99.x version instead. If unsure, fall back to the versions in `canon/version-policy.md`.
 > 3. Run `npm view next version` and `npm view react version` to get current stable framework versions. Use caret ranges (e.g., `"^15.0.0"`). Align React and React DOM to the same major.
 > 4. Do not use `--force` or `--legacy-peer-deps` as the default install strategy. If peer dependency conflicts arise, resolve them by aligning versions.

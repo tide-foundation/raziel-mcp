@@ -6,7 +6,7 @@ const EXPECTED_TOOLS = [
   "tide_list", "tide_canon", "tide_playbook", "tide_skill", "tide_prompt",
   "tide_adapter", "tide_list_scenarios", "tide_scenario", "tide_scenario_manifest",
   "tide_scenario_roles", "tide_scenario_bootstrap", "tide_choose_scenario",
-  "tide_choose_playbook", "tide_security_analysis", "tide_hosting", "tide_gaps",
+  "tide_choose_playbook", "tide_security_analysis", "tide_hosting", "tide_gaps", "tide_blast_radius",
 ];
 const EXPECTED_PROMPTS = [
   "tide-build-app", "tide-secure-existing", "tide-build-from-scenario",

@@ -95,5 +95,5 @@ Hidden UI is not authorization. Every protected API verifies JWT server-side.
 ## Deployment notes
 
 - **HTTPS**: `sslRequired: "external"` in realm.json allows HTTP on localhost but requires HTTPS for all non-local access.
-- **TideCloak image**: No production image is currently documented. `tideorg/tidecloak-dev` and `tideorg/tidecloak-stg-dev` are dev/staging only (H2 embedded DB). Contact Tide for production deployment guidance.
+- **TideCloak image**: use `tideorg/tidecloak-dev:latest` — despite the `-dev` suffix this IS the production image and the only one the pack supports. Note it uses an embedded H2 database, so for a production deployment ask Tide about external-database configuration. For a managed instance instead, see `playbooks/provision-tidecloak-skycloak.md`.
 - **Reverse proxy** (recommended example, not Tide-certified): Forward `Host` and `X-Forwarded-Proto` headers. Set `KC_PROXY_HEADERS=xforwarded` on the TideCloak container. DPoP `htu` verification requires the proxy to preserve the original URL as seen by the client.

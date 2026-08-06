@@ -11,7 +11,7 @@ This playbook supersedes the stock `Microsoft.AspNetCore.Authentication.OpenIdCo
 > The asgard .NET SDK only works against TideCloak realms where **IGA is OFF**. This is a hard constraint at present, not a recommendation.
 >
 > Implications:
-> - Use the **staging** TideCloak Docker image: `tideorg/tidecloak-stg-dev`. The non-staging dev image does not give you the auth flow the asgard SDK targets.
+> - **Image: use `tideorg/tidecloak-dev:latest`** (this IS the production image and the pack's only supported one). ⚠️ **CONFLICT — UNVERIFIED:** an earlier revision of this playbook claimed asgard requires the `tideorg/tidecloak-stg-dev` staging image because "the non-staging dev image does not give you the auth flow the asgard SDK targets". That claim was never verified, and it contradicts the pack-wide policy plus a live 2026-08-06 run in which `tidecloak-dev` handled licensing and the full Tide protocol correctly. **Confirm the actual requirement with the Tide/asgard team before deviating.** If asgard genuinely needs a pre-release build, that is an asgard-specific exception to raise with them, not a pattern to copy.
 > - Run the realm in **BYOiD-only mode** (license applied, IGA not toggled on). This is documented as a valid deployment mode in [canon/concepts.md](../canon/concepts.md) — "BYOiD-only (license + no IGA)".
 > - **No `tide-realm-admin` role assignment is needed** for the admin user. That role is part of the IGA quorum machinery and only relevant when IGA is on. With IGA off, normal Keycloak admin permissions are sufficient.
 > - **No `toggle-iga` call** during realm setup. Stop the canonical bootstrap order (license → IGA → E2EE) at the licence step.
@@ -44,7 +44,7 @@ This playbook supersedes the stock `Microsoft.AspNetCore.Authentication.OpenIdCo
 ## Prerequisites
 
 - **.NET 10 SDK** (preview-tier). Every csproj pins `<TargetFramework>net10.0</TargetFramework>`.
-- TideCloak running using the **staging** Docker image (`tideorg/tidecloak-stg-dev`) — see Current Status above and [deploy-tidecloak-docker.md](deploy-tidecloak-docker.md).
+- TideCloak running on `tideorg/tidecloak-dev:latest` — see the image caveat in Current Status above and [deploy-tidecloak-docker.md](deploy-tidecloak-docker.md).
 - A realm licensed via `setUpTideRealm`, with **IGA NOT toggled on** (BYOiD-only mode). Do NOT run `toggle-iga` for an asgard-.NET-backed app today.
 - An admin user able to manage the realm. **No `tide-realm-admin` role assignment is required** — that role is IGA-specific and not in play here. A standard Keycloak realm admin is sufficient.
 - The asgard repo is already vendored under `sources/asgard-sdk/` in this pack — the .NET SDK is **consumed via `<ProjectReference>`**, not NuGet. INFERRED: NuGet publication is not yet verified for `0.1.0`.

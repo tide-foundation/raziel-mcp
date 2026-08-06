@@ -82,7 +82,11 @@ Each CR carries `id`, `entityType`, `actionType`, `status`, `readyToCommit`, `th
 
 ```
 POST /iga/change-requests/{id}/authorize     # body {} optional  → 200/403/409 (409 = four-eyes)
-POST /iga/change-requests/bulk-authorize     # {"actionTypeIn":["CREATE","DELETE"],"limit":100} → 429 if a bulk run is active
+POST /iga/change-requests/bulk-authorize     # {"actionTypeIn":[...],"limit":100} → 429 if a bulk run is active
+# WARNING: "CREATE"/"DELETE" are NOT valid actionTypeIn values — real ones are granular
+# (CREATE_USER, DELETE_REALM, UPDATE_PROTOCOL_MAPPER, ADOPT_SCOPE_MAPPING, GRANT_ROLES...).
+# A wrong filter authorizes ZERO CRs and still returns 200; omitting it returns 400.
+# Prefer per-id authorize. See canon/iga-change-requests-api.md.
 ```
 
 ### Commit / Deny

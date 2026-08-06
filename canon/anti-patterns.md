@@ -1496,7 +1496,6 @@ Do not append `start-dev`, `start`, or any other command to `docker run` for Tid
 # ❌ WRONG: tidecloak/ org does not exist
 docker run -d tideorg/tidecloak-dev:latest    # ← this is correct
 docker run -d tidecloak/tidecloak-dev:latest   # ← WRONG org name
-docker run -d tidecloak/tidecloak-stg-dev:latest  # ← WRONG org name
 ```
 
 **Why it's wrong**:
@@ -1508,12 +1507,11 @@ docker run -d tidecloak/tidecloak-stg-dev:latest  # ← WRONG org name
 
 **Correct approach**:
 ```bash
-# ✅ CORRECT: tideorg/ org
+# ✅ CORRECT: tideorg/ org, and tidecloak-dev is the only supported image
 docker run -d tideorg/tidecloak-dev:latest
-docker run -d tideorg/tidecloak-stg-dev:latest
 ```
 
-The org is `tideorg`, not `tidecloak`.
+The org is `tideorg`, not `tidecloak`. And `tidecloak-dev` — despite the suffix — IS the production image; `tidecloak-stg-dev` is an internal pre-release build and is not supported.
 
 **Related**: AP-39
 

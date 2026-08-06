@@ -5,7 +5,7 @@ All steps must complete before users can safely use the app. Order matters.
 ## Phase 1: TideCloak infrastructure
 
 1. **Start TideCloak container**
-   - Use `tidecloak-dev` (development) or `tidecloak-stg-dev` (staging with ORK env vars).
+   - Use `tideorg/tidecloak-dev:latest` — despite the `-dev` suffix this IS the production image and the only supported one. No ORK/threshold env vars needed or wanted.
    - Dev image has built-in defaults. Staging requires `SYSTEM_HOME_ORK`, `USER_HOME_ORK`, `THRESHOLD_T`, `THRESHOLD_N`.
    - Wait for readiness: `curl http://localhost:8080/health/ready` returns 200.
 
