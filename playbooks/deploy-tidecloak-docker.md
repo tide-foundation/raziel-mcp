@@ -30,17 +30,23 @@ Deploy TideCloak in Docker, auto-initialize a realm with Tide licensing, IGA, ad
 ### Network
 
 - Port 8080 available on the host (or change mapping)
-- Internet access to pull `tideorg/tidecloak-dev` or `tideorg/tidecloak-stg-dev` images
-- Internet access to reach `https://sork1.tideprotocol.com` (Tide ORK network) if using staging image
+- Internet access to pull the `tideorg/tidecloak-dev` image
+- Internet access to reach the Tide ORK network (required for licensing and all Tide operations)
 
-### Decision: Which Image
+### Image
 
-| Image | Use Case | Database | Tide Network |
-|-------|----------|----------|--------------|
-| `tideorg/tidecloak-dev:latest` | Local development, single node, no Tide network needed | H2 (embedded) | Not connected |
-| `tideorg/tidecloak-stg-dev:latest` | Staging, connects to Tide ORK network, IGA fully functional | H2 (embedded) | Connected via ORK env vars |
+**Always `tideorg/tidecloak-dev:latest`.** Despite the `-dev` suffix this **is** the production image, and it is the only image the pack supports.
 
-Use `tidecloak-dev` for quick local work. Use `tidecloak-stg-dev` when you need the full Tide protocol (licensing, IGA approval flows, admin invite links).
+| Image | Use | Database | Tide Network |
+|-------|-----|----------|--------------|
+| `tideorg/tidecloak-dev:latest` | **All uses** — development and production | H2 (embedded) | Connected, via built-in defaults |
+| `tideorg/tidecloak-stg-dev:latest` | **Not supported.** Internal pre-release build | — | — |
+
+It ships working ORK/threshold/payer defaults, so the full Tide protocol — licensing, IGA approval flows, admin invite links, E2EE — works out of the box with **no** ORK env vars. VERIFIED 2026-08-06: `setUpTideRealm` on this image returns 200 with a real gVRK and free-tier subscription in ~7s.
+
+Do not set `SYSTEM_HOME_ORK`, `USER_HOME_ORK`, `THRESHOLD_T`, `THRESHOLD_N` or `PAYER_PUBLIC` by hand — overriding the defaults risks a broken threshold configuration.
+
+Note the embedded H2 database: for a real production deployment ask Tide about external-database configuration, or use a managed instance (`playbooks/provision-tidecloak-skycloak.md`).
 
 **Do not append `start-dev` or any command** to `docker run`. TideCloak images have a pre-configured entrypoint. Appending `start-dev` (a vanilla Keycloak convention) breaks Tide initialization.
 
@@ -94,12 +100,7 @@ docker run -d \
   -e KC_BOOTSTRAP_ADMIN_USERNAME=admin \
   -e KC_BOOTSTRAP_ADMIN_PASSWORD=password \
   -e KC_HOSTNAME=https://auth.myapp.com \
-  -e SYSTEM_HOME_ORK=https://sork1.tideprotocol.com \
-  -e USER_HOME_ORK=https://sork1.tideprotocol.com \
-  -e THRESHOLD_T=3 \
-  -e THRESHOLD_N=5 \
-  -e PAYER_PUBLIC=20000011d6a0e8212d682657147d864b82d10e92776c15ead43dcfdc100ebf4dcfe6a8 \
-  tideorg/tidecloak-stg-dev:latest
+  tideorg/tidecloak-dev:latest
 ```
 
 **Important:** Always mount a dedicated `data/` subdirectory, not the project root (`.`). Mounting the project root causes H2 database permission errors (`AccessDeniedException`) because the container writes DB files as a different user than your project files.
@@ -314,9 +315,8 @@ if lsof -i :8080 >/dev/null 2>&1; then
   exit 1
 fi
 
-# Dev image (default): no ORK/threshold env vars needed.
-# For staging image (tidecloak-stg-dev), add: KC_HOSTNAME, SYSTEM_HOME_ORK,
-# USER_HOME_ORK, THRESHOLD_T, THRESHOLD_N, PAYER_PUBLIC.
+# tideorg/tidecloak-dev IS the production image. It ships working ORK/threshold/payer
+# defaults — do NOT set SYSTEM_HOME_ORK, USER_HOME_ORK, THRESHOLD_T/N or PAYER_PUBLIC.
 sudo docker run -d --name tidecloak \
   -v "$(pwd)/data:/opt/keycloak/data/h2" \
   -p 8080:8080 \
@@ -391,10 +391,20 @@ approve_all_pending() {
 
   # 1. Authorize every pending CREATE/DELETE change request in one call.
   TOKEN="$(get_token)"
-  curl -s -X POST "$TIDECLOAK_URL/admin/realms/$REALM_NAME/iga/change-requests/bulk-authorize" \
-    -H "Authorization: Bearer $TOKEN" \
-    -H "Content-Type: application/json" \
-    -d '{"actionTypeIn":["CREATE","DELETE"],"limit":100}' > /dev/null 2>&1
+  # NOTE: do NOT use bulk-authorize with actionTypeIn:["CREATE","DELETE"] — those are
+  # not real action-type values (real ones are CREATE_USER, DELETE_REALM,
+  # UPDATE_PROTOCOL_MAPPER, ADOPT_SCOPE_MAPPING, GRANT_ROLES, ...). That filter matches
+  # nothing and silently authorizes ZERO CRs with a 200. Omitting the filter returns 400.
+  # Authorize each pending CR individually instead. VERIFIED 2026-08-06.
+  # See canon/iga-change-requests-api.md.
+  ids=$(curl -s "$TIDECLOAK_URL/admin/realms/$REALM_NAME/iga/change-requests?status=PENDING" \
+    -H "Authorization: Bearer $TOKEN" 2>/dev/null \
+    | jq -r 'if type=="array" then .[].id else empty end' 2>/dev/null)
+  for id in $ids; do
+    TOKEN="$(get_token)"
+    curl -s -X POST "$TIDECLOAK_URL/admin/realms/$REALM_NAME/iga/change-requests/$id/authorize" \
+      -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" -d '{}' > /dev/null 2>&1 || true
+  done
 
   # 2. Commit everything that is ready. Loop passes so dependent CRs
   #    (e.g. a role must exist before its assignment) become ready and commit.
@@ -715,13 +725,16 @@ sudo chown -R 1000:1000 ./data
 
 ---
 
-### Missing Environment Variables (Staging Image)
+### setUpTideRealm Fails or Hangs
 
 **Symptom**: Container starts but Tide realm initialization (`setUpTideRealm`) fails or hangs. ORK-dependent operations time out.
 
-**Cause**: Using `tidecloak-stg-dev` image without setting `SYSTEM_HOME_ORK`, `USER_HOME_ORK`, `THRESHOLD_T`, `THRESHOLD_N`, or `PAYER_PUBLIC`.
+**Causes, in order of likelihood**:
+1. **Hand-set ORK/threshold env vars overriding the image defaults.** Remove `SYSTEM_HOME_ORK`, `USER_HOME_ORK`, `THRESHOLD_T`, `THRESHOLD_N` and `PAYER_PUBLIC` — `tidecloak-dev` supplies working values.
+2. **Using a `-stg` image.** Unsupported; switch to `tideorg/tidecloak-dev:latest`.
+3. **No outbound access to the Tide ORK network.** Licensing genuinely calls out. A healthy call takes ~7-15s; a sub-2s failure means it never made the request.
 
-**Fix**: Provide all required staging environment variables. See the Environment Variables table. If you do not need Tide network connectivity, use `tidecloak-dev` instead.
+**Verify licensing works**: `setUpTideRealm` should return 200 with an `activationPackage` containing a `gVRK`. VERIFIED 2026-08-06 on `tidecloak-dev`.
 
 ---
 
@@ -802,9 +815,13 @@ sudo rm -f ./data/keycloakdb*
 
 ---
 
-### Do Not Use tidecloak-dev Image When You Need IGA Approval Flows
+### Do Not Hand-Configure ORK/Threshold Env Vars
 
-The `tidecloak-dev` image is not connected to the Tide ORK network. Tide-specific features like `setUpTideRealm`, IGA change request signing, and admin invite links require the `tidecloak-stg-dev` image with ORK environment variables configured.
+`tideorg/tidecloak-dev:latest` **is** connected to the Tide ORK network and supports the full Tide protocol out of the box — `setUpTideRealm`, licensing, IGA change-request signing, admin invite links and E2EE all work with no ORK environment variables. VERIFIED 2026-08-06: `setUpTideRealm` on this image returned 200 with a real gVRK and free-tier subscription in ~7s.
+
+Setting `SYSTEM_HOME_ORK`, `USER_HOME_ORK`, `THRESHOLD_T`, `THRESHOLD_N` or `PAYER_PUBLIC` by hand overrides working defaults and risks a broken threshold configuration.
+
+(An earlier version of this playbook claimed `tidecloak-dev` was not ORK-connected and that `tidecloak-stg-dev` was required for these features. That was incorrect.)
 
 ---
 

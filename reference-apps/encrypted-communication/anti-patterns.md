@@ -118,6 +118,6 @@ Scenario-specific mistakes for encrypted communication apps using the hybrid Tid
 
 **Mistake**: Installing a 0.99.x pre-release version of the Tide SDK.
 
-**Why it fails**: 0.99.x versions are unstable pre-releases. The stable version is 0.14.11 (per pack version policy).
+**Why it fails**: 0.99.x versions are unstable pre-releases.
 
-**Fix**: Pin `@tidecloak/react` to `0.14.11`. See `canon/version-policy.md`.
+**Fix**: Pin `@tidecloak/react` to the current stable — resolve with `npm view <pkg> version` at build time; fall back to `0.14.17` if npm is unreachable. See `canon/version-policy.md`.

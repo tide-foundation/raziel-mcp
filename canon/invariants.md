@@ -533,8 +533,14 @@ No application-level max payload size **VERIFIED** (vendor confirmation, GAP-013
 > **VERIFIED** against @tidecloak/js 0.13.27 (2026-07-22), and **re-confirmed unchanged on the 0.14.x line**: verified against an installed 0.14.9 (`dist/{esm,cjs}/lib/tidecloak.js` assigns `this.useDPoP` only inside `if (initOptions.useDPoP)`; no `mode: 'strict'` default), and confirmed for the pinned **0.14.11** (Tide, 2026-07-30). DPoP is still opt-in through 0.14.11, and omitting `useDPoP` still yields plain bearer tokens with no error. Whatever a given SDK version defaults to, the recommendation is unchanged: DPoP on, always.
 
 **Server/client must agree (lockstep)**:
-- **Server-side** (realm template): `"dpop.bound.access.tokens": "true"` on the OIDC client, and the realm must advertise `dpop_signing_alg_values_supported`. Because the client defaults to strict, a realm that does not advertise DPoP makes SDK init fail.
-- **Client-side** (provider config): the SDK default is `useDPoP: { mode: 'strict', alg: 'ES256' }`. To weaken/disable, set `useDPoP` explicitly. `useDPoP` goes inside the config object, NOT as a JSX prop on the provider. VERIFIED (session-002).
+- **Server-side** (realm template): `"dpop.bound.access.tokens": "true"` on the OIDC client, and the realm must advertise `dpop_signing_alg_values_supported`. **The pack's shared realm template sets this, so DPoP is ON server-side by default for every template-bootstrapped realm.**
+- **Client-side** (provider config): there is **no SDK default** — you must set `useDPoP: { mode: 'strict', alg: 'ES256' }` explicitly (see the box above; still true through 0.14.17). It goes **inside** the config object, NOT as a JSX prop on the provider. VERIFIED (session-002).
+
+**The asymmetry is the trap.** Server-side is on by default, client-side is off by default. An app that "just doesn't configure DPoP" is therefore not running without DPoP — it is running **broken**, failing the code-for-token exchange with `400 "DPoP proof is missing"`. VERIFIED 2026-08-06 against a hosted `0.14.17` realm.
+
+**Client-side is four pieces, not one.** `useDPoP` alone is insufficient: you also need `public/tide_dpop_auth.html` (not shipped in the npm packages — a stale copy after an SDK upgrade causes an unexplained 500), the `/tide_dpop/:path*` rewrite, and that path's CSP **ordered after** any generic CSP rule (last matching rule wins for a header key). Then API calls must use `secureFetch`; a plain `fetch` with a Bearer header carries no proof. Full configuration and verification commands: `playbooks/add-auth-nextjs-fresh.md` Step 4; symptom-led diagnosis: `canon/troubleshooting.md` T-26.
+
+**Disabling DPoP is a governed change, not a code edit.** Removing `useDPoP` client-side leaves the server still demanding proofs, so login stays broken. Turning it off also requires flipping the client attribute to `false` — a change request on an IGA realm, needing human enclave approval once the realm is multiAdmin. Since DPoP-off is not a supported configuration anyway, the correct move is always to finish wiring the client, never to disable the server.
   - Server off, client left at default strict → init fails ("server does not advertise DPoP support"). Set `useDPoP: false` or enable DPoP on the realm.
   - Server on, client set to `false` → proofs not generated; token endpoint returns 400 "DPoP proof is missing".
 
@@ -805,7 +811,7 @@ curl -s -o /dev/null -w "%{http_code}" http://localhost:3000/auth/redirect
 | Task type | Diagnosis (something is broken) | Setup (something needs building) | Is the app partially working, or not started? |
 | Auth complexity | Simple RBAC (role checks) | Policy/governance flow (IGA, Forseti) | Does the app need multi-admin approval, policy signing, or contract-governed access? |
 | Signing vs encryption | Threshold signing (Forseti contracts authorize signatures) | Encryption (self or shared) | Does the app produce cryptographic signatures, or encrypt/decrypt data? |
-| "Use staging" | Docker image only (`tidecloak-stg-dev`) | Docker image + npm tags (WRONG) | "Staging" means the ORK staging network (Docker image). npm packages always use stable versions. VERIFIED (LEARNINGS-batch-005 L-02). |
+| "Use staging" | Neither — clarify with the user | Switching the Docker image or npm tags | The pack supports exactly one image (`tideorg/tidecloak-dev:latest`, which IS production) and stable npm packages. `-stg` images and `-staging` npm tags are both unsupported. |
 
 **This is a pre-action gate.** It runs before code generation, role setup, bootstrap steps, or playbook execution. It is not a warning in a safety-check section after the path is already chosen.
 

@@ -24,14 +24,11 @@ Start a TideCloak container for local development. This produces a running serve
 
 ## Steps
 
-### Step 1: Choose image
+### Step 1: Image
 
-| Need | Image |
-|------|-------|
-| Standard development and production | `tideorg/tidecloak-dev:latest` |
-| Staging / testing pre-release features | `tideorg/tidecloak-stg-dev:latest` |
+**Always use `tideorg/tidecloak-dev:latest`.** Despite the `-dev` suffix, this **is** the production image — it carries the full Tide protocol and is the only image the pack supports, for development and production alike.
 
-Both images include the full Tide protocol. `tidecloak-dev` is the production image. `tidecloak-stg-dev` is the development/staging image for testing.
+Do **not** use `tideorg/tidecloak-stg-dev`. That is an internal pre-release/staging build: it lags or leads production unpredictably, and it requires ORK, threshold and payer configuration to be supplied by hand, which is an easy way to end up on a broken threshold config. If you believe you need it, you are testing unreleased Tide behaviour — coordinate with the Tide team rather than reaching for it from a playbook.
 
 **Do not append `start-dev` or any command** to `docker run`. TideCloak images have a pre-configured entrypoint. Appending `start-dev` (a vanilla Keycloak convention) breaks Tide initialization.
 
@@ -51,9 +48,7 @@ lsof -i :8080 >/dev/null 2>&1 && echo "ERROR: Port 8080 in use" && exit 1
 
 ### Step 3: Start container
 
-**Dev image (recommended for development):**
-
-No ORK/threshold env vars needed — the dev image has built-in defaults.
+No ORK/threshold/payer env vars are needed — the image ships with working defaults. Do not add them.
 
 ```bash
 sudo docker run -d --name tidecloak \
@@ -62,25 +57,6 @@ sudo docker run -d --name tidecloak \
   -e KC_BOOTSTRAP_ADMIN_USERNAME=admin \
   -e KC_BOOTSTRAP_ADMIN_PASSWORD=password \
   tideorg/tidecloak-dev:latest
-```
-
-**Staging image (pre-release testing only):**
-
-Requires ORK, threshold, and payer config.
-
-```bash
-sudo docker run -d --name tidecloak \
-  -v "$(pwd)/data:/opt/keycloak/data/h2" \
-  -p 8080:8080 \
-  -e KC_BOOTSTRAP_ADMIN_USERNAME=admin \
-  -e KC_BOOTSTRAP_ADMIN_PASSWORD=password \
-  -e KC_HOSTNAME="${TIDECLOAK_URL:-http://localhost:8080}" \
-  -e SYSTEM_HOME_ORK=https://sork1.tideprotocol.com \
-  -e USER_HOME_ORK=https://sork1.tideprotocol.com \
-  -e THRESHOLD_T=3 \
-  -e THRESHOLD_N=5 \
-  -e PAYER_PUBLIC=20000011d6a0e8212d682657147d864b82d10e92776c15ead43dcfdc100ebf4dcfe6a8 \
-  tideorg/tidecloak-stg-dev:latest
 ```
 
 ### Step 4: Wait for readiness
@@ -119,7 +95,8 @@ TideCloak typically takes 30–60 seconds to start. If it does not respond after
 ## Anti-Patterns
 
 - **Do not** mount project root as data volume. Use `./data` subdirectory.
-- **Do not** omit Tide env vars (`SYSTEM_HOME_ORK`, `USER_HOME_ORK`, etc.) when using the staging image. The dev image has built-in defaults and does not need them.
+- **Do not** use `tideorg/tidecloak-stg-dev` or any `-stg` image. `tideorg/tidecloak-dev:latest` is the production image and the only supported one.
+- **Do not** set `SYSTEM_HOME_ORK`, `USER_HOME_ORK`, `THRESHOLD_T`, `THRESHOLD_N` or `PAYER_PUBLIC`. The image has working defaults; overriding them by hand risks a broken threshold configuration.
 - **Do not** use `THRESHOLD_T=1` anywhere. Single-ORK compromise.
 - **Do not** reuse data directory across environments. Clean between setups.
 

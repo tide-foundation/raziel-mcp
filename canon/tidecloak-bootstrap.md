@@ -64,11 +64,11 @@ For projects that do not use the init script, follow the manual sequence below. 
 | Image | Use when | Forseti support | ORK env vars required |
 |-------|----------|----------------|-----------------------|
 | `tideorg/tidecloak-dev:latest` | Standard development, full Tide protocol | Yes | **No** — built-in defaults |
-| `tideorg/tidecloak-stg-dev:latest` | Staging, testing pre-release features | Yes | **Yes** — must be provided |
+| `tideorg/tidecloak-stg-dev:latest` | **Not supported** — internal pre-release build | — | — |
 
 **Role mapper fallback (defensive)**: The Tide role/claim mappers in the shipped realm templates use **stock Keycloak mapper types** — `oidc-usermodel-attribute-mapper` (for `tideUserKey`/`vuid`) and `oidc-hardcoded-claim-mapper` (for `t.uho`). There is no distinct `tide-roles-mapper` provider in the extension repos on `main`; a mapper by that instance name only appears in some external app realm.json files. A prior note claimed a `tide-roles-mapper` protocolMapper provider exists on the prod image but is silently dropped on the staging image — this could not be confirmed against source and image contents were not inspected. Treat it as unverified. As a defensive measure, include standard Keycloak role mappers (`realm roles`, `client roles`) in the template so token role claims survive regardless of image.
 
-Use `tidecloak-dev` for standard development. It has built-in ORK/threshold defaults and does not need `KC_HOSTNAME`, `SYSTEM_HOME_ORK`, `USER_HOME_ORK`, `THRESHOLD_T`, `THRESHOLD_N`, or `PAYER_PUBLIC`. Use `tidecloak-stg-dev` only when testing against pre-release Tide features.
+**Always use `tideorg/tidecloak-dev:latest`.** Despite the `-dev` suffix this IS the production image, and it is the only image the pack supports — for development and production alike. It has built-in ORK/threshold defaults and does not need `KC_HOSTNAME`, `SYSTEM_HOME_ORK`, `USER_HOME_ORK`, `THRESHOLD_T`, `THRESHOLD_N`, or `PAYER_PUBLIC`; supplying them by hand risks a broken threshold config. Do **not** use `tideorg/tidecloak-stg-dev` — it is an internal pre-release build.
 
 **Do not append `start-dev` or any command** to `docker run`. TideCloak images have a pre-configured entrypoint — appending `start-dev` (a vanilla Keycloak convention) breaks Tide initialization. See AP-39.
 
@@ -83,37 +83,21 @@ sudo docker run -d --name tidecloak \
   tideorg/tidecloak-dev:latest
 ```
 
-### Staging image docker run (tidecloak-stg-dev)
-
-```bash
-sudo docker run -d --name tidecloak \
-  -v ./data:/opt/keycloak/data/h2 \
-  -p 8080:8080 \
-  -e KC_BOOTSTRAP_ADMIN_USERNAME=admin \
-  -e KC_BOOTSTRAP_ADMIN_PASSWORD=password \
-  -e KC_HOSTNAME=http://localhost:8080 \
-  -e SYSTEM_HOME_ORK=https://sork1.tideprotocol.com \
-  -e USER_HOME_ORK=https://sork1.tideprotocol.com \
-  -e THRESHOLD_T=3 \
-  -e THRESHOLD_N=5 \
-  -e PAYER_PUBLIC=20000011d6a0e8212d682657147d864b82d10e92776c15ead43dcfdc100ebf4dcfe6a8 \
-  tideorg/tidecloak-stg-dev:latest
-```
-
 ---
 
 ## Required Environment Variables
 
-### Core (both images)
+### Core
 
 | Variable | Purpose | Example |
 |----------|---------|---------|
 | `KC_BOOTSTRAP_ADMIN_USERNAME` | Initial admin user | `admin` |
 | `KC_BOOTSTRAP_ADMIN_PASSWORD` | Initial admin password | `password` |
 
-### Tide protocol (staging image only — tidecloak-stg-dev)
+### Tide protocol — DO NOT SET THESE
 
-The dev image (`tidecloak-dev`) has these built in. Only set these for `tidecloak-stg-dev`.
+`tideorg/tidecloak-dev:latest` has working values built in. Supplying them by hand risks a broken
+threshold configuration. They are listed only so you recognise them if you meet them in the wild.
 
 | Variable | Purpose | Example |
 |----------|---------|---------|
@@ -330,7 +314,7 @@ DPoP (`useDPoP: { mode: 'strict', alg: 'EdDSA' }`) may not be supported on all h
 | Aspect | Dev (this canon) | Production |
 |--------|-----------------|------------|
 | Database | H2 embedded | External PostgreSQL (not documented — contact Tide) |
-| Image | `tidecloak-dev` (prod) or `tidecloak-stg-dev` (staging) | `tidecloak-dev` is production-grade |
+| Image | `tidecloak-dev` — always | Despite the `-dev` suffix this IS the production image and the only supported one |
 | Threshold | T=3/N=5 minimum | T=14/N=20 on live network |
 | SSL | `sslRequired: external` (HTTP on localhost OK) | HTTPS required everywhere |
 | Admin password | Hardcoded in script | Secret management system |

@@ -146,10 +146,20 @@ approve_all_pending() {
   local TOKEN ready id
 
   TOKEN="$(get_token)"
-  curl -s -X POST "$TIDECLOAK_URL/admin/realms/$REALM_NAME/iga/change-requests/bulk-authorize" \
-    -H "Authorization: Bearer $TOKEN" \
-    -H "Content-Type: application/json" \
-    -d '{"actionTypeIn":["CREATE","DELETE"],"limit":100}' > /dev/null 2>&1
+  # NOTE: do NOT use bulk-authorize with actionTypeIn:["CREATE","DELETE"] — those are
+  # not real action-type values (real ones are CREATE_USER, DELETE_REALM,
+  # UPDATE_PROTOCOL_MAPPER, ADOPT_SCOPE_MAPPING, GRANT_ROLES, ...). That filter matches
+  # nothing and silently authorizes ZERO CRs with a 200. Omitting the filter returns 400.
+  # Authorize each pending CR individually instead. VERIFIED 2026-08-06.
+  # See canon/iga-change-requests-api.md.
+  ids=$(curl -s "$TIDECLOAK_URL/admin/realms/$REALM_NAME/iga/change-requests?status=PENDING" \
+    -H "Authorization: Bearer $TOKEN" 2>/dev/null \
+    | jq -r 'if type=="array" then .[].id else empty end' 2>/dev/null)
+  for id in $ids; do
+    TOKEN="$(get_token)"
+    curl -s -X POST "$TIDECLOAK_URL/admin/realms/$REALM_NAME/iga/change-requests/$id/authorize" \
+      -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" -d '{}' > /dev/null 2>&1 || true
+  done
 
   for pass in 1 2 3 4 5; do
     TOKEN="$(get_token)"

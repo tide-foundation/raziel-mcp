@@ -130,8 +130,8 @@ For code patterns and full details, see `canon/framework-matrix.md`.
 - **`silent-check-sso.html`**: Must exist in `public/`. See playbook `add-auth-nextjs-fresh`.
 - **Redirect handler**: Must exist at configured `redirectUri` path. Without it, login ends on 404. See `canon/redirect-handler.md`.
 - **Setup order**: License → IGA → E2EE. No other sequence works. See `canon/tidecloak-bootstrap.md`.
-- **Version policy**: Tide packages at `0.14.11`. No 0.99.x. See `canon/version-policy.md`.
-- **Docker images**: `tidecloak-dev` is production (full protocol). `tidecloak-stg-dev` is staging. Images are under `tideorg/` org (e.g. `tideorg/tidecloak-dev:latest`), NOT `tidecloak/`. Do NOT append `start-dev` to docker run — TideCloak images have a pre-configured entrypoint.
+- **Version policy**: Pin Tide packages to the CURRENT latest — resolve with `npm view <pkg> version` at build time; fall back to `0.14.17` if npm is unreachable. Never 0.99.x, never below 0.14.17. Match the SDK version to the TideCloak server version. See `canon/version-policy.md`.
+- **Docker image**: always `tideorg/tidecloak-dev:latest` — despite the `-dev` suffix this IS the production image and the only supported one. Never `tidecloak-stg-dev`. Images live under the `tideorg/` org, NOT `tidecloak/`. Do NOT append `start-dev` to docker run — TideCloak images have a pre-configured entrypoint. Do NOT pass ORK/threshold/payer env vars; the image has working defaults.
 - **`_tide_enabled`**: Declare in realm.json. Not auto-created.
 - **`tide-realm-admin`**: Client role on `realm-management`, not a realm role.
 - **Token refresh delay**: After IGA commit, up to 120s before roles appear in JWT.

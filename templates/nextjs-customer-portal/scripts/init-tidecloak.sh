@@ -54,10 +54,18 @@ approve_all_pending() {
 
   # 1. Authorize every pending CREATE/DELETE change request in one call.
   TOKEN="$(get_token)"
-  curl -s -X POST "$TIDECLOAK_URL/admin/realms/$REALM_NAME/iga/change-requests/bulk-authorize" \
-    -H "Authorization: Bearer $TOKEN" \
-    -H "Content-Type: application/json" \
-    -d '{"actionTypeIn":["CREATE","DELETE"],"limit":100}' > /dev/null 2>&1
+  # NOTE: do NOT use bulk-authorize with actionTypeIn:["CREATE","DELETE"] — those are
+  # not real action-type values (real: CREATE_USER, DELETE_REALM, UPDATE_PROTOCOL_MAPPER,
+  # ADOPT_SCOPE_MAPPING, GRANT_ROLES, ...). That filter matches nothing and silently
+  # authorizes ZERO CRs with a 200. Omitting the filter returns 400. VERIFIED 2026-08-06.
+  ids=$(curl -s "$TIDECLOAK_URL/admin/realms/$REALM_NAME/iga/change-requests?status=PENDING" \
+    -H "Authorization: Bearer $TOKEN" 2>/dev/null \
+    | jq -r 'if type=="array" then .[].id else empty end' 2>/dev/null)
+  for id in $ids; do
+    TOKEN="$(get_token)"
+    curl -s -X POST "$TIDECLOAK_URL/admin/realms/$REALM_NAME/iga/change-requests/$id/authorize" \
+      -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" -d '{}' > /dev/null 2>&1 || true
+  done
 
   # 2. Commit everything ready; loop passes so dependent CRs become ready.
   for pass in 1 2 3 4 5; do
@@ -102,29 +110,22 @@ fi
 # --- Step 2: Start container ---
 echo "==> Starting TideCloak ($TIDECLOAK_IMAGE)..."
 
-# Dev image: no ORK/threshold config needed (built-in defaults).
-# Staging image (tidecloak-stg-dev): requires ORK, threshold, and payer config.
-if echo "$TIDECLOAK_IMAGE" | grep -q "stg"; then
-  sudo docker run -d --name tidecloak \
-    -v "$PROJECT_DIR/data:/opt/keycloak/data/h2" \
-    -p 8080:8080 \
-    -e KC_BOOTSTRAP_ADMIN_USERNAME=admin \
-    -e KC_BOOTSTRAP_ADMIN_PASSWORD=password \
-    -e KC_HOSTNAME="$TIDECLOAK_URL" \
-    -e SYSTEM_HOME_ORK=https://sork1.tideprotocol.com \
-    -e USER_HOME_ORK=https://sork1.tideprotocol.com \
-    -e THRESHOLD_T=3 \
-    -e THRESHOLD_N=5 \
-    -e PAYER_PUBLIC=20000011d6a0e8212d682657147d864b82d10e92776c15ead43dcfdc100ebf4dcfe6a8 \
-    "$TIDECLOAK_IMAGE"
-else
-  sudo docker run -d --name tidecloak \
-    -v "$PROJECT_DIR/data:/opt/keycloak/data/h2" \
-    -p 8080:8080 \
-    -e KC_BOOTSTRAP_ADMIN_USERNAME=admin \
-    -e KC_BOOTSTRAP_ADMIN_PASSWORD=password \
-    "$TIDECLOAK_IMAGE"
-fi
+# tideorg/tidecloak-dev IS the production image, despite the -dev suffix. It ships
+# working ORK/threshold/payer defaults — do NOT pass SYSTEM_HOME_ORK, USER_HOME_ORK,
+# THRESHOLD_T/N or PAYER_PUBLIC by hand. The -stg image is an internal pre-release
+# build and is not supported by this pack.
+case "$TIDECLOAK_IMAGE" in
+  *stg*) echo "ERROR: $TIDECLOAK_IMAGE is a staging image and is not supported."
+         echo "       Use tideorg/tidecloak-dev:latest (this IS the production image)."
+         exit 1 ;;
+esac
+
+sudo docker run -d --name tidecloak \
+  -v "$PROJECT_DIR/data:/opt/keycloak/data/h2" \
+  -p 8080:8080 \
+  -e KC_BOOTSTRAP_ADMIN_USERNAME=admin \
+  -e KC_BOOTSTRAP_ADMIN_PASSWORD=password \
+  "$TIDECLOAK_IMAGE"
 
 # --- Step 3: Wait for readiness ---
 echo "==> Waiting for TideCloak to start..."

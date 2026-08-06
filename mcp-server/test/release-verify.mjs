@@ -25,7 +25,7 @@ const CFG = {
   hostedMcp: "https://mcp.tide.org/mcp",
   hostedHealth: "https://mcp.tide.org/health",
   vscodeExtId: "Tide.tide-agent-pack",
-  expectedTools: 16,
+  expectedTools: 17,
   minPrompts: 5,
 };
 

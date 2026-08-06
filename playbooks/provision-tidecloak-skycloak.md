@@ -1,213 +1,322 @@
 # Provision Hosted TideCloak via Skycloak
 
-Provision a fully-managed TideCloak instance in Skycloak's cloud instead of self-hosting, then bootstrap the Tide realm on top of it. This is the hosted alternative to `deploy-tidecloak-docker`.
+Provision a managed TideCloak cluster in Skycloak's cloud, then bootstrap the Tide realm on it. This is the hosted alternative to `deploy-tidecloak-docker`.
 
-Read `canon/hosting-options.md` first — it covers the self-host vs hosted decision, the trust model, and the honest caveats you must surface to the operator.
+Everything below is **VERIFIED against the live API (2026-08-06)** unless tagged otherwise. Several field names and values contradict Skycloak's public docs; those are called out inline. Trust this file over the docs.
+
+Read `canon/hosting-options.md` first for the trust model and honest caveats.
 
 ---
 
 ## When to Use
 
 - The team does not want to run auth infrastructure (containers, DB, upgrades, TLS, backups).
-- You want a managed TideCloak reachable at a stable URL with no ops burden.
-- You are prototyping and want an instance without local Docker.
+- You need a stable public URL rather than `localhost`.
 
 **Do not use** if:
 - The deployment must be air-gapped or fully self-controlled → `deploy-tidecloak-docker`.
-- You already have a running TideCloak → go straight to realm bootstrap / integration.
-- The operator has not confirmed a Skycloak account and API key exist (this playbook cannot create the account).
+- You already have a running TideCloak → go straight to realm bootstrap.
+- You want the fastest dev loop → local Docker is quicker, has no plan limits, and no enclave-approval friction.
 
 ---
 
 ## Prerequisites
 
-- A Skycloak account with a workspace (dashboard at `skycloak.io`).
-- A Skycloak **API key** with scope `clusters:write` and `clusters:credentials:read`, created in Dashboard → Workspace → API keys. Shown once — capture it securely.
+- A Skycloak account with a workspace.
+- **TideCloak enabled for your workspace.** It is NOT on by default in prod — Skycloak enables it per workspace. Without it, cluster creation fails with an opaque `500`.
+- A plan allowing the cluster you need. **Trial = 1 cluster.**
 - `curl` and `jq`.
-- Plan level sufficient for your region/size (non-US regions and larger sizes need Developer plan or higher; a `402 Payment Required` means the action isn't on the current plan).
 
-**Secret handling (AP-HOST-3):** The API key and any cluster automation-client secret are operator/bootstrap secrets. Keep them in the shell/CI environment. Never write them into application code, the repo, or `tidecloak.json`. Same rule as master admin credentials (AP-41).
+**Two credentials, do not conflate them:**
+- The **device access token** (device flow, public client `skycloak-mcp`, no secret — Step 0) is **not** an API credential. Its only job is minting an API key (Step 0b).
+- The **minted API key** (`full_key`) is what the public API accepts, in the **`API-Key`** header. `API-Key` is the **only** header the gateway accepts — a Bearer token will never authenticate against `https://api.skycloak.io`.
 
----
-
-## Overview of the flow
-
-```
-1. Create a TideCloak cluster        (Skycloak API)      → cluster id
-2. Poll until status = available     (Skycloak API)      → cluster URL
-3. Fetch automation-client creds     (Skycloak API)      → admin token source
-4. Bootstrap the Tide realm          (TideCloak admin API) → adapter JSON
-5. Wire the app                       (unchanged)          → same as self-hosted
-```
-
-Steps 1–3 are Skycloak-specific and covered here. Step 4 is the **same Tide-realm bootstrap** as the self-host path — reuse `bootstrap-realm-from-template` / the `deploy-tidecloak-docker` init sequence, pointed at the hosted URL with a token from the automation client instead of master admin creds. Step 5 is identical to any Tide app (`add-auth-nextjs-fresh` etc.).
+**Secret handling (AP-HOST-3):** device token, `full_key`, and the automation-client secret are all bootstrap secrets. Shell/CI environment only. Never in app code, the repo, or `tidecloak.json` (same rule as AP-41).
 
 ---
 
-## Step 1: Create a TideCloak cluster
+## Overview
+
+```
+0.  Device authorization      (login.app.skycloak.io) → device token
+0b. Mint scoped API key       (app.skycloak.io)       → full_key
+1.  Create cluster type=tidecloak (api.skycloak.io)   → cluster id
+2.  Poll until available      (api.skycloak.io)       → cluster URL
+3.  Automation creds → admin token                    → admin token
+4.  Bootstrap the Tide realm  (cluster admin API)     → adapter JSON
+5.  Wire the app              (unchanged)
+```
+
+---
+
+## Step 0: Device authorization
 
 ```bash
-export SKYCLOAK_API_KEY="<your-key>"
-API="https://api.skycloak.io"
-VER="2026-06-01.beta"
+LOGIN="https://login.app.skycloak.io/realms/skycloak/protocol/openid-connect"
+dev=$(curl -s -X POST "$LOGIN/auth/device" -d "client_id=skycloak-mcp" -d "scope=openid")
+DEVICE_CODE=$(echo "$dev" | jq -r '.device_code')
+INTERVAL=$(echo "$dev" | jq -r '.interval // 5')
+echo "$dev" | jq -r '"APPROVE: \(.verification_uri_complete)   (code \(.user_code))"'
 
-# NOTE: exact request-body field names are INFERRED from the docs — if this 422s,
-# inspect the RFC 9457 error body (it lists the offending field) and adjust.
-curl -s -X POST "$API/clusters" \
-  -H "API-Key: $SKYCLOAK_API_KEY" \
-  -H "API-Version: $VER" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "identityPlatform": "TideCloak",
-    "name": "myapp-auth",
-    "size": "Small",
-    "region": "us-east"
-  }' | tee cluster-create.json | jq .
+# SHOW that URL to the operator, then poll:
+while :; do
+  sleep "$INTERVAL"
+  tok=$(curl -s -X POST "$LOGIN/token" \
+    -d "grant_type=urn:ietf:params:oauth:grant-type:device_code" \
+    -d "device_code=$DEVICE_CODE" -d "client_id=skycloak-mcp")
+  err=$(echo "$tok" | jq -r '.error // empty')
+  case "$err" in
+    "")                    export DEVICE_TOKEN=$(echo "$tok" | jq -r '.access_token'); break ;;
+    authorization_pending) : ;;
+    slow_down)             INTERVAL=$((INTERVAL + 5)) ;;
+    *)                     echo "device auth failed: $err"; exit 1 ;;
+  esac
+done
 ```
 
-- **`identityPlatform: "TideCloak"`** is the field that makes this a Tide broker rather than plain Keycloak. Do not omit it.
-- `size`: `Small` (DEV), `Medium` (STAGING), `Large` (PROD).
-- Capture the returned cluster **id**: `CLUSTER_ID=$(jq -r '.id' cluster-create.json)`.
-- Creation is **asynchronous** — the response comes back before the cluster is ready.
+**The device code expires in 10 minutes.** Show the URL to the operator *immediately* and keep the surrounding message short — a long agent explanation can burn the whole window before they click. An `aud: lambda-authorizer` claim on the token is expected and correct.
+
+---
+
+## Step 0b: Mint a scoped API key
+
+```bash
+mint=$(curl -s -X POST "https://app.skycloak.io/api/cli/keys" \
+  -H "Authorization: Bearer $DEVICE_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"name":"tidecloak-bootstrap","scopes":[
+        "clusters:write","realms:write","applications:write",
+        "realm-users:write","identity-providers:write",
+        "clusters:credentials:read","clusters:logs:read","clusters:events:read"]}')
+export SKYCLOAK_API_KEY=$(echo "$mint" | jq -r '.full_key')
+```
+
+- **This endpoint is absent from Skycloak's public docs.** It is real and works. VERIFIED.
+- **Scopes are load-bearing.** Omit them and the key is **read-only**. Write scopes imply their reads. Include `clusters:logs:read` — without it you cannot read cluster logs when something fails.
+- `full_key` is shown **once**.
+- Optional `workspace_id`; otherwise your default workspace.
+- Four gates, each its own **403**: workspace membership, API-keys permission (owner/admin), verified email, plan key quota. A **401** is not a gate — it is the token or the endpoint.
+- **Keys get revoked.** If a previously working key starts returning 401, mint a new one rather than debugging it.
+
+Every public-API call thereafter:
+
+```bash
+API="https://api.skycloak.io"; VER="2026-06-01.beta"
+H=(-H "API-Key: $SKYCLOAK_API_KEY" -H "API-Version: $VER")
+```
+
+`API-Version` is required on every request (AP-HOST-4).
+
+---
+
+## Step 1: Create the cluster
+
+```bash
+curl -s -X POST "$API/clusters" "${H[@]}" -H "Content-Type: application/json" \
+  -d '{"type":"tidecloak","name":"myapp-auth","size":"small","location":"us","version":"0.14.17"}' \
+  | tee cluster-create.json | jq '{id,name,type,version,status}'
+CLUSTER_ID=$(jq -r '.id' cluster-create.json)
+```
+
+**Request body — corrected from live 422s:**
+
+| Field | Value | Notes |
+|---|---|---|
+| `type` | `tidecloak` \| `keycloak` | **lowercase**. NOT `identityPlatform` |
+| `name` | string | |
+| `size` | `small` \| `medium` \| `large` | **lowercase**. `Small` → 422 |
+| `location` | `us` \| `ca` \| `au` \| `eu` | the field is **`location`**, NOT `region` |
+| `version` | semver `^[0-9]+\.[0-9]+(\.[0-9]+)?$` | **required**; namespace follows `type` |
+
+**Trap 1 — `identityPlatform` is silently ignored.** Skycloak's docs say `identityPlatform: "TideCloak"`. That field is **not schema-validated**: it is accepted, ignored, and you get a **plain Keycloak cluster with no Tide extensions**. Always verify:
+
+```bash
+jq -r '.type' cluster-create.json    # MUST be "tidecloak"
+```
+
+**Trap 2 — the version namespace follows the type.** TideCloak clusters take TideCloak versions (`0.14.x`); Keycloak clusters take Keycloak versions (`26.x`). Crossing them → `400 invalid cluster version`. There is no versions endpoint; read tags from Docker Hub (`tideorg/tidecloak`) or ask Skycloak.
+
+**Version matrix — VERIFIED. Use `0.14.17` or later:**
+
+| Version | Provisions | Automation client | `setUpTideRealm` |
+|---|---|---|---|
+| `0.13.13` | yes | **500 — unusable** | untestable |
+| `0.14.11` | yes | works | **500 KEYGEN_FAILED** |
+| `0.14.17` | yes | works | **works** |
+
+A broken automation client also breaks Skycloak's own `/clusters/{id}/realms` API, which proxies through it.
 
 ---
 
 ## Step 2: Poll until available
 
 ```bash
-for i in $(seq 1 40); do
-  STATUS=$(curl -s "$API/clusters/$CLUSTER_ID" \
-    -H "API-Key: $SKYCLOAK_API_KEY" -H "API-Version: $VER" | jq -r '.status')
-  echo "attempt $i: $STATUS"
-  case "$STATUS" in
-    available) echo "ready"; break ;;
-    failed)    echo "provisioning FAILED — check the Skycloak dashboard"; exit 1 ;;
-  esac
+for i in $(seq 1 45); do
+  S=$(curl -s "${H[@]}" "$API/clusters/$CLUSTER_ID" | jq -r '.status')
+  echo "$i: $S"
+  case "$S" in available) break ;; failed) echo "provisioning FAILED"; exit 1 ;; esac
   sleep 15
 done
+TIDECLOAK_URL="https://${CLUSTER_ID}.us.skycloak.io"   # host mirrors `location`
 ```
 
-Provisioning is typically 2–4 minutes; Skycloak also emails on completion. Do not proceed to bootstrap until status is `available`. The cluster is reachable at `https://<cluster-id>.app.skycloak.io`:
-
-```bash
-TIDECLOAK_URL="https://${CLUSTER_ID}.app.skycloak.io"
-curl -s -f "$TIDECLOAK_URL" > /dev/null && echo "TideCloak reachable" || echo "not reachable yet"
-```
+Typically 45s–4min. Status may pass through `provisioning` and `updating`. Do not bootstrap before `available`.
 
 ---
 
-## Step 3: Get an admin token (no master password exists)
+## Step 3: Admin token via the automation client
 
-Skycloak does **not** issue a Keycloak admin username/password. Two ways to reach the admin API:
-
-**A. Admin Console SSO (interactive)** — for a human clicking through: open the cluster's "Go to Console" from the Skycloak dashboard, authenticated by your Skycloak account. Use this to eyeball the instance; it does not give a scriptable token.
-
-**B. Automation client (scriptable)** — each cluster has a confidential OAuth2 client `skycloak-automation-<cluster-id>` in the `master` realm for programmatic admin access. Fetch its credentials, then use client-credentials to mint admin tokens:
+Skycloak issues no master admin password. Each cluster gets a confidential client in its own `master` realm.
 
 ```bash
-# Field names of the credentials response are INFERRED — inspect the actual JSON.
-curl -s "$API/clusters/$CLUSTER_ID/credentials" \
-  -H "API-Key: $SKYCLOAK_API_KEY" -H "API-Version: $VER" | tee cluster-creds.json | jq .
+curl -s "${H[@]}" "$API/clusters/$CLUSTER_ID/credentials" -o creds.json
+CLIENT_ID=$(jq -r '.client_id' creds.json)
+CLIENT_SECRET=$(jq -r '.client_secret' creds.json)
+TOKEN_URL=$(jq -r '.token_url' creds.json)
 
-CLIENT_ID=$(jq -r '.clientId // .automationClientId // empty' cluster-creds.json)
-CLIENT_SECRET=$(jq -r '.clientSecret // .secret // empty' cluster-creds.json)
-
-# Mint an admin token against the hosted instance's master realm:
 get_token() {
-  curl -s -X POST "$TIDECLOAK_URL/realms/master/protocol/openid-connect/token" \
-    -H "Content-Type: application/x-www-form-urlencoded" \
-    -d "grant_type=client_credentials&client_id=$CLIENT_ID&client_secret=$CLIENT_SECRET" \
-    | jq -r '.access_token'
+  curl -s -X POST "$TOKEN_URL" \
+    --data-urlencode "grant_type=client_credentials" \
+    --data-urlencode "client_id=$CLIENT_ID" \
+    --data-urlencode "client_secret=$CLIENT_SECRET" | jq -r '.access_token'
 }
-TOKEN="$(get_token)"
-[ -n "$TOKEN" ] && [ "$TOKEN" != "null" ] && echo "admin token OK" || echo "token failed — check creds/scopes"
+curl -s -o /dev/null -w "%{http_code}\n" "$TIDECLOAK_URL/admin/realms" \
+  -H "Authorization: Bearer $(get_token)"      # want 200
 ```
 
-This `get_token` replaces the master-admin `get_token` in the self-host init script. Everything downstream (realm create, `setUpTideRealm`, IGA toggle, change-request authorize/commit, adapter export) is the same — just pointed at `$TIDECLOAK_URL` with this token.
+The client's UUID does **not** match the cluster id, despite the docs' `skycloak-automation-<cluster-id>` phrasing. Normal, not a fault.
+
+This `get_token` replaces the master-admin one used in the self-host playbooks. Everything downstream is identical.
 
 ---
 
 ## Step 4: Bootstrap the Tide realm
 
-Run the standard Tide-realm bootstrap against the hosted instance:
+Run `bootstrap-realm-from-template` then `initialize-admin-and-link-account` against `$TIDECLOAK_URL` using the Step 3 `get_token`.
 
-1. `bootstrap-realm-from-template` — create the realm from the `realm.json` template (identical template to self-host; see `deploy-tidecloak-docker` Step 2), then `setUpTideRealm` + enable IGA.
-2. `initialize-admin-and-link-account` — create the admin user, assign `tide-realm-admin`, generate the Tide-account link, approve the change requests, export the adapter JSON.
+**Confirm the Tide vendor surface first** (the GAP-066 check — resolved for `0.14.17`):
 
-Use the `get_token()` from Step 3 (automation client) everywhere the self-host script uses the master-admin token. Point `TIDECLOAK_URL` at `https://<cluster-id>.app.skycloak.io`.
+```bash
+curl -s -o /dev/null -w "toggle-iga %{http_code}\n" -X POST \
+  "$TIDECLOAK_URL/admin/realms/master/tide-admin/toggle-iga" \
+  -H "Authorization: Bearer $(get_token)" -H 'Content-Type: application/json' -d '{"enabled":false}'
+```
 
-> **VERIFY THIS ON THE LIVE INSTANCE (GAP-066).** The pack cannot yet confirm that a Skycloak-hosted TideCloak exposes the full Tide vendor surface (`setUpTideRealm`, `toggle-iga`, the change-request API, adapter export with `jwk`/`vendorId`/`homeOrkUrl`) or how Tide **licensing** is handled in the hosted context. Before promising a turnkey result:
-> - Probe `POST .../vendorResources/setUpTideRealm` and check for a 2xx + licensing JSON.
-> - After bootstrap, confirm the exported adapter JSON contains `jwk`, `vendorId`, `homeOrkUrl` (I-05, I-13).
-> - If those endpoints 404 or the adapter lacks Tide fields, **stop** — Skycloak is hosting the broker but Tide-realm provisioning/licensing needs the partner's Tide-specific path. Report this to the operator and raise with the Tide/Skycloak teams. Do not fabricate the adapter JSON.
+`200` = real TideCloak. `404` = plain Keycloak, wrong cluster type — go back to Step 1.
+
+Licensing (`setUpTideRealm`) works on hosted from `0.14.17` and takes **10–15 seconds** — it genuinely reaches Tide's licensing service. A sub-2-second failure means it never made the outbound call.
+
+### Ordering rule — the one-way door
+
+Committing the `tide-realm-admin` grant flips the realm **firstAdmin → multiAdmin**. After that, **no change request can be approved from a script**:
+
+```
+409 MULTIADMIN_REQUIRES_APPROVAL_ENCLAVE
+"multiAdmin change requests must be approved via the approval enclave"
+```
+
+That is the security model, not a bug: governed admin changes need a browser enclave signature, so a stolen automation credential cannot rewrite realm config.
+
+**Therefore do every governed write BEFORE granting `tide-realm-admin`:** realm import, licensing, IGA enablement, `_tide_*` roles, client config including **all** redirect URIs and web origins, and the admin user. Grant `tide-realm-admin` last, then drain once.
+
+**Plan redirect URIs up front.** Adding one later (a tunnel URL, a staging domain) is a manual enclave approval in the admin console at `$TIDECLOAK_URL/admin/{realm}/console/` → Change Requests. If the app may be reached over a tunnel or a second port, register those origins during bootstrap.
 
 ---
 
 ## Step 5: Wire the app
 
-Identical to any Tide app — the hosting choice does not change integration. Adapter JSON goes to `data/tidecloak.json` (Next.js) or `public/tidecloak.json` (React/Vite), with `auth-server-url` pointing at the hosted URL. Continue with `add-auth-nextjs-fresh` / `add-auth-nextjs-existing`, then route/API protection.
+Identical to any Tide app. Export the adapter and confirm the Tide fields:
+
+```bash
+CUUID=$(curl -s "$TIDECLOAK_URL/admin/realms/$REALM/clients?clientId=$CLIENT_NAME" \
+  -H "Authorization: Bearer $(get_token)" | jq -r '.[0].id')
+curl -s "$TIDECLOAK_URL/admin/realms/$REALM/vendorResources/get-installations-provider?clientId=$CUUID&providerId=keycloak-oidc-keycloak-json" \
+  -H "Authorization: Bearer $(get_token)" > data/tidecloak.json
+jq '{jwk: has("jwk"), vendorId: has("vendorId"), homeOrkUrl: has("homeOrkUrl")}' data/tidecloak.json
+```
+
+All three must be `true`. If not, licensing did not complete — do not hand-build the adapter and do not fall back to `createRemoteJWKSet` (I-04, I-05, I-13).
+
+**Match the SDK version to the cluster version.** `@tidecloak/*` npm versions track TideCloak releases: a `0.14.17` cluster wants `@tidecloak/nextjs@0.14.17`. VERIFIED.
+
+**DPoP is lockstep (I-12).** The shared realm template sets `"dpop.bound.access.tokens": "true"`, so the client MUST enable it or the token endpoint returns `400 "DPoP proof is missing"`. All four pieces are required — provider `useDPoP`, `public/tide_dpop_auth.html`, the `/tide_dpop` rewrite, and its CSP. See `add-auth-nextjs-fresh` Step 4. `tide_dpop_auth.html` must match the SDK version and comes only from the pack template or the Tide team.
 
 ---
 
 ## Verification Checklist
 
 ```bash
-# Cluster available
-curl -s "$API/clusters/$CLUSTER_ID" -H "API-Key: $SKYCLOAK_API_KEY" -H "API-Version: $VER" | jq '.status'
-# → "available"
+curl -s "${H[@]}" "$API/clusters/$CLUSTER_ID" | jq '{status, type, version}'
+# → available / tidecloak / 0.14.17+      ← type MUST be tidecloak
 
-# Hosted TideCloak reachable
-curl -s -f "https://${CLUSTER_ID}.app.skycloak.io" > /dev/null && echo reachable
+[ -n "$(get_token)" ] && echo "admin token OK"
 
-# Admin token from automation client works
-[ -n "$(get_token)" ] && echo "token OK"
+curl -s -o /dev/null -w "%{http_code}\n" -X POST \
+  "$TIDECLOAK_URL/admin/realms/master/tide-admin/toggle-iga" \
+  -H "Authorization: Bearer $(get_token)" -H 'Content-Type: application/json' -d '{"enabled":false}'
+# → 200 (Tide vendor surface present)
 
-# After bootstrap: adapter has Tide extensions (the real turnkey test — GAP-066)
-jq 'has("jwk") and has("vendorId") and has("homeOrkUrl")' data/tidecloak.json
-# → true   (if false: GAP-066 — hosted Tide vendor surface not confirmed)
+jq 'has("jwk") and has("vendorId") and has("homeOrkUrl")' data/tidecloak.json   # → true
 
-# IGA enabled on the hosted realm
-curl -s "https://${CLUSTER_ID}.app.skycloak.io/admin/realms/myapp" \
-  -H "Authorization: Bearer $(get_token)" | jq '.attributes.isIGAEnabled'
+curl -s "$TIDECLOAK_URL/admin/realms/$REALM/iga/change-requests?status=PENDING" \
+  -H "Authorization: Bearer $(get_token)" | jq 'length'   # → 0
 ```
 
 ---
 
 ## Common Failures
 
-### `402 Payment Required` on create
-The chosen region/size isn't available on the current plan (e.g. a non-US region on a trial workspace). Use a US region / `Small` size, or upgrade the plan. The RFC 9457 body's `detail` states the constraint.
+### Cluster creation returns `500 "Failed to create cluster"`
+Almost always **TideCloak is not enabled for your workspace** — it is not on in prod by default, and the API fails open with a 500 instead of a clean 402/403. Ask Skycloak to enable it. Confirming signals: schema validation passes (you get past the 422s), plain `type: "keycloak"` fails identically, and nothing partial is created (the cluster list stays `[]`).
 
-### `403` "does not have the required scope"
-The API key lacks `clusters:write` (create) or `clusters:credentials:read` (Step 3). Create a key with the right scopes; note write includes read.
+### `402 Plan Limit Exceeded`
+Clean and honest: `{"current_limit":1,"current_plan":"trial","current_usage":1,"required_plan":"business"}`. Trial allows **one** cluster. Delete the old one (`DELETE /clusters/{id}` → 204) or upgrade.
 
-### Missing `API-Version` header (AP-HOST-4)
-Every Skycloak call needs `-H "API-Version: 2026-06-01.beta"`. Omitting it fails the request.
+### `400 invalid cluster version`
+The version namespace doesn't match `type`. TideCloak → `0.14.x`, Keycloak → `26.x`.
 
-### `422` on create with a field complaint
-The request-body field names here are INFERRED from the docs. Read the `errors[]` array in the RFC 9457 response — it names the offending `field` — and adjust (`identityPlatform`/`size`/`region` spellings, enum values).
+### You asked for TideCloak and got Keycloak
+You used `identityPlatform` instead of `type`. Check `jq -r '.type'`. Delete and recreate.
 
-### Cluster stuck in `provisioning` / went `failed`
-Provisioning is async and occasionally fails server-side. Check the Skycloak dashboard for the cluster's error detail; recreate if `failed`. Do not bootstrap against a non-`available` cluster.
+### Automation client `client_credentials` returns 500
+Broken cluster version (`0.13.13`). Recreate on `0.14.17+`. Also manifests as `GET`/`POST /clusters/{id}/realms` returning 500, since Skycloak proxies through that client.
 
-### Adapter JSON missing Tide fields after bootstrap (GAP-066)
-The hosted instance may not expose the Tide vendor surface, or licensing wasn't provisioned. Do not fall back to `createRemoteJWKSet` or hand-build the adapter (I-04). Stop and escalate — this is the open question the hosted path depends on.
+### `setUpTideRealm` → `TIDE-IDPEXT-VENDOR-KEYGEN_FAILED`
+Cluster version too old (`0.14.11` and earlier on hosted). Recreate on `0.14.17+`.
+
+To tell licensing from key generation, re-run with `skipLicense=true` **on a fresh realm**. `200 {"status":"idp-created"}` means the failing step is license activation. `skipLicense` is a **diagnostic, not a workaround** — it mints no VRK, so the adapter export then 500s with no `jwk`.
+
+### `setUpTideRealm` → `TIDE-IDPEXT-VENDOR-REALM_SETUP_FAILED`
+You retried on a realm a previous failure already half-initialised — `tide-vendor-key` and the `tide` IdP survive the failure. This error is misleading about its own cause. **Always retest on a freshly created realm** or you will chase the wrong fault.
+
+### `409 MULTIADMIN_REQUIRES_APPROVAL_ENCLAVE`
+The realm already flipped to multiAdmin. Approve in the admin console UI, or tear down and redo the bootstrap with correct ordering (Step 4).
+
+### Browser CORS errors against the cluster
+The client's `webOrigins` doesn't include your app origin. Error responses omit CORS headers, so *any* rejected request surfaces in the console as a CORS failure — read the Network tab's response body, not the console message, before concluding it is CORS.
+
+### Public API returns 401 on a key that previously worked
+The key was revoked. Mint a new one; don't debug it.
 
 ---
 
 ## Anti-Patterns
 
-- **AP-HOST-2** — Telling the user the hosted Tide path is fully turnkey before GAP-066 is confirmed. Cluster provisioning is verified; the Tide-realm bootstrap on top is not.
-- **AP-HOST-3** — Putting `SKYCLOAK_API_KEY` or the `skycloak-automation-*` secret in app code, `tidecloak.json`, or the repo. Bootstrap secrets only.
+- **AP-HOST-2** — Claiming the hosted Tide path is turnkey without checking `type`, the vendor surface, and the adapter's `jwk`. Version matters enormously.
+- **AP-HOST-3** — Putting the device token, API key, or automation-client secret in app code, `tidecloak.json`, or the repo.
 - **AP-HOST-4** — Omitting the `API-Version` header.
-- **Do not** fabricate `tidecloak.json` if the hosted vendor endpoints are absent. A missing adapter is a provisioning problem to escalate, not a file to invent (I-05, I-13).
-- **Do not** present hosting as either a security downgrade or a magic upgrade — state the real trust model from `canon/hosting-options.md` (availability + metadata + Tideless-IGA caveat).
+- **Do not** use `identityPlatform`. Use `type`.
+- **Do not** grant `tide-realm-admin` before finishing governed writes. It is a one-way door.
+- **Do not** treat a 500 on cluster creation as a payload bug. Check the workspace entitlement first.
+- **Do not** fabricate `tidecloak.json` if the vendor endpoints are absent (I-05, I-13).
+- **Do not** use the trial realm path (`POST /api/trial/realm/provision`, browser-only, cookie+CSRF). It accepts only `{slug}`, always yields **plain Keycloak** on shared infrastructure with no Tide surface, and produces no cluster ID — so none of the realm APIs apply.
 
 ---
 
 ## References
 
-- `canon/hosting-options.md` — decision, trust model, Skycloak API reference, GAP-066
-- Skycloak docs: `https://skycloak.io/docs/api/` (API-Version `2026-06-01.beta`)
-- `deploy-tidecloak-docker` — the self-host equivalent and the shared realm-bootstrap sequence
-- `bootstrap-realm-from-template`, `initialize-admin-and-link-account` — the Tide-realm steps reused in Step 4
+- `canon/hosting-options.md` — decision, trust model, Skycloak API reference
+- `canon/iga-change-requests-api.md` — authorize/commit and the multiAdmin flip
+- `deploy-tidecloak-docker` / `start-tidecloak-dev` — self-host equivalent
+- `bootstrap-realm-from-template`, `initialize-admin-and-link-account` — reused in Step 4
+- Skycloak docs: `https://skycloak.io/docs/api/` (base `https://api.skycloak.io`, `API-Version: 2026-06-01.beta`)
