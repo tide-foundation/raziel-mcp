@@ -54,7 +54,7 @@ Troubleshoot broken Tide integrations. Own login failures, missing roles/claims,
 |---------|-------------|----------|
 | Login hangs or blank screen | CSP missing `frame-src '*'`, redirect handler missing, DPoP auth page missing | `diagnose-broken-login` |
 | Login redirect loop | `@tidecloak/react` ESM alias missing (AP-42), provider not wired | `diagnose-broken-login` |
-| DPoP login fails | `tide_dpop_auth.html` missing, or its `app/tide_dpop/[...path]/route.ts` catch-all route handler / hash-pinned CSP / `Allow-CSP-From: *` header not configured (I-12, L-07) | `diagnose-broken-login` |
+| DPoP login fails | `tide_dpop_auth.html` missing, **modified** (must be byte-identical to the exemplar — no `window.opener`), served by a route handler instead of a `next.config` rewrite, or its CSP / `Allow-CSP-From: *` missing or overridden by the generic rule (I-12, L-07) | See **T-26** |
 | Token endpoint 400 `"DPoP proof is missing"` | DPoP is ON server-side by default (realm template sets `dpop.bound.access.tokens: true`) but the client half is missing. Check all four pieces: provider `useDPoP`, `public/tide_dpop_auth.html`, `/tide_dpop` rewrite, DPoP CSP **ordered last** | See **T-26** |
 | Token endpoint 500 after an SDK upgrade | `tide_dpop_auth.html` version mismatch — it is NOT shipped in `@tidecloak/*` npm packages, so upgrading the SDK does not update it | See **T-26** |
 | Console shows CORS error on the token endpoint | Usually a *symptom*: error responses carry no CORS headers, so any rejection reads as CORS. Read the Network tab **Response body** before believing it. If genuinely CORS, the client's `webOrigins` lacks your app origin | See **T-26** |

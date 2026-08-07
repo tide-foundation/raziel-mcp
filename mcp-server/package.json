@@ -1,6 +1,6 @@
 {
   "name": "tide-agent-pack-mcp",
-  "version": "1.9.6",
+  "version": "1.9.7",
   "description": "MCP server exposing the Tide agent pack (canon, playbooks, skills, prompts, adapters)",
   "type": "module",
   "main": "dist/index.js",

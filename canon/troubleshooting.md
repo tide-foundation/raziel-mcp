@@ -1674,12 +1674,27 @@ curl -s "$TIDECLOAK_URL/admin/realms/$REALM/clients?clientId=$CLIENT" \
 
 **Fix:**
 1. Add `useDPoP: { mode: 'strict', alg: 'ES256' }` **inside** the `config` object (not as a JSX prop).
-2. Copy `tide_dpop_auth.html` from a pack template into `public/`.
+2. Install `tide_dpop_auth.html` **verbatim** into `public/`:
+   ```bash
+   cp <pack>/sources/example-app-keylessh/public/tide_dpop_auth.html public/
+   diff -q public/tide_dpop_auth.html <pack>/sources/example-app-keylessh/public/tide_dpop_auth.html
+   ! grep -q "window.opener" public/tide_dpop_auth.html && echo "correct copy"
+   ```
+   The enclave integrity-checks this file. A restyled or "improved" copy — notably one
+   adding `window.opener` popup handling — fails with exactly this unexplained 500. The
+   canonical page posts only to `window.parent` and has no styling.
 3. Add the `/tide_dpop/:path*` → `/tide_dpop_auth.html` rewrite.
 4. Add the DPoP CSP **after** any generic CSP rule — the last matching rule wins for a header key, so a generic `/:path*` rule placed later silently overrides it.
 5. Switch API calls to `secureFetch` (absolute URLs only). A plain `fetch` with a Bearer header carries no proof and will be rejected.
 
-**If all four are correct and it still 500s:** suspect a **`tide_dpop_auth.html` version mismatch**. That file is not shipped in the `@tidecloak/*` npm packages, so an SDK upgrade does not update it. Obtain the copy matching your SDK version from the Tide team.
+**If all four are correct and it still 500s:** the `tide_dpop_auth.html` copy is wrong — either **modified** or **version-mismatched**. Check both:
+
+```bash
+diff -q public/tide_dpop_auth.html <pack>/sources/example-app-keylessh/public/tide_dpop_auth.html
+grep -c "window.opener" public/tide_dpop_auth.html    # want 0
+```
+
+A difference means you have a drifted copy — re-copy from the exemplar. If it matches the exemplar and still fails, the exemplar itself may predate your SDK version: the file is not shipped in the `@tidecloak/*` packages, so ask the Tide team for the build matching your SDK. VERIFIED 2026-08-06: both pack *templates* had silently drifted to a modified 9121-byte variant while the exemplar held the canonical 7183-byte file.
 
 **Do not "fix" this by removing `useDPoP` alone.** The server still demands proofs and login stays broken. Disabling DPoP requires flipping the client attribute to `false` as well, which on an IGA realm is a change request — and after the realm goes multiAdmin, a human enclave approval.
 

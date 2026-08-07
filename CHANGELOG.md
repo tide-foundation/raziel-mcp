@@ -2,6 +2,16 @@
 
 All notable changes to `@tideorg/mcp` (the Tide Agent Pack) are documented here.
 
+## 1.9.7 — 2026-08-07
+
+- **DPoP hardening** — the server-side `cnf.jkt` assertion (sender-constrained token
+  proof-of-possession) is now active in the JWT-verification guidance; it had shipped
+  commented out. See `playbooks/verify-jwt-server-side.md` and `protect-api-nextjs.md`.
+- **Skycloak: reuse a working API key** instead of minting a new one on every run.
+- **Auth UX** — a new `canon/ux-states.md` (auth state machine, real waits, and
+  Tide-specific copy) plus a fix for the provider-callback error.
+- Red-team refinements and a source cross-reference audit.
+
 ## 1.9.6 — 2026-08-06
 
 - **Skycloak hosted provisioning — verified end-to-end.** The device-auth flow now

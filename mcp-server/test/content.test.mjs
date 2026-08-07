@@ -75,6 +75,35 @@ export async function run() {
     c.ok(`${s} does not call the legacy change-set surface`, !legacyCall, "legacy change-set call present");
   }
 
+  // 4b. tide_dpop_auth.html must be byte-identical across every template and the
+  //     keylessh exemplar. The Tide enclave integrity-checks this file, so ANY local
+  //     modification (restyling, popup/window.opener handling, "improvements") makes
+  //     login fail with an unexplained 500 at the token exchange. It is not shipped in
+  //     the @tidecloak/* npm packages, so nothing else catches drift.
+  //     REGRESSION: both templates had silently drifted to a modified 9121-byte variant
+  //     while the exemplar held the canonical 7183-byte file. VERIFIED 2026-08-06.
+  //     The exemplar lives in sources/ (private — not synced or shipped). When it is
+  //     absent (public repo / CI clone) we still cross-check the shipped templates
+  //     against each other, so drift is caught in every environment.
+  const DPOP_REF = "sources/example-app-keylessh/public/tide_dpop_auth.html";
+  const dpopRef = packRead(DPOP_REF);
+  const dpopTemplates = ["nextjs-e2ee-vault", "nextjs-customer-portal"].map((tpl) => {
+    const p = `templates/${tpl}/public/tide_dpop_auth.html`;
+    const body = packRead(p);
+    c.ok(`${p} exists`, !!body, "template must ship the DPoP page");
+    return { p, body };
+  });
+  const dpopCanonical = dpopRef || dpopTemplates.find((t) => t.body)?.body;
+  if (dpopCanonical) {
+    c.ok("DPoP page targets window.parent only",
+      !dpopCanonical.includes("window.opener"),
+      "DPoP page must not use window.opener — the enclave frames it");
+    for (const { p, body } of dpopTemplates) {
+      if (body) c.ok(`${p} matches the canonical DPoP page`, body === dpopCanonical,
+        "DPoP page has drifted — the enclave integrity-checks it; copy the exemplar verbatim");
+    }
+  }
+
   // 5. Security gap mapping is complete: SG-01 .. SG-18 all present.
   const sg = packRead("canon/security-gap-mapping.md") || "";
   for (let i = 1; i <= 18; i++) {

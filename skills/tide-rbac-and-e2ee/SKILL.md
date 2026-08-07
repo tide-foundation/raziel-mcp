@@ -47,6 +47,15 @@ Self-encryption (this skill) is **permanently user-bound**. It cannot be upgrade
 
 **Early sharing detection**: If the user request mentions any of: "sharing", "share encrypted", "chosen recipients", "other users can decrypt", "cross-user decryption", "encrypt for others", "selective sharing" — route directly to `setup-forseti-e2ee`. Do NOT start with self-encryption and attempt to add sharing later. Self-encryption cannot be upgraded to shared encryption by renaming roles or changing parameters. The SDK call path must be different from the start. VERIFIED (session-001, F-07).
 
+**Tell the user the cost before they commit to sharing.** Shared (Forseti) encryption is strictly more work than self-encryption, and the difference is a human ceremony they cannot automate away:
+
+- **Self-encryption**: no policy, no contract, no signing ceremony. Roles + `doEncrypt`/`doDecrypt`. Fully scriptable end to end.
+- **Shared (Forseti)**: a C# contract, a policy, and **one browser signing ceremony by a `tide-realm-admin`** to produce the `policySig`. Everything else — contract upload (`POST /iga/forseti-contracts`), roles, storing the signed policy — is scriptable, but the signature is not. There is no server-side signing endpoint (`first-admin-sign-preview` performs no cryptography).
+
+If they only need "each user protects their own data", self-encryption is the right answer and avoids the ceremony entirely. Route to Forseti only when someone other than the encryptor genuinely must decrypt.
+
+**If they do need Forseti, get the ordering right or it costs repeated ceremonies.** Do the signing while the realm is still **firstAdmin**, before granting `tide-realm-admin` — that grant flips the realm to multiAdmin, after which every governed change needs a fresh enclave approval. Front-load contract upload, all roles, the policy signature, and the client config in that window. See the automation-boundary section in `setup-forseti-e2ee`.
+
 ---
 
 ## Required Repo Inspection
