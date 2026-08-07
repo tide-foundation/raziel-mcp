@@ -29,30 +29,36 @@ az containerapp env create \
   --location $LOCATION \
   --output none 2>/dev/null || true
 
-# Create or update container app.
-# --min-replicas 1 keeps one instance warm. With min 0 the app scales to zero
-# when idle; the next request cold-starts and the TLS handshake resets before a
-# replica is ready — which is exactly what `npm run test:remote` was hitting.
-# Keep >=1 for a reliable always-on public endpoint. The update branch must set
-# it too, or re-running this on an app first created with min 0 leaves it at 0.
-az containerapp create \
-  --name $APP_NAME \
-  --resource-group $RESOURCE_GROUP \
-  --environment $ENVIRONMENT \
-  --image $IMAGE \
-  --target-port 3000 \
-  --ingress external \
-  --min-replicas 1 \
-  --max-replicas 3 \
-  --cpu 0.25 --memory 0.5Gi \
-  --output none 2>/dev/null || \
-az containerapp update \
-  --name $APP_NAME \
-  --resource-group $RESOURCE_GROUP \
-  --image $IMAGE \
-  --min-replicas 1 \
-  --max-replicas 3 \
-  --output none
+# Create the app on first deploy, or UPDATE an existing one — never a fresh
+# `create` on an existing app. `create` rebuilds the whole template and DROPS
+# env vars + secrets not passed on the command line (that is how the App Insights
+# connection string kept getting wiped on redeploy, silently killing telemetry).
+# `update` only changes what's named, preserving env vars, secrets, and the
+# custom-domain binding. --min-replicas 1 keeps one instance warm (min 0 scales
+# to zero and the cold-start resets the TLS handshake before a replica is ready).
+if az containerapp show --name $APP_NAME --resource-group $RESOURCE_GROUP --output none 2>/dev/null; then
+  echo "=== Updating existing app (preserves env vars + secrets) ==="
+  az containerapp update \
+    --name $APP_NAME \
+    --resource-group $RESOURCE_GROUP \
+    --image $IMAGE \
+    --min-replicas 1 \
+    --max-replicas 3 \
+    --output none
+else
+  echo "=== Creating app (first deploy) ==="
+  az containerapp create \
+    --name $APP_NAME \
+    --resource-group $RESOURCE_GROUP \
+    --environment $ENVIRONMENT \
+    --image $IMAGE \
+    --target-port 3000 \
+    --ingress external \
+    --min-replicas 1 \
+    --max-replicas 3 \
+    --cpu 0.25 --memory 0.5Gi \
+    --output none
+fi
 
 # Re-bind the custom domain (idempotent). The mcp.tide.org binding has been
 # observed to drop on some deploy operations; re-applying it here keeps the
