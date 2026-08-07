@@ -69,6 +69,60 @@ The `doEncrypt`/`doDecrypt` on `useTideCloak()` are convenience wrappers that do
 
 ---
 
+## Automation boundary: what a script can do, and what needs a human
+
+Read this before designing the setup flow — it determines how much of the ceremony your users actually have to perform.
+
+| Step | Scriptable? | How |
+|---|---|---|
+| Author the contract (C#) | Yes | a file in your repo |
+| **Upload the contract** | **Yes** | `POST /admin/realms/{realm}/iga/forseti-contracts` (admin bearer, no enclave) |
+| Create the `_tide_*` voucher-gate roles + app roles | Yes | admin REST + change-request drain |
+| Compute `contractId` | Yes | SHA-512 of the source |
+| Construct the policy object | Yes | plain JSON |
+| **Produce `policySig`** | **NO — browser enclave** | `PolicySignRequest` via heimdall-tide |
+| Store the signed policy | Yes | `POST /admin/realms/{realm}/iga/role-policies` |
+
+The one irreducible human step is the **signature**. `POST /iga/role-policies` *requires* a `policySig` in the body and never produces one — it stores what you give it. The signature is a VVK signature that only the admin's browser enclave can produce.
+
+**There is no server-side signing endpoint today.** `POST /iga/change-requests/{id}/first-admin-sign-preview` looks like one and is not: it resolves a change request to its full signing payload, logs it, and returns it, performing **no cryptography**. Its own source says so, with a TODO awaiting `Midgard.signClaims()`. Do not build a flow that assumes it signs. VERIFIED against `iga-core` source 2026-08-07.
+
+### The firstAdmin precedent — and why it does not (yet) generalise
+
+Tide already does exactly the "auto-sign during bootstrap so the operator never signs" pattern, for **one** policy: the reserved **M0 admin-quorum policy** (`tide-realm-admin`).
+
+During the firstAdmin ceremony, committing the `tide-realm-admin` grant triggers, in one transaction and strictly in this order:
+
+```
+sign the producer unit (firstAdmin pack, ALIVE)
+  -> sign the M0 admin Policy          (only this pack can — it alone carries Policy:1)
+  -> commit/persist the policy row
+  -> ONLY THEN flip firstAdmin -> multiAdmin   (which BURNS the pack)
+```
+
+The flip is **gated on a committed, signed M0 policy**, and the pack that signs it is destroyed by the flip. If it flipped first, the realm would be left with no M0 policy and no way to ever produce one — every later approval-model build would fail. Hence the fail-closed ordering.
+
+The policy name `tide-realm-admin` is **reserved**: `POST /iga/role-policies` returns **403** if you try to create or modify it. It is written only by the internal M0 writer.
+
+**What this means for your app's policies.** The mechanism that makes M0 seamless — a live firstAdmin pack signing server-side — is not exposed for arbitrary policies. So today you cannot fully auto-sign an app policy. What you *can* do is make the human step happen **once, early, and in the right window**:
+
+### Recommended seamless sequence
+
+1. **Bootstrap the realm** (`bootstrap-realm-from-template`), staying in firstAdmin.
+2. **Upload the contract by REST** — no human.
+3. **Create every role** the contract references: `_tide_<tag>.selfencrypt` / `.selfdecrypt` voucher gates plus the app role your `ValidateExecutor` checks. Drain the change requests. No human.
+4. **Have the admin sign the app policy in the browser, while still firstAdmin.** This is the one popup. Do it as part of first-run admin setup, not as a later "now configure encryption" task.
+5. **Store the signed policy** via `POST /iga/role-policies`. No human.
+6. **Grant `tide-realm-admin` LAST**, then drain — this is the flip, and it is a one-way door.
+
+Getting the order wrong is what makes Forseti feel painful. After the flip, every governed change needs a fresh enclave approval, so a policy added later costs another ceremony — and so does every redirect URI, role, and client tweak you forgot. Front-load all of it.
+
+**Do not design a UX that asks an end user to sign a policy.** Policy signing is an *admin* ceremony bound to `tide-realm-admin`. If your product needs per-user encryption setup, that is self-encryption (`doEncrypt`/`doDecrypt`, no policy, no ceremony) — see the sharing gate in `tide-rbac-and-e2ee`. Reach for Forseti only when someone other than the encryptor must decrypt.
+
+**If the app offers a "shared" mode before the policy is signed, gate it.** The realm is not usable for shared encryption until the signature exists; surface that state rather than letting `IAMService.doEncrypt(data, policyBytes)` fail at runtime.
+
+---
+
 ## Step 1: Write the Forseti Contract (C#)
 
 Every contract implements `IAccessPolicy` from `Ork.Forseti.Sdk`. Without the `using` directive, the ORK compiler fails with `"The type or namespace name 'IAccessPolicy' could not be found"`.
@@ -146,7 +200,24 @@ public class Contract : IAccessPolicy
 
 ## Step 2: Compute the Contract Hash
 
-**There is no REST API for deploying Forseti contracts.** Do not use `PUT` or `POST` to `/tide-admin/forseti-contracts` — these endpoints do not exist (404/405). Contract deployment happens via `PolicySignRequest.addForsetiContractToUpload(contractSource)` in the browser signing flow (Step 4). VERIFIED (session-001, LEARNINGS-batch-007 L-06).
+**The contract-upload REST API DOES exist — at the `/iga/` path, not `/tide-admin/`.**
+
+```bash
+POST /admin/realms/{realm}/iga/forseti-contracts
+Authorization: Bearer <admin token>
+{"contractCode": "<full C# source>", "name": "my-contract"}
+```
+
+Requires `manage-realm`. **No enclave, no browser** — so contract upload is fully scriptable. It upserts, deduplicating within the realm by SHA-256 of `contractCode`, and returns the stored contract. Max source length 1,048,576 chars. Companion endpoints: `GET /iga/forseti-contracts`, `GET /iga/forseti-contracts/{id}`, `DELETE /iga/forseti-contracts/{id}`.
+
+> Earlier pack revisions said "there is no REST API for deploying Forseti contracts", based on `PUT`/`POST /tide-admin/forseti-contracts` returning 404/405. That legacy path is indeed gone — the surface moved to `/iga/`, the same migration the change-request API went through. CORRECTED 2026-08-07 against `iga-core` source (`IgaAdminResource.upsertForsetiContract`, `IgaForsetiContractService.upsert`).
+
+Uploading via `PolicySignRequest.addForsetiContractToUpload(contractSource)` during the browser signing flow (Step 4) still works and is what the enclave path uses. Pre-uploading via REST is the seamless option: it gets the source into the realm's contract library without a human, so the only remaining human step is the policy signature itself.
+
+**Two different hashes — do not conflate them:**
+- **`contractId` = SHA-512 hex of the exact contract source.** This is what the ORK uses to identify a compiled contract (`ForsetiContract.Id => Convert.ToHexString(SHA512.HashData(...))`) and what goes in the policy's `contractId`. Built-in contracts instead use `Name + ":" + Version` (e.g. `GenericRealmAccessThresholdRole:1`).
+- **SHA-256** is TideCloak's internal dedup key for the contract-library table only. Never put it in a policy.
+
 
 The `contractId` must be the SHA-512 hash of the EXACT contract source. Compute it locally:
 
@@ -302,7 +373,7 @@ The correct endpoint is an admin API route and **requires an admin bearer token*
 
 **If the proxy route is protected with `withAuth` (correct per I-03), the client must use authenticated fetch** (e.g., `appFetch` or `secureFetch` with Bearer header). A bare `fetch()` without Authorization returns 401. The resulting empty/error response produces undefined policy bytes, causing `PolicyAuthorizationFlowException: "Model does not have a policy passed with it"` at signing time. VERIFIED (LEARNINGS-batch-009 L-08).
 
-**There is no REST API for deploying Forseti contracts.** Do not try `PUT` or `POST` to `/tide-admin/forseti-contracts` — these endpoints do not exist on the dev image (404/405). Contract deployment happens via `PolicySignRequest.addForsetiContractToUpload(contractSource)` in the browser signing flow (Step 4). VERIFIED (session-001).
+**Contract upload has a REST API** at `POST /admin/realms/{realm}/iga/forseti-contracts` — see Step 2. The legacy `/tide-admin/forseti-contracts` path is gone; that is what earlier revisions tested.
 
 **The signed bytes arrive as a base64 string in the `policy` field, not raw binary.** Read the `policy` field and decode before using:
 

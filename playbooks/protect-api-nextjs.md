@@ -268,6 +268,11 @@ import { NextRequest } from 'next/server';
 import { verifyTideJWT, hasRole } from './tideJWT';
 import type { JWTPayload } from 'jose';
 
+// The realm issues DPoP-bound tokens by default (the pack's realm template sets
+// dpop.bound.access.tokens=true), so assert the binding. Disable ONLY if you have
+// deliberately turned DPoP off realm-side — not a supported configuration (I-12).
+const REQUIRE_DPOP = true;
+
 type AuthenticatedHandler = (
   req: NextRequest,
   jwt: JWTPayload
@@ -293,6 +298,16 @@ export function withAuth(handler: AuthenticatedHandler) {
 
     try {
       const jwt = await verifyTideJWT(token);
+
+      // DPoP binding assertion — fail closed. The realm template sets
+      // dpop.bound.access.tokens=true, so every legitimate token carries
+      // cnf.jkt; one without it is a misconfigured client or a downgrade
+      // attempt. Do NOT re-verify the proof itself when the client uses
+      // secureFetch — its proofs are Tide-specific, not RFC 9449. (I-12, SG-03)
+      if (REQUIRE_DPOP && !(jwt as { cnf?: { jkt?: string } }).cnf?.jkt) {
+        return Response.json({ error: 'Unauthorized' }, { status: 401 });
+      }
+
       return handler(req, jwt);
     } catch (err) {
       return Response.json({ error: 'Invalid token' }, { status: 401 });

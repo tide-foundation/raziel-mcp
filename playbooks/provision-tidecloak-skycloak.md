@@ -78,7 +78,33 @@ done
 
 ---
 
-## Step 0b: Mint a scoped API key
+## Step 0b: Reuse an existing key, or mint one
+
+**Check for a working key before minting.** The mint enforces a **per-plan key quota** (one of its four 403 gates), and keys **cannot be listed or deleted with a device token** — `GET` and `DELETE /api/cli/keys` both return **405** (the route is POST-only), and `full_key` is shown exactly once. So a script that mints on every run silently accumulates keys it can never enumerate or clean up, until the quota starts 403ing. Pruning is dashboard-only (Workspace → API keys). VERIFIED 2026-08-07.
+
+Because a key's value is unrecoverable after minting, "query the existing key" means **test the copy you stored**:
+
+```bash
+KEY_FILE=scripts/.skycloak-api-key
+
+if [ -s "$KEY_FILE" ]; then
+  code=$(curl -s -m 20 -o /dev/null -w "%{http_code}" "$API/clusters" \
+    -H "API-Key: $(cat "$KEY_FILE")" -H "API-Version: $VER")
+  case "$code" in
+    200)     echo "reusing stored key"; SKYCLOAK_API_KEY=$(cat "$KEY_FILE") ;;
+    401|403) echo "stored key revoked or under-scoped — mint a new one" ;;
+    *)       echo "cannot reach the API ($code) — fix connectivity, do NOT mint"; exit 1 ;;
+  esac
+fi
+```
+
+Distinguish the three outcomes. A **401/403** means the key is dead — mint. A **connection failure** is not a dead key; minting on it burns quota for no reason and hides the real fault. Keys do get revoked out from under you (two died mid-session during pack development), so treat "was working, now 401" as normal and re-mint rather than debugging the key.
+
+Ready-made implementation: `templates/*/scripts/skycloak-mint-key.sh` (reuse-then-mint, `FORCE_NEW=1` to override).
+
+### Minting
+
+
 
 ```bash
 mint=$(curl -s -X POST "https://app.skycloak.io/api/cli/keys" \

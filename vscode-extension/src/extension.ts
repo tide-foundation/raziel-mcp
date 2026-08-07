@@ -27,7 +27,7 @@ export function activate(context: vscode.ExtensionContext) {
               "npx",
               ["-y", "@tideorg/mcp"],
               {},
-              "1.9.6"
+              "1.9.7"
             ),
           ];
         }
@@ -42,7 +42,7 @@ export function activate(context: vscode.ExtensionContext) {
             "Raziel",
             vscode.Uri.parse(url),
             {},
-            "1.9.6"
+            "1.9.7"
           ),
         ];
       },

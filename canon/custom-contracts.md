@@ -256,7 +256,7 @@ Gas limit is 50,000. Exceeding it throws `OutOfGasException` and the operation f
 
 ## Deploying a Contract
 
-### Step 1: Upload Contract to TideCloak (Optional)
+### Step 1: Upload Contract to TideCloak (scriptable — no enclave)
 
 ```
 POST /admin/realms/{realm}/iga/forseti-contracts
@@ -269,9 +269,17 @@ Authorization: Bearer <admin-token>
 }
 ```
 
-The ORK compiles the contract in its sandbox and stores it. The response carries the stored contract's `contractHash` (`SHA512(source code)`).
+Requires `manage-realm`. **No enclave and no browser — this step is fully scriptable.** It upserts into the realm's contract library, and max source length is 1,048,576 characters. Companion endpoints: `GET /iga/forseti-contracts`, `GET /iga/forseti-contracts/{id}`, `DELETE /iga/forseti-contracts/{id}` (deleting nulls `CONTRACT_ID` on any referencing policy rows via `ON DELETE SET NULL`).
 
-Note: This endpoint may not be available on all TideCloak images. If it returns 404/405, the contract is deployed through the policy signing flow (Step 3) instead — the contract source is included in the contract transport.
+> ⚠️ **Two different hashes. Do not use the response's `contractHash` as your policy's `contractId`.**
+> - The response `contractHash` is **SHA-256** of the source — TideCloak's internal dedup key for the library table only.
+> - A policy's **`contractId` is SHA-512 hex** of the exact source, which is what the ORK matches against (`ForsetiContract.Id => Convert.ToHexString(SHA512.HashData(...))`). Built-in contracts instead use `Name + ":" + Version`, e.g. `GenericRealmAccessThresholdRole:1`.
+>
+> Compute the SHA-512 yourself; never copy it out of this response. VERIFIED against `iga-core` / ORK source 2026-08-07.
+
+Uploading here is optional in the sense that `PolicySignRequest.addForsetiContractToUpload(source)` also carries the source during signing. Prefer the REST upload: it is the seamless path, getting the contract into the realm without a human, so the only remaining manual step is the policy signature.
+
+(Earlier pack revisions said no REST API existed, having tested the legacy `/tide-admin/forseti-contracts` path. That path is gone; the surface moved to `/iga/`.)
 
 ### Step 2: Create a Policy Using the Contract
 

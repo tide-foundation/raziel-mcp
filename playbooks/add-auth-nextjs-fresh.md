@@ -189,9 +189,32 @@ All **four** pieces are required together. Missing any one breaks login, usually
 | 3 | rewrite `/tide_dpop/:path*` → `/tide_dpop_auth.html` | `next.config.ts` |
 | 4 | CSP + `Allow-CSP-From` on `/tide_dpop/:path*` | `next.config.ts` |
 
-**`tide_dpop_auth.html`:**
-- Copy it from a pack template (`templates/*/public/tide_dpop_auth.html`) into `public/`. The Tide enclave loads it during login to prove DPoP key possession to the ORKs. **Do not modify it** — its content is integrity-checked. VERIFIED (learning-batch-004, L-07).
-- **The HTML must match the SDK version.** It is NOT shipped inside the `@tidecloak/*` npm packages, so upgrading the SDK does not update it — a mismatch is a real failure mode after a version bump. The only sources are the pack template and the Tide team. If the enclave rejects it (`Popup DPoP verification failed to load`), or the token exchange returns an unexplained **500** after an SDK upgrade, suspect this file first. VERIFIED (LEARNINGS-batch-005 L-05, LEARNINGS-batch-007 L-03).
+**Installing `tide_dpop_auth.html` — copy verbatim, then verify**
+
+The Tide enclave loads this page during login to prove DPoP key possession to the ORKs, and **integrity-checks its content**. Copy it byte-for-byte. Do not restyle it, do not "improve" it, do not add popup/`window.opener` handling — any edit makes login fail with an unexplained **500** at the token exchange, with nothing in the response body to tell you why. VERIFIED (learning-batch-004 L-07; drift reproduced 2026-08-06).
+
+```bash
+mkdir -p public
+
+# Canonical source, in priority order. The exemplar is a real working app and is
+# the reference the pack's own tests assert against.
+cp <pack>/sources/example-app-keylessh/public/tide_dpop_auth.html public/ \
+  || cp <pack>/templates/nextjs-e2ee-vault/public/tide_dpop_auth.html public/
+
+# Verify you copied it intact — these three must all hold:
+test -s public/tide_dpop_auth.html && echo "present"
+! grep -q "window.opener" public/tide_dpop_auth.html && echo "no window.opener (correct — the enclave frames it)"
+diff -q public/tide_dpop_auth.html <pack>/sources/example-app-keylessh/public/tide_dpop_auth.html \
+  && echo "byte-identical to the exemplar"
+```
+
+If `diff` reports a difference, **you have the wrong copy** — do not proceed and do not try to reconcile it by hand. Re-copy from the exemplar, or ask the Tide team for the build matching your SDK version.
+
+What the correct page does, so you can recognise a wrong one: it reads `version` and `openerOrigin` from the query string, derives an IndexedDB name from the hex-encoded `iss`/`aud` path segments, reads the `dpopState` key, signs an enclave-supplied challenge prefixed with `dpop-auth-challenge:` (a deliberate anti-blind-signing measure), and posts every message to **`window.parent`** — never `window.opener`. It carries no styling.
+
+**It is version-bound and NOT shipped in the `@tidecloak/*` npm packages**, so upgrading the SDK does not update it. Re-copy it whenever you change SDK version. If the enclave rejects it (`Popup DPoP verification failed to load`) or the token exchange 500s after a bump, suspect this file first. VERIFIED (LEARNINGS-batch-005 L-05, LEARNINGS-batch-007 L-03).
+
+**Other rules for this page:**
 - The enclave requests it at `/tide_dpop/iss/<hex-issuer>/aud/<hex-client>/tide_dpop_auth.html`, which does not map to the static file — hence the rewrite. Note the **SDK itself never references this path**; the enclave fetches it from your origin, so grepping the SDK for `tide_dpop` finds nothing and proves nothing.
 - **Do NOT use a route handler** (`app/tide_dpop/[...path]/route.ts`). Next.js injects a hash-based CSP on route-handler responses that blocks the page's inline script. Static files via rewrites are unaffected. VERIFIED (LEARNINGS-batch-005 L-04).
 - **Do NOT validate the issuer/client hex params.** The enclave already integrity-checks the HTML; server-side validation that fails returns 400 before the HTML loads, killing the popup. VERIFIED (LEARNINGS-batch-005 L-03).

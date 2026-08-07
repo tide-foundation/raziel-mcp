@@ -65,7 +65,13 @@ The Reviewer is optional per-step but **mandatory before handing the app to the 
 - [ ] Does `next.config.ts` have `strictExportPresence = false`? (not `reexportExportsPresence`)
 - [ ] Does `next.config.ts` have the `@tidecloak/react` ESM alias? (AP-42)
 - [ ] Does `public/tide_dpop_auth.html` exist? (I-12, L-07)
-- [ ] Is the DPoP auth page served by a `app/tide_dpop/[...path]/route.ts` catch-all route handler (NOT `next.config.ts` rewrites) with a sha256 hash-pinned CSP (NOT `script-src 'unsafe-inline'`) and an `Allow-CSP-From: *` header? (I-12)
+- [ ] Does the app treat `!authenticated` as logged out while `isInitializing` is still true? That flashes the sign-in screen at signed-in users on every load (AP-UX01). Also check `initError`, `isRefreshing`, `sessionExpired`, `isOffline` are handled — see `canon/ux-states.md`
+- [ ] Do missing-role failures name the up-to-120s propagation delay and offer re-login, rather than a generic "access denied" that blames the user (AP-UX03)?
+- [ ] Does the server **assert `cnf.jkt` is present** on every verified token (fail closed)? The realm issues DPoP-bound tokens by default, so a missing binding means a misconfigured client or a downgrade — an app that skips this accepts unbound bearer tokens while believing it is DPoP-protected. Note the pack's own `withAuth` shipped this check **commented out**, so look for it actively rather than assuming. (I-12, SG-03)
+- [ ] Does it correctly **NOT** re-verify the DPoP proof when the client uses `secureFetch`? Those proofs are Tide-specific, not RFC 9449 compact JWS — `jwtVerify()` on the `dpop` header throws `Invalid Compact JWS`. Proof re-verification is only for hand-rolled RFC 9449 clients.
+- [ ] Is `public/tide_dpop_auth.html` present and **byte-identical to the exemplar** (`diff` it; it must contain no `window.opener`)? The enclave integrity-checks it — any edit fails login with an unexplained 500. (I-12, L-07)
+- [ ] Is it served by a `next.config` **rewrite** (`/tide_dpop/:path*` → `/tide_dpop_auth.html`), NOT a route handler? Route-handler responses get a Next-injected hash CSP that blocks the inline script. (I-12, LEARNINGS-batch-005 L-04)
+- [ ] Does `/tide_dpop/:path*` return `default-src 'self'; script-src 'unsafe-inline'` + `Allow-CSP-From: *`, with its rule ordered AFTER the generic `/:path*` rule so it is not overridden? (curl it to confirm)
 - [ ] Does `public/silent-check-sso.html` exist? (I-07)
 - [ ] Does the redirect handler exist at the configured `redirectUri`? (I-16)
 - [ ] Is CSP set to `frame-src '*'`? (I-06)

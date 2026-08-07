@@ -538,6 +538,16 @@ No application-level max payload size **VERIFIED** (vendor confirmation, GAP-013
 
 **The asymmetry is the trap.** Server-side is on by default, client-side is off by default. An app that "just doesn't configure DPoP" is therefore not running without DPoP — it is running **broken**, failing the code-for-token exchange with `400 "DPoP proof is missing"`. VERIFIED 2026-08-06 against a hosted `0.14.17` realm.
 
+**Server-side is an assertion, not a proof check.** With `secureFetch` (the normal path) the proofs are **Tide-specific, not RFC 9449 compact JWS** — calling `jwtVerify()` on the `dpop` header throws `Invalid Compact JWS`. The correct server-side enforcement is to assert the access token carries **`cnf.jkt`**, which proves TideCloak bound it at issuance:
+
+```typescript
+if (!(jwt as { cnf?: { jkt?: string } }).cnf?.jkt) {
+  return Response.json({ error: 'Unauthorized' }, { status: 401 });   // fail closed
+}
+```
+
+Omitting this is the silent failure mode: the app enables `useDPoP`, believes it is protected, and still accepts unbound bearer tokens (SG-03). Re-verify the proof itself **only** if you hand-roll RFC 9449 proofs instead of using `secureFetch`. VERIFIED (LEARNINGS-batch-005 L-06; check activated in the pack's `withAuth` 2026-08-07, where it had shipped commented out).
+
 **Client-side is four pieces, not one.** `useDPoP` alone is insufficient: you also need `public/tide_dpop_auth.html` (not shipped in the npm packages — a stale copy after an SDK upgrade causes an unexplained 500), the `/tide_dpop/:path*` rewrite, and that path's CSP **ordered after** any generic CSP rule (last matching rule wins for a header key). Then API calls must use `secureFetch`; a plain `fetch` with a Bearer header carries no proof. Full configuration and verification commands: `playbooks/add-auth-nextjs-fresh.md` Step 4; symptom-led diagnosis: `canon/troubleshooting.md` T-26.
 
 **Disabling DPoP is a governed change, not a code edit.** Removing `useDPoP` client-side leaves the server still demanding proofs, so login stays broken. Turning it off also requires flipping the client attribute to `false` — a change request on an IGA realm, needing human enclave approval once the realm is multiAdmin. Since DPoP-off is not a supported configuration anyway, the correct move is always to finish wiring the client, never to disable the server.

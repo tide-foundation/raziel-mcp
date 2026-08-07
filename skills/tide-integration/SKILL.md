@@ -17,7 +17,7 @@ Wire the Tide SDK into the application. Own SDK installation, provider setup, co
 | `tidecloak.json` placement and import | `tide-setup` if file doesn't exist and TideCloak not bootstrapped |
 | `silent-check-sso.html` in `public/` | — |
 | Post-auth redirect handler (`auth/redirect/page.tsx`) | — |
-| `tide_dpop_auth.html` served via a `app/tide_dpop/[...path]/route.ts` catch-all route handler + DPoP headers (I-12) | — |
+| `tide_dpop_auth.html` in `public/` + a `/tide_dpop/:path*` **rewrite** in `next.config` + that path's CSP (I-12) | — |
 | CSP (`frame-src '*'`) in `next.config` headers | — |
 | Webpack workarounds (`strictExportPresence`, `@tidecloak/react` ESM alias) | — |
 | Retrofit into existing apps | — |
@@ -72,8 +72,8 @@ Follow playbook `add-auth-nextjs-fresh`:
 3. Place `tidecloak.json` at correct path (`data/` for Next.js, `public/` for React/Vite)
 4. Create `public/silent-check-sso.html`
 5. Create post-auth redirect handler at `auth/redirect/page.tsx`
-6. Copy `tide_dpop_auth.html` to `public/` and serve it via a catch-all route handler at `app/tide_dpop/[...path]/route.ts` (matches the shipped `@tidecloak/create-nextjs` scaffold; I-12). The handler reads the single bundled `public/tide_dpop_auth.html` and returns it for any `/tide_dpop/...` path. Do NOT use `next.config.ts` rewrites for this.
-7. On that route handler's response, set a **sha256 hash-pinned** CSP (pin the file's inline `script`/`style` via `sha256-...` hashes — NOT `script-src 'unsafe-inline'`) plus an `Allow-CSP-From: *` header (lets the ORK embed the page cross-origin). Global CSP stays `frame-src '*'` in `next.config` headers.
+6. Copy `tide_dpop_auth.html` **verbatim** into `public/` and serve it via a `next.config` **rewrite**: `/tide_dpop/:path*` → `/tide_dpop_auth.html`. Verify the copy is unmodified: `diff -q public/tide_dpop_auth.html <pack>/sources/example-app-keylessh/public/tide_dpop_auth.html`, and it must contain **no** `window.opener`. Do NOT use a catch-all route handler — Next.js injects its own hash-based CSP on route-handler responses, which blocks the page's inline script (I-12; VERIFIED LEARNINGS-batch-005 L-04).
+7. Give `/tide_dpop/:path*` its own CSP in `next.config` `headers()`: `default-src 'self'; script-src 'unsafe-inline'` plus `Allow-CSP-From: *` (lets the ORK embed the page cross-origin). **Order matters**: place this rule AFTER the generic `/:path*` rule — both match, and the last matching rule wins for a header key, so a generic rule placed later silently overrides it. Global CSP stays `frame-src 'self' *`. VERIFIED 2026-08-06.
 8. Add webpack workarounds to `next.config.ts`: `strictExportPresence = false` + `@tidecloak/react` ESM alias
 
 ### Existing app (has other auth)
@@ -94,9 +94,11 @@ Fix each missing item per the table in `tide-setup`.
 - [ ] `@tidecloak/nextjs` (or equivalent) in `package.json`
 - [ ] `TideCloakProvider` wraps the app with `useDPoP` in config object
 - [ ] `tidecloak.json` exists with `jwk`, `vendorId`, `homeOrkUrl`
+- [ ] Auth **UX states** handled: `isInitializing` renders a skeleton (NOT the sign-in screen), `initError` renders an error, `isRefreshing` does not unmount content, `sessionExpired` explains and offers re-sign-in, Tide actions disabled when `isOffline`. See `canon/ux-states.md`
+- [ ] If progress callbacks are wanted: provider is `TideCloakContextProvider` (`TideCloakProvider` accepts ONLY `config`+`children` and silently drops callbacks) with `onActionNotification` wired to a toast
 - [ ] `public/silent-check-sso.html` exists
 - [ ] Post-auth redirect handler exists at configured `redirectUri`
-- [ ] `public/tide_dpop_auth.html` exists + `app/tide_dpop/[...path]/route.ts` catch-all route handler serves it with a sha256 hash-pinned CSP and `Allow-CSP-From: *`
+- [ ] `public/tide_dpop_auth.html` exists, is byte-identical to the exemplar (no `window.opener`), is served via the `/tide_dpop/:path*` rewrite, and that path returns `default-src 'self'; script-src 'unsafe-inline'` + `Allow-CSP-From: *` (curl it — if you see the generic app CSP instead, the rule order is wrong)
 - [ ] CSP includes `frame-src '*'`
 - [ ] Webpack config has `strictExportPresence = false` + `@tidecloak/react` ESM alias
 - [ ] Login flow completes: redirect to Tide IdP -> auth -> callback -> app
@@ -122,6 +124,6 @@ Next: Security Engineer | STOP if integration incomplete
 - Do not create ad hoc auth wiring. Follow the playbook.
 - Do not use `NEXT_PUBLIC_TIDECLOAK_*` env vars. Use `tidecloak.json` directly. (AP-38)
 - Do not pass `useDPoP` as a JSX prop. It goes inside the config object. (AP-42, session-002)
-- Do not modify `tide_dpop_auth.html`. It is integrity-checked and its inline script/style are sha256-pinned in the route handler's CSP. (I-12, L-07)
-- Do not serve the DPoP auth page with `script-src 'unsafe-inline'`. Pin its inline script/style with `sha256-...` hashes in the route handler's CSP instead. (L-07)
-- Do not use `next.config.ts` `rewrites()` to serve the DPoP auth page. Use the `app/tide_dpop/[...path]/route.ts` catch-all route handler (the shipped `@tidecloak/create-nextjs` approach). (I-12)
+- Do not modify `tide_dpop_auth.html` — not even styling. The enclave integrity-checks it, and any edit (notably adding `window.opener` popup handling) fails login with an unexplained 500 at the token exchange. Copy it verbatim and `diff` it. (I-12, L-07)
+- Do not forget the DPoP page's own CSP, and do not let the generic app CSP override it — its rule must come last in `headers()`.
+- Do not serve the DPoP auth page from a route handler. Use a `next.config` rewrite — Next.js injects a hash-based CSP on route-handler responses that blocks the page's inline script. (I-12, LEARNINGS-batch-005 L-04)
