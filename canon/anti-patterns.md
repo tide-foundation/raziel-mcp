@@ -1543,12 +1543,26 @@ The org is `tideorg`, not `tidecloak`. And `tidecloak-dev` — despite the suffi
 - [ ] `ApprovalType`/`ExecutionType` destructured from `Models`, not `Models.Policy` (AP-32)
 - [ ] `PolicySignRequest.New()` used, not manual construction (AP-33)
 - [ ] No backend auto-approval of IGA role assignments (AP-37)
+- [ ] Policy constructed with all five fields and **singular** `modelId` (AP-60)
+- [ ] No hand-written Models/Policy type diverging from the runtime constructor (AP-61)
+- [ ] `modelId` is a registered id or `BasicCustom<...>`; `request.id() === policy.modelIds[0]` (AP-65)
+- [ ] Contract transport has the outer `"forseti"` level (AP-64)
+- [ ] `contractId` is UPPERCASE SHA-512 hex, `/^[0-9A-F]{128}$/` (L-14)
+- [ ] Admin policy matched by name `tide-realm-admin`, no `?? policies[0]` (AP-63)
+- [ ] Contract identity checks compare the **vuid**, not the JWT subject (AP-66)
+- [ ] Contract compiles locally against the stub harness before deploy (AP-67)
+- [ ] No `tokenParsed` (or other keycloak-js property) read off the TideCloak context (AP-69)
+- [ ] Identity fields **fail closed** — no `?? '—'` on a confirmation screen (AP-69)
+- [ ] No error path discards the server's response body (see troubleshooting Diagnostic Principle)
+- [ ] No issuer-hosted `/verify` returning a bare verdict (AP-68)
 
 ### Deployment Check
 - [ ] CSP includes Tide domains (AP-07)
 - [ ] `silent-check-sso.html` exists (AP-15)
 - [ ] Adapter JSON has Tide extensions (AP-13)
 - [ ] DPoP verification implemented if enabled (AP-06)
+- [ ] `tide_dpop_auth.html` present AND known-good — run `scripts/check-dpop-asset.sh` (AP-62)
+- [ ] `/tide_dpop/:path*` route + CSP wired (missing page 404s the popup; worse than stale)
 - [ ] `configUrl` prop used, not `configFilePath` (AP-27)
 - [ ] SDK initialization gate before login (AP-28)
 - [ ] No `NEXT_PUBLIC_TIDECLOAK_*` env vars duplicating tidecloak.json (AP-38)
@@ -1606,6 +1620,19 @@ The org is `tideorg`, not `tidecloak`. And `tidecloak-dev` — despite the suffi
 | AP-35 | **HIGH** | **CRITICAL** | Medium |
 | AP-36 | Medium | **CRITICAL** | Easy |
 | AP-37 | **CRITICAL** | **HIGH** | Medium |
+| AP-60 | Low | **HIGH** | Easy — throws a bare string immediately |
+| AP-61 | Low | **HIGH** | **Hard** — typechecks clean; that is the defect |
+| AP-62 | Medium | **CRITICAL** | **Hard** — blank popup is normal, page returns 200 |
+| AP-63 | **HIGH** | Medium | **Hard** — correct until a second policy exists |
+| AP-64 | Low | **CRITICAL** | **Hard** — fails after the enclave approval |
+| AP-65 | Low | **CRITICAL** | **Hard** — fails after the enclave approval |
+| AP-66 | **HIGH** | **HIGH** | **Hard** — denies every signature, post-approval |
+| AP-67 | Low | **HIGH** | Easy — once the harness exists |
+| AP-68 | **CRITICAL** | Low | Medium — the endpoint "works" |
+| AP-69 | **HIGH** | Medium | **Hard** — fails silently, no error anywhere |
+
+> AP-38 through AP-59 predate this table and are not classified here. Treat the omission as a known
+> gap in this section, not as an assessment of low severity.
 
 **Impact levels**:
 - **CRITICAL**: Defeats core Tide security properties or causes complete failure
@@ -2114,6 +2141,288 @@ const bytes = policyRequest.encode();  // FAILS — original not initialized
 ```
 
 VERIFIED (LEARNINGS-ratidefy-batch-001 L-25).
+
+---
+
+## AP-60: Constructing a Policy with `modelIds`, or Without `version`/`keyId`
+
+`new Policy({...})` requires five fields — `version`, `contractId`, `modelId`, `keyId`, `params` —
+and validates them **sequentially**, throwing a **bare string** (not an `Error`) on the first
+mismatch. Fixing one reveals the next, so a wrong shape costs one round trip per wrong field.
+
+The key is **singular `modelId`**. The constructor reads `data["modelId"]` but populates a class
+field named `modelIds`, so the plural is what appears in editors, logs and `Policy.from()` — and
+passing `modelIds:` is silently ignored, yielding `ModelId is not a string`.
+
+**Wrong**:
+```typescript
+const policy = new Policy({
+  contractId: hash,
+  modelIds: ['MyModel:1'],   // plural key — ignored; also an unregistered id (AP-65)
+  approvalType: ApprovalType.EXPLICIT,
+  executionType: ExecutionType.PRIVATE,
+  params: [['Role', 'admin']],
+});
+// throws the bare string 'Version is not a string'
+```
+
+**Correct**:
+```typescript
+const policy = new Policy({
+  version: '3',                                    // Policy.latestVersion
+  contractId: hash,                                // uppercase SHA-512 hex
+  modelId: 'BasicCustom<MyModel>:BasicCustom<1>',  // SINGULAR
+  keyId: vendorId,                                 // keyId IS the vendorId
+  approvalType: ApprovalType.EXPLICIT,
+  executionType: ExecutionType.PRIVATE,
+  params: [['Role', 'admin']],
+});
+```
+
+VERIFIED against `@tideorg/js/dist/Models/Policy.js` (0.14.20). Full field table and throw-string
+map in [custom-contracts.md](custom-contracts.md). GAP-067. (LEARNINGS-music-license-001 L-01)
+
+---
+
+## AP-61: Hand-Writing a Models Type That Does Not Mirror the Runtime Constructor
+
+Because `Models` reaches apps through a dynamic import that must be cast
+(`as unknown as {...}`), apps declare their own constructor types. A type written from **intent**
+rather than from the library describes the shape the code *wants*, so `tsc --noEmit` passes on a
+call that is guaranteed to throw at runtime. This is the actual cause of AP-60: not the mistake,
+but the absence of anything to check it against.
+
+**Wrong**:
+```typescript
+type PolicyCtor = new (cfg: { contractId: string; modelIds: string[]; /* ... */ }) => any;
+// Clean typecheck. Throws 'Version is not a string' at runtime.
+```
+
+**Correct**: write the mirror from `Models/Policy.js`'s guard clauses, field by field, and grep for
+locally-declared `PolicyCtor`/`PolicyConfig` types to diff them against the constructor. Better:
+push for an exported `PolicyConfig` (GAP-067).
+
+VERIFIED (LEARNINGS-music-license-001 L-02).
+
+---
+
+## AP-62: A DPoP Relay Page That Assumes Iframe Context
+
+`tide_dpop_auth.html` relays `postMessage` to whoever opened it. Older copies do:
+
+```js
+window.parent.postMessage({ type: "pageLoaded" }, openerOrigin);   // ❌
+```
+
+Correct in an **iframe**. In a **popup** — which is what `_popupDPoPFallback` → `_openDPoPPopup`
+opens — `window.parent === window`, so the page messages *itself*, the opener never receives
+`pageLoaded`, and tide-js reports `Popup DPoP verification failed to load`.
+
+**Correct** (present in newer copies):
+```js
+const targetWindow = window.opener || window.parent;   // popup has opener, iframe has parent
+if (!targetWindow || targetWindow === window) { /* surface it — do not post to self */ }
+```
+
+**Two things make this hard to diagnose**: the popup is legitimately **blank** (the page is
+script-only, with markup on the storage-blocked error path only), so the normal appearance looks
+like a load failure; and the reported error says "failed to load" for a page that returned HTTP 200
+with a full body.
+
+**Check**: fetch the served asset and assert it contains `window.opener` and no bare
+`window.parent.postMessage`. The asset is distributed by copy-paste with no version marker, so an
+app can be arbitrarily stale (GAP-068) — and two dev servers competing for port 3000 will serve
+each other's `public/`, which produces this symptom from an unrelated project's copy.
+
+VERIFIED (LEARNINGS-music-license-001 L-03/L-04/L-08).
+
+---
+
+## AP-63: Falling Back to `policies[0]` When a Named Lookup Misses
+
+```typescript
+const admin = policies.find((p) => p.name === "admin-policy") ?? policies[0];   // ❌
+```
+
+Two defects. The name is wrong — `GET /admin/realms/{realm}/iga/role-policies` returns the realm
+admin policy as **`tide-realm-admin`** — and the fallback hides it. This works today purely because
+exactly one policy is returned; add a second and it silently selects the wrong one, deploying under
+the wrong authority.
+
+**Correct**:
+```typescript
+const matches = policies.filter((p) => p.name === 'tide-realm-admin');
+if (matches.length !== 1) throw new Error(`Expected 1 tide-realm-admin policy, got ${matches.length}`);
+```
+
+A named lookup that misses is a bug, not a case to default through. VERIFIED against a live realm
+(LEARNINGS-music-license-001 L-06).
+
+---
+
+## AP-64: Building the Contract Transport Without the Outer `"forseti"` Wrapper
+
+The Forseti contract transport is **three** nested levels and the outermost carries the contract
+type:
+
+```
+contractTransport = [ "forseti",       [ <empty>, [ source, "Contract" ] ] ]
+draft             = [ policy.toBytes(), contractTransport ]
+```
+
+Build two levels and every ORK answers `Unknown contract type ''` — an *empty* type, because the
+ORK read position 0 of a structure one level too shallow and found the middle level's leading
+`new Uint8Array(0)`.
+
+`TideMemory.CreateFromArray` accepts any nesting, so nothing client-side objects, and the failure
+lands at the threshold signature **after** the enclave approval — every attempt costs an operator
+approval cycle.
+
+**Correct**: use `PolicySignRequest.New(policy).addForsetiContractToUpload(source)` from
+`heimdall-tide`, which builds this nesting (VERIFIED, 0.14.20). If hand-rolling, assert
+`draft.GetValue(1).GetValue(0)` decodes to `"forseti"` before submitting. GAP-069.
+(LEARNINGS-music-license-001 L-09)
+
+---
+
+## AP-65: Inventing a Model Id Instead of Using a Registered One or `BasicCustom<...>`
+
+A policy's `modelId` looks like a free-form label and is in fact a lookup key into a fixed
+nine-model registry (`@tideorg/js/dist/Models/ModelRegistry.js`, `modelBuildersMap`) plus one
+naming convention. Nothing client-side validates it; the check runs on every ORK **after** an
+operator approval, and answers `Model id '...' not found in registry`.
+
+**Wrong**: `modelId: 'OriginAttestation:1'` — plausible, unregistered, rejected.
+
+**Correct**: one of `Offboard:1`, `RotateVRK:1`, `TestInit:1`, `Policy:1`, `HederaTx:1`,
+`PolicyEnabledEncryption:1`, `PolicyEnabledDecryption:1`, `ServerCert:1`, `AttestationUnit:1` — or
+the custom form `BasicCustom<Name>:BasicCustom<Version>`, built with `BasicCustomRequest` from
+`asgard-tide`.
+
+⚠️ **Do not borrow `AttestationUnit:1` for an attestation app.** It carries IGA governance changes
+and its human-readable title is `"Governance change"`, so it puts the wrong card in front of the
+enclave approver.
+
+**Check** (pure client-side): assert `modelId` is in the nine, or matches
+`/^BasicCustom<.+>:BasicCustom<.+>$/`, **and** that `request.id() === policy.modelIds[0]`.
+
+VERIFIED (LEARNINGS-music-license-001 L-11/L-13). See [custom-contracts.md](custom-contracts.md)
+for the three competing wrapper conventions (GAP-072).
+
+---
+
+## AP-66: Binding a Contract Check to the JWT Subject Rather Than the VUID
+
+A doken carries **no `sub` claim**. `DokenDto.UserId` returns `Payload.Vuid`, so a contract
+comparing against an OIDC subject can never pass, no matter where the subject is placed in the
+payload. The policy denies every signature — discovered only after an operator approval.
+
+**Correct**: carry both, and label which is enforced where.
+
+| Field | Enforced by | Purpose |
+|---|---|---|
+| `creator.vuid` | the ORK network, byte-compared against the doken | authorship |
+| `creator.subject` | your own server, at submission time | display, DB linkage |
+
+Put the vuid in the wire payload at a fixed offset; leave the subject in the JSON. If the two are
+silently swapped, a verifier's "header agrees with payload" check fails on a valid certificate,
+which reads as a broken signature. VERIFIED (LEARNINGS-music-license-001 L-16).
+
+---
+
+## AP-67: Deploying a Forseti Contract Without Compiling It Locally First
+
+Contracts are compiled by the ORK **at request time**, so a typo or a wrong context property
+surfaces as `VmHost.CompileFailed` after an operator approval has been spent:
+
+```
+VmHost.CompileFailed: (210,41): error CS1061: 'ExecutorContext' does not contain
+a definition for 'Data'
+```
+
+A stub project with the right **shapes** catches this in under a second. Behaviour is irrelevant —
+shape errors are exactly what `VmHost.CompileFailed` reports.
+
+**Correct**: `dotnet build` against [templates/forseti-compile-harness/](../templates/forseti-compile-harness/)
+before every deploy, and in CI. Every Forseti app should ship one.
+
+Related: the context split — `ValidateData` sees `ctx.Data`, `ValidateExecutor` sees `ctx.Doken`,
+neither sees both. VERIFIED (LEARNINGS-music-license-001 L-17).
+
+---
+
+## AP-68: An Issuer-Hosted `/verify` Endpoint That Returns VALID/INVALID
+
+A verification endpoint hosted by the party that issued the claim is **worthless to a third
+party**: anyone able to forge the attestation can forge the verdict. Verification that routes
+through the issuer is not verification.
+
+**Wrong**: `POST https://issuer.example/verify` → `{ "valid": true }`.
+
+**Correct**: publish the **evidence**, not a verdict.
+- Serve the certificate as an independent, self-contained JSON object — downloadable, CORS-open,
+  `content-disposition: attachment`.
+- Ship a verifier that runs entirely on the recipient's machine or in their browser.
+- Never serve the verifying key beside the signature.
+- Have the verifier state which checks it could **not** run, rather than reporting a bare
+  "verified".
+
+A related trap: human-readable fields added to the certificate *wrapper* sit **outside** the
+signature, where anyone can edit them. That is only safe if every verifier refuses a certificate
+whose readable owner block disagrees with the signed payload — otherwise the convenience becomes
+the attack.
+
+See [verifiable-claims.md](verifiable-claims.md) for the six checks. VERIFIED — forging the
+readable label on a validly-signed certificate passes the signature check and fails the
+cross-check. (LEARNINGS-music-license-001 L-15)
+
+---
+
+## AP-69: Reading keycloak-js Properties Off the TideCloak React Context
+
+The value from `useTideCloak()` is **not** a keycloak-js instance. Some names carry over
+(`authenticated`, `token`, `login`, `logout`, `hasRealmRole`) and some do not, which is exactly what
+makes this dangerous: the API looks familiar enough to guess at.
+
+`tokenParsed` does **not** exist on `TideCloakContextValue`. Reading it yields `undefined`, and the
+usual defensive idioms turn that into a successful render of nothing:
+
+**Wrong**:
+```typescript
+const tide = useTideCloak();
+const claims = tide.tokenParsed ?? {};        // ❌ undefined → {} → every field renders "—"
+const name = claims.preferred_username ?? '—';
+```
+
+**Correct** — the context exposes accessor *functions*, not a parsed object:
+```typescript
+const { getValueFromToken, getValueFromIdToken } = useTideCloak();
+const name = getValueFromToken('preferred_username');    // access token
+const email = getValueFromIdToken('email');              // ID token
+```
+
+`TideCloakContextValue` provides `getValueFromToken(key)`, `getValueFromIdToken(key)`, and the raw
+`token` / `idToken` strings. VERIFIED against `@tidecloak/react`
+`dist/types/contexts/TideCloakContextProvider.d.ts`.
+
+**The severity is in the silence.** There is no error, no warning, and no failed request — just an
+empty value flowing into the UI. On a screen whose entire job is confirming *who* is making a
+claim, that is the worst available behaviour: it renders no identity and still offers the action.
+
+**Fail closed in the UI too.** A confirmation screen that cannot resolve the identity it is
+confirming must block the action, not render a placeholder:
+
+```typescript
+const vuid = getValueFromToken('vuid');
+if (!vuid) return <Error>Cannot confirm your identity — refusing to attest.</Error>;
+// only now render the Attest button
+```
+
+Treat `?? '—'` on an identity field as a code smell: it converts a wrong API call into a
+plausible-looking screen. Prefer throwing, or rendering an explicit error, over defaulting.
+
+VERIFIED (LEARNINGS-music-license-001 L-20). Related: AP-29 (role-check API confusion), AP-58
+(static `IAMService` not wired to the React provider).
 
 ---
 

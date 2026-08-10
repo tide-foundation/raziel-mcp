@@ -186,7 +186,7 @@ export function createServer(): McpServer {
   const server = new McpServer(
     {
       name: "@tideorg/mcp",
-      version: "1.9.7",
+      version: "1.9.8",
     },
     {
       instructions: [
@@ -528,6 +528,7 @@ export function createServer(): McpServer {
         { keywords: ["role missing", "claim", "no role", "token empty"], name: "diagnose-missing-roles-or-claims", reason: "Missing roles/claims diagnostics" },
         { keywords: ["deploy", "docker", "container", "tidecloak"], name: "deploy-tidecloak-docker", reason: "Deploy TideCloak instance" },
         { keywords: ["e2ee", "encrypt", "decrypt", "forseti", "vault", "share", "sharing", "shared"], name: "setup-forseti-e2ee", reason: "End-to-end encryption setup" },
+        { keywords: ["deploy policy", "policy deployment", "custom contract", "sign policy", "attestation", "attest", "provenance", "signed claim", "contract deploy"], name: "deploy-forseti-policy", reason: "Deploy a custom Forseti policy/contract to the ORK network" },
         { keywords: ["iga", "approval", "governance", "admin panel"], name: "setup-iga-admin-panel", reason: "IGA admin panel setup" },
         { keywords: ["bootstrap", "realm", "init", "initialize"], name: "bootstrap-realm-from-template", reason: "Bootstrap realm from template" },
         { keywords: ["start", "run tidecloak", "launch"], name: "start-tidecloak-dev", reason: "Start TideCloak dev instance" },
