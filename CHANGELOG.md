@@ -16,6 +16,10 @@ Applies a full learnings cycle (L-01…L-20) from a real integration project.
   (`window.opener || window.parent` + self-post guard, AP-62 / GAP-068) is now the
   canonical page shipped across **all** templates, with `scripts/check-dpop-asset.sh`
   and the gate enforcing it. Fixes the silent popup-login 500.
+- **`attested-provenance-registry` scenario** — a new reference-app scenario for
+  provenance / attestation / notarization use cases (signed Ed25519 attestations,
+  chain-of-custody, anti-backdating), wired into `tide_choose_scenario` keyword
+  matching with a disambiguation note vs. bare `policy-governed-signing`.
 
 ## 1.9.7 — 2026-08-07
 
