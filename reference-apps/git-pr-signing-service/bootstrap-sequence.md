@@ -24,7 +24,15 @@ All steps must complete before the service can sign merge commits. Order matters
    - Content-Type: `application/x-www-form-urlencoded`. Body: `email=admin@example.com`.
 
 5. **Enable IGA**
-   - First stamp `iga.attestor=tide` on the realm (GET then PUT `/admin/realms/{realm}`) so governance comes up in Tide mode, then `POST /admin/realms/{realm}/tide-admin/toggle-iga` with JSON body `{"enabled":true}`.
+   - `POST /admin/realms/{realm}/tide-admin/toggle-iga` with **form-encoded** `isIGAEnabled=true`.
+     ⚠️ The endpoint reads the FORM parameter. A JSON body is accepted, parsed by nothing, and the
+     missing parameter **fails open to `true`** — so `{"enabled":false}` ENABLES IGA. Always
+     form-encode and assert the response.
+   - **Assert Tide mode** rather than stamping it: `setUpTideRealm` sets `iga.attestor=tide` on
+     current builds, so verify it instead of assuming. Tide vs Tideless is the difference between
+     approvals being cryptographically sealed and enforced by host-controlled server logic (GAP-065).
+     If absent, stamp it (GET then PUT `/admin/realms/{realm}`) and re-assert.
+     Full call + assertions: `canon/tidecloak-bootstrap.md` → toggle-iga.
    - Must happen after licensing.
 
 ## Phase 3: Approve initial change requests
@@ -45,6 +53,12 @@ All steps must complete before the service can sign merge commits. Order matters
 
 9. **Generate account-linking invites**
    - For each admin: `POST /admin/realms/{realm}/tideAdminResources/get-required-action-link?userId={userId}&lifespan=43200` with body `["link-tide-account-action"]`.
+   - ⚠️ **`tideInvitable` must be set FIRST, and the change request drained.** Otherwise this
+     returns `400 {"errorMessage":"This user cannot be invited: the 'tideInvitable' attribute is
+     not set to true."}` for every principal. Three steps, in order: `PUT /users/{id}` with
+     `attributes.tideInvitable=["true"]` → **drain the `SET_USER_ATTRIBUTE` change request** →
+     request the link. A `204` on the PUT does NOT mean it applied (AP-72). Put this in its own
+     script rather than inline. Full sequence: `canon/tidecloak-bootstrap.md` → invite links.
    - Each admin must complete linking in a browser.
 
 10. **Wait for account linking**

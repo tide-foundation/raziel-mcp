@@ -138,7 +138,7 @@ GET /admin/realms/{realm}/iga/change-requests?status=PENDING   # PENDING|APPROVE
 GET /admin/realms/{realm}/iga/change-requests/{id}
 ```
 
-Each CR object is keyed by `id` (replaces legacy `draftRecordId`), with `entityType`, `actionType`, `status`, `readyToCommit`, `threshold`, `authorizers[]`, `dependsOn`/`blocked`.
+The response is a JSON **ARRAY** of CR objects (observed on Keycloak 26.7.0); each carries a top-level `id` (replaces legacy `draftRecordId`), plus `entityType`, `actionType`, `status`, `readyToCommit`, `threshold`, `authorizers[]`, `dependsOn`/`blocked`. Earlier pack text described an object keyed by `id` — **accept both shapes**. VERIFIED (LEARNINGS-agent-quorum-001 L-04).
 
 ### Authorize (sign) and Commit
 

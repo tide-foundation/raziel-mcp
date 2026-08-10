@@ -223,12 +223,18 @@ Run `bootstrap-realm-from-template` then `initialize-admin-and-link-account` aga
 **Confirm the Tide vendor surface first** (the GAP-066 check — resolved for `0.14.17`):
 
 ```bash
-curl -s -o /dev/null -w "toggle-iga %{http_code}\n" -X POST \
-  "$TIDECLOAK_URL/admin/realms/master/tide-admin/toggle-iga" \
-  -H "Authorization: Bearer $(get_token)" -H 'Content-Type: application/json' -d '{"enabled":false}'
+# READ-ONLY probe. Do NOT probe with POST /tide-admin/toggle-iga: it reads the form parameter
+# `isIGAEnabled`, and a JSON body's missing parameter FAILS OPEN TO true — so the old
+# `-d '{"enabled":false}'` probe silently ENABLED IGA on master and ran a Phase-6 ADOPT scan
+# across every entity in the realm. These GETs are iga-core-specific and mutate nothing.
+curl -s -o /dev/null -w "iga/change-requests %{http_code}\n" \
+  "$TIDECLOAK_URL/admin/realms/master/iga/change-requests?status=PENDING" \
+  -H "Authorization: Bearer $(get_token)"
 ```
 
 `200` = real TideCloak. `404` = plain Keycloak, wrong cluster type — go back to Step 1.
+VERIFIED read-only against `tideorg/tidecloak-dev:latest` 2026-08-10: returns `200` and leaves
+`master`'s `isIGAEnabled` untouched.
 
 Licensing (`setUpTideRealm`) works on hosted from `0.14.17` and takes **10–15 seconds** — it genuinely reaches Tide's licensing service. A sub-2-second failure means it never made the outbound call.
 
@@ -277,9 +283,10 @@ curl -s "${H[@]}" "$API/clusters/$CLUSTER_ID" | jq '{status, type, version}'
 
 [ -n "$(get_token)" ] && echo "admin token OK"
 
-curl -s -o /dev/null -w "%{http_code}\n" -X POST \
-  "$TIDECLOAK_URL/admin/realms/master/tide-admin/toggle-iga" \
-  -H "Authorization: Bearer $(get_token)" -H 'Content-Type: application/json' -d '{"enabled":false}'
+# READ-ONLY. Never probe with POST toggle-iga — it fails open and ENABLES IGA (see Step 1 note).
+curl -s -o /dev/null -w "%{http_code}\n" \
+  "$TIDECLOAK_URL/admin/realms/master/iga/change-requests?status=PENDING" \
+  -H "Authorization: Bearer $(get_token)"
 # → 200 (Tide vendor surface present)
 
 jq 'has("jwk") and has("vendorId") and has("homeOrkUrl")' data/tidecloak.json   # → true

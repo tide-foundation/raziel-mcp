@@ -1555,6 +1555,10 @@ The org is `tideorg`, not `tidecloak`. And `tidecloak-dev` — despite the suffi
 - [ ] Identity fields **fail closed** — no `?? '—'` on a confirmation screen (AP-69)
 - [ ] No error path discards the server's response body (see troubleshooting Diagnostic Principle)
 - [ ] No issuer-hosted `/verify` returning a bare verdict (AP-68)
+- [ ] `/tide_dpop/:path*` rewrite is a **wildcard**, static (not a route handler) (AP-70)
+- [ ] CSP is exactly `frame-src 'self' *` — no `frame-ancestors` added (AP-71)
+- [ ] Relay path serves its own CSP **and** `Allow-CSP-From: *`, verified with `curl -D -` (AP-70/71)
+- [ ] No admin mutation trusts a `2xx` — drain, then read back (AP-72)
 
 ### Deployment Check
 - [ ] CSP includes Tide domains (AP-07)
@@ -1630,6 +1634,9 @@ The org is `tideorg`, not `tidecloak`. And `tidecloak-dev` — despite the suffi
 | AP-67 | Low | **HIGH** | Easy — once the harness exists |
 | AP-68 | **CRITICAL** | Low | Medium — the endpoint "works" |
 | AP-69 | **HIGH** | Medium | **Hard** — fails silently, no error anywhere |
+| AP-70 | Low | **CRITICAL** | **Hard** — the error blames the relay file, not the URL |
+| AP-71 | Low | **CRITICAL** | **Hard** — reads as a Tide bug, is self-inflicted |
+| AP-72 | Medium | **CRITICAL** | **Hard** — 2xx + green log + empty realm |
 
 > AP-38 through AP-59 predate this table and are not classified here. Treat the omission as a known
 > gap in this section, not as an assessment of low severity.
@@ -2423,6 +2430,188 @@ plausible-looking screen. Prefer throwing, or rendering an explicit error, over 
 
 VERIFIED (LEARNINGS-music-license-001 L-20). Related: AP-29 (role-check API confusion), AP-58
 (static `IAMService` not wired to the React provider).
+
+---
+
+## AP-70: Exact-Path `/tide_dpop` Rewrite Instead of the Wildcard
+
+The DPoP relay parses `iss` and `aud` **out of its own URL path**:
+
+```js
+const paths = new URL(window.location.href).pathname.split("/");
+const iss = hexToStr(paths[paths.indexOf("iss") + 1]);
+const aud = hexToStr(paths[paths.indexOf("aud") + 1]);
+```
+
+So the enclave requests `/tide_dpop/iss/<hex>/aud/<hex>/tide_dpop_auth.html`.
+
+**Wrong**: `{ source: "/tide_dpop", destination: "/tide_dpop_auth.html" }` — matches none of that. The
+URL 404s, and a 404 page cannot satisfy the embedder's pinned-script CSP.
+
+**Correct**: `{ source: "/tide_dpop/:path*", destination: "/tide_dpop_auth.html" }`, as a **static
+rewrite, never a route handler** (the Next dev server injects a hash-based CSP on route-handler
+responses, blocking the inline script).
+
+**The error blames the wrong thing.** It quotes a `sha256-…` of the relay's inline script, so everyone
+goes hunting a stale `tide_dpop_auth.html` (AP-62). **If that hash MATCHES your file, the file is
+correct** — it is the hash the embedder expects, and you have the right file at the wrong address.
+
+Verify on the wire, not by reading config:
+```bash
+curl -sS -D - -o /dev/null "http://localhost:3000/tide_dpop/iss/6161/aud/6262/tide_dpop_auth.html" \
+  | grep -iE "^(HTTP|content-security-policy|allow-csp-from)"
+```
+
+VERIFIED on Next.js 15.3.3 and 16.3.0 (LEARNINGS-agent-quorum-001 L-07). Prefer **16.x** — 15.3.3 is
+superseded by CVE-2025-66478. Full config:
+[framework-matrix.md](framework-matrix.md) → Browser Prerequisites.
+
+---
+
+## AP-71: Adding `frame-ancestors` (or Anything Else) to the Tide CSP
+
+Canon specifies **exactly** `frame-src 'self' *`. That is the whole policy, and additions are what
+break it.
+
+Adding `frame-ancestors 'self'` reads as routine hardening. It breaks the enclave: the SWE frames
+**your own origin** for silent SSO and the approval popup, and a same-origin-only ancestor policy
+refuses that with
+
+```
+Refused to display 'http://localhost:3000/' in a frame. The embedder requires it to
+enforce the following Content Security Policy: ...
+```
+
+— which reads as a Tide bug rather than as self-inflicted CSP.
+
+Relatedly, the relay path needs `Allow-CSP-From: *` (CSP Embedded Enforcement). Omitting it is exactly
+what refuses the frame, and the error text *names the header* and is still easy to miss.
+
+**Do not "simplify" to one CSP for all paths** in order to avoid rule-ordering questions — that also
+deletes `Allow-CSP-From`. Order the `/tide_dpop` rule **last** (for a given header key the later
+matching rule wins; path specificity does not decide it) and **verify by reading the served header**.
+
+VERIFIED (LEARNINGS-agent-quorum-001 L-07; L-08 refuted by measurement).
+
+---
+
+## AP-72: Inferring Success From a 2xx When IGA Is Enabled
+
+**With IGA enabled, a `2xx` from an admin endpoint means ACCEPTED, not APPLIED.**
+
+Observed on TideCloak-dev / Keycloak 26.7.0 — both of these are **governed writes**, contrary to the
+older ACTIVE/DRAFT guidance:
+
+```
+POST /admin/realms/{realm}/clients/{uuid}/roles
+→ 202 {"status":"PENDING","actionType":"CREATE_ROLE"}
+GET  /admin/realms/{realm}/clients/{uuid}/roles
+→ []                                    # the role does not exist yet
+
+PUT  /admin/realms/{realm}/users/{id}   (attributes.tideInvitable=["true"])
+→ 204                                   # looks like success
+GET  /admin/realms/{realm}/users/{id}
+→ "attributes": null                    # it did not apply
+```
+
+**Wrong**: create six roles, see six `2xx`, move on. Every later lookup fails against an empty list,
+and the visible symptom (`role not found` during role *assignment*) points at the assignment step
+rather than the creation step several stages earlier.
+
+**Correct**: mutate → **drain** → **read back and assert**. `201` and `202` mean different things and
+only one of them means the entity exists. Use
+[templates/shared/drain-change-requests.py](../templates/shared/drain-change-requests.py).
+
+⚠️ For the silent attribute case, do **not** chase `unmanagedAttributePolicy`. It is a real and
+well-known cause of dropped attributes, so it is the natural next hypothesis — and here it is a dead
+end that leaves you *more* confused, because `/users/profile` will show it `ENABLED` and look fine.
+
+VERIFIED (LEARNINGS-agent-quorum-001 L-01/L-02). See [concepts.md](concepts.md) IGA section.
+
+---
+
+## AP-73: Calling Your Own API With Bare `fetch` in a DPoP Realm
+
+In a DPoP-enabled realm, an app calling **its own** endpoints with plain `fetch` sends no
+`Authorization` and no DPoP proof, so a guard that requires `Authorization: DPoP <token>` returns
+**401** on every call — including from inside SDK helper modules, where it is least visible.
+
+**Wrong** (from a signing-helper module, which is exactly where it hides):
+```typescript
+const contractSource = await fetch('/api/policy/contract').then(r => r.text());
+await fetch(`/api/actions/${id}/approval/tide`, { method: 'POST', body });
+```
+
+**Correct** — thread `secureFetch` from the hook into the helpers rather than reaching for a static
+import:
+```typescript
+export type SecureFetch = (input: string, init?: RequestInit) => Promise<Response>;
+
+export async function contributeApproval(
+  id: string, payloadB64: string,
+  IAMService: unknown, secureFetch: SecureFetch,   // <- passed in from the component
+) { /* ... */ }
+```
+
+**Why this is easy to miss**: AP-58 already says "use the `useTideCloak()` hook, not static
+`IAMService.secureFetch`". A reader who threads `IAMService` correctly *feels compliant* while still
+calling `fetch` for the app's own endpoints. **AP-58 is about where the session comes from; AP-73 is
+about which fetch you use at all.**
+
+It also hides well in "simulation" or non-DPoP modes, where bare `fetch` works fine — the 401s appear
+only once the realm is DPoP-enabled. VERIFIED (LEARNINGS-tidewater-001 L-03).
+
+---
+
+## AP-74: Passing a Relative URL to `secureFetch`
+
+`secureFetch` is named and documented as a drop-in for `fetch`, and is one **in every respect except
+this**. It needs the DPoP proof's `htu`, and derives it with a bare `new URL()` and **no base**
+(`@tidecloak/js/dist/esm/lib/tidecloak.js:626-627`):
+
+```javascript
+const urlString = url instanceof URL ? url.href : url.toString();
+const origin = new URL(urlString).origin;      // throws on '/api/policy/contract'
+```
+
+So the first same-origin call written the obvious way throws **before any network activity**, from
+inside the SDK, with a message that names nothing in your code:
+
+```
+Failed to construct 'URL': Invalid URL          # Chrome
+TypeError: Invalid URL                          # Node
+```
+
+It reads like a malformed adapter config, and that is where the hunt goes. It cannot be caught by
+types either — the signature takes a `string`.
+
+**Correct** — resolve at the call site:
+```typescript
+export function absoluteUrl(path: string): string {
+  return new URL(path, window.location.origin).href;
+}
+await secureFetch(absoluteUrl('/api/policy/contract'));
+```
+
+### AP-73 and AP-74 together are a trap with no safe-looking exit
+
+Relative paths are the normal way to call your own API, so both obvious choices fail, differently:
+
+| What you write | What happens |
+|---|---|
+| `fetch('/api/x')` | silent **401** from the DPoP guard (AP-73) |
+| `secureFetch('/api/x')` | **TypeError** that sounds like a config problem (AP-74) |
+| `secureFetch(absoluteUrl('/api/x'))` | ✅ the only correct combination |
+
+**Neither failure points at the answer.** If you are wiring an app's own API through `secureFetch` —
+which is what the pack tells you to do — this is the single most likely first-run failure.
+
+Also required: `useDPoP` must be inside the **config object** (AP-52/AP-69 context), and
+`Authorization: Bearer <token>` must be pre-set, since the SDK only upgrades to the DPoP scheme when it
+sees an existing Bearer token.
+
+VERIFIED against the shipped SDK source and reproduced in Node (LEARNINGS-tidewater-001 L-04;
+previously recorded as a sub-pitfall of AP-45, promoted here because it was not findable where it bites).
 
 ---
 

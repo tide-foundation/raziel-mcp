@@ -50,13 +50,50 @@ npm run dev                              # must be started FROM this shell
 
 Start the dev server any other way and the admin-policy route returns **503**.
 
+### ⚠️ The token lives SIXTY SECONDS — do not use an exported shell variable for a browser flow
+
+**Measured, not assumed** — `client_id=admin-cli` against `/realms/master/protocol/openid-connect/token`:
+
+```
+expires_in: 60        # and exp - iat == 60
+```
+
+VERIFIED against `tideorg/tidecloak-dev:latest` 2026-08-10 (LEARNINGS-agent-quorum-001 L-14). "Does
+not survive a server restart" badly understates it: **it does not survive sixty seconds.**
+
+That is fine for a script that immediately makes its call, and **useless for a browser flow** where an
+operator loads a page and then clicks a button. By the time you read the error, re-export and click
+again, the replacement may also be dead. The failure is:
+
+```
+HTTP 401 {"error":"HTTP 401 Unauthorized"}
+```
+
+...which reads as a **permissions** problem and sends you to check role grants. It is not.
+
+**For any flow with a human in it, mint on demand server-side instead:**
+
+- read `KC_ADMIN_USER` / `KC_ADMIN_PASSWORD` from the **server** environment
+- mint per request and cache with a ~5s safety margin
+- treat an upstream **401 as "mint fresh and retry once"**, never as an auth failure to report — a
+  token that looks locally valid can still be revoked or left over from a previous container, so
+  checking `exp` client-side is not sufficient
+
+Verify the recovery path deliberately: start with a real token in env, **wait 68 seconds**, then call
+the route. It should return the policy bytes with no intervention.
+
+**Security note, stated honestly**: this puts operator credentials in a server process, which is what
+AP-41 warns about. It is defensible for local development and should be labelled as such. The
+mitigating detail: this credential sits **outside** the Forseti-protected path — it fetches a policy
+document and cannot be used to satisfy a deployment quorum.
+
 ⚠️ The token usually appears in `.env.example` as an empty key, which reads like "optional". It is
 not optional for this flow. Make the requirement loud:
 
 - The policy-deployment page must check for the token **before** building anything, and say so.
 - Surface the server's actual error, not a generic one — see Step 5.
 
-*(L-05)*
+*(L-05, L-14)*
 
 ---
 
@@ -87,7 +124,21 @@ set** — "the identity check did not run" can only mean refuse. See
 **Identity must be the vuid, never the JWT subject.** A doken carries no `sub`; `DokenDto.UserId`
 returns `Payload.Vuid`. A contract comparing a subject denies every signature (AP-66).
 
-*(L-17, L-16, AP-67)*
+**Then assert the contract still says what your app claims.** Compiling proves it is valid C#; it
+does not prove the app and the contract agree. A custom-contract app has two implementations of the
+same rules and drift between them is silent:
+
+```bash
+cp -r templates/forseti-parity-tests tests/parity   # once
+node --test tests/parity/contract-parity.test.mjs
+```
+
+Catches, with no network: a `[PolicyParam]` the policy never supplies (fails at request time, after an
+approval), renumbered wire fields, a missing fail-closed guard, an identity check bound to a subject
+instead of the vuid, a blocked namespace, a misordered ladder, and a **deployed policy that no longer
+matches the contract source**. See [templates/forseti-parity-tests/](../templates/forseti-parity-tests/).
+
+*(L-17, L-16, AP-67, and LEARNINGS-tidewater-001 L-07)*
 
 ---
 
@@ -274,7 +325,12 @@ Policy deployment requires the realm's admin policy attached to the request, or 
 Fetch it **server-side** (admin bearer token):
 
 ```typescript
-const url = `${authServerUrl}/admin/realms/${realm}/iga/role-policies`;
+// STRIP THE TRAILING SLASH. The exported adapter has "auth-server-url": "http://localhost:8080/",
+// so naive concatenation yields a double slash and TideCloak rejects it with
+//   400 {"error":"missingNormalization","error_description":"Request path not normalized"}
+// — an error that names neither the URL nor the slash, and reads like a body/API-version problem.
+const base = authServerUrl.replace(/\/+$/, '');
+const url = `${base}/admin/realms/${realm}/iga/role-policies`;
 const policies = await fetch(url, {
   headers: { Authorization: `Bearer ${adminToken}` },
 }).then(r => r.json());
@@ -290,6 +346,22 @@ const adminPolicyBytes = Uint8Array.from(atob(matches[0].policy), c => c.charCod
 ⚠️ **Never `?? policies[0]`.** Code looking for `admin-policy` and defaulting to index 0 works today
 only because exactly one policy is returned; add a second and it silently deploys under the wrong
 authority. A named lookup that misses is a bug, not a case to default through (AP-63).
+
+#### If `role-policies` returns `200 []`, nothing is broken — you have not granted `tide-realm-admin` yet
+
+An empty array is currently indistinguishable from a broken endpoint, and it is neither. **The
+`tide-realm-admin` policy is created as part of granting `tide-realm-admin` to the first admin.** On a
+fully bootstrapped, licensed, IGA-enabled realm with roles, users and a committed contract, you will
+still get `[]` until that grant is committed.
+
+This collides with the hosting canon's ordering rule (AP-HOST-5: grant `tide-realm-admin` **last**,
+because committing it flips the realm to multiAdmin). Both rules are correct, and together they mean:
+
+> You cannot deploy a Forseti policy until you have granted `tide-realm-admin`, and granting it is a
+> **one-way door** into multiAdmin. Plan every other governed write to happen **before** it — and
+> expect the policy deployment itself to be a post-flip, enclave-approved operation.
+
+VERIFIED (LEARNINGS-agent-quorum-001 L-09). See [hosting-options.md](../canon/hosting-options.md) AP-HOST-5.
 
 ⚠️ **Decode the base64.** Passing the base64 *text* as bytes yields `[65, 81, 65, 65, ...]` (ASCII
 for `"AQAA..."`) and the ORK cannot parse it.
@@ -316,6 +388,8 @@ if (!res.ok) {
 full deploy cycle — several of which cost an enclave operator approval.
 
 - [ ] contract **compiles locally** against the stubs (Step 2)
+- [ ] the **parity tests pass** — app and contract still agree, and the deployed `contractId` still
+      matches the source (Step 2, `templates/forseti-parity-tests/`)
 - [ ] `contractId` matches `/^[0-9A-F]{128}$/` (Step 3)
 - [ ] `modelId` is one of the nine built-ins, or matches `/^BasicCustom<.+>:BasicCustom<.+>$/` (Step 4)
 - [ ] `request.id() === policy.modelIds[0]` — request identity and policy declaration agree (Step 4)

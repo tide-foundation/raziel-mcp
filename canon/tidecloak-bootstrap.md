@@ -128,7 +128,7 @@ Order matters. Do not skip or reorder steps.
 | 8 | Create admin user | `POST /admin/realms/{realm}/users` (returns 202 → user-creation change request) | User creation change request created |
 | 8b | Approve user creation | `authorize` + `commit` on `/iga/change-requests` | User queryable. **Must happen before role assignment.** |
 | 8c | Assign tide-realm-admin role | Assign `tide-realm-admin` client role on `realm-management`. Validate role lookup returns a role, not an error. | Admin user has role |
-| 9 | Generate invite link | `POST /tideAdminResources/get-required-action-link` with `["link-tide-account-action"]` | URL for admin to link Tide account |
+| 9 | **Set `tideInvitable`, drain, THEN** generate invite link | Three steps, in order: (1) `PUT /users/{id}` with `attributes.tideInvitable=["true"]`; (2) **drain the `SET_USER_ATTRIBUTE` change request**; (3) `POST /tideAdminResources/get-required-action-link` with `["link-tide-account-action"]` | URL for admin to link Tide account |
 | 10 | Wait for account linking | Poll user `tideUserKey` attribute until non-empty | Admin has Tide identity |
 | 11 | Approve role assignment change requests | `authorize` + `commit` on `/iga/change-requests` | Admin roles committed |
 | 12 | Update CustomAdminUIDomain | `PUT /identity-provider/instances/tide` then `POST /vendorResources/sign-idp-settings` | Enclave approval popups work from app origin |
@@ -153,12 +153,117 @@ Order matters. Do not skip or reorder steps.
 
 - Path: `POST /admin/realms/{realm}/tide-admin/toggle-iga`
 - Content-Type: `application/x-www-form-urlencoded`
-- Body: `isIGAEnabled=true`
+- Body: `isIGAEnabled=true` (or `false`)
+
+#### ⚠️ A JSON body FAILS OPEN TO `true` — `{"enabled":false}` ENABLES IGA
+
+The endpoint reads the **form parameter `isIGAEnabled`**. A JSON body is accepted, parsed by nothing,
+and the missing parameter defaults to enabling. It returns **200** with a body that contradicts your
+request, so nothing errors.
+
+**Measured on a fresh realm, 2026-08-10** (`tideorg/tidecloak-dev:latest`, Keycloak 26.7.0):
+
+```
+POST .../toggle-iga   Content-Type: application/json   {"enabled":false}
+→ 200 {"enabled":true, "scan":{…}, "autoCommit":{…}, "warning":"…"}
+→ realm attribute isIGAEnabled=true          # asked for false. IGA is now ON.
+
+POST .../toggle-iga   Content-Type: application/x-www-form-urlencoded   isIGAEnabled=true
+→ 200 {"enabled":true, …}
+→ realm attribute isIGAEnabled=true          # correct
+```
+
+This is why the mistake survived so long: for the common `{"enabled":true}` call the wrong request
+produces the *right* outcome. It only bites on the disable path — and on any "is this TideCloak?"
+probe.
+
+**Always form-encode, and assert the response.** The endpoint tells you the truth; it just never
+refuses a wrong request:
+
+```bash
+OUT=$(curl -sf -X POST "$URL/admin/realms/$REALM/tide-admin/toggle-iga" \
+  -H "Authorization: Bearer $TOKEN" \
+  -H 'Content-Type: application/x-www-form-urlencoded' \
+  --data-urlencode "isIGAEnabled=true")
+case "$OUT" in *'"enabled":true'*) : ;; *) echo "toggle-iga returned $OUT" >&2; exit 1 ;; esac
+```
+
+#### Enabling IGA is not a cheap boolean flip
+
+The 200 response carries `scan`, `autoCommit` and `warning`. On a fresh realm the call ran a
+**Phase-6 ADOPT scan over 207 entities** and created adopt change requests (34 `ROLE`, 66
+`CLIENT_SCOPE_CLIENT`, 37 `PROTOCOL_MAPPER`, 6 `CLIENT`, …), plus:
+
+> `Fewer than 2 distinct admin holders detected … Phase 6c will enforce ADOPT approval before admin
+> actions — provision a second manage-realm admin (or configure iga.approverRole) NOW. Recovery path
+> if locked out: the master-realm admin can always disable IGA on this realm via the master realm
+> (escape hatch) — there is no other recovery.`
+
+Read that warning when it appears. **Accidentally enabling IGA is not a no-op you can quietly undo.**
+
+#### Disabling can be REFUSED while change requests are pending
+
+From an enabled realm, `isIGAEnabled=false` may return an error object and leave IGA on:
+
+```
+{"error":…, "conflictingChangeRequestId":…, "message":…}
+→ realm attribute isIGAEnabled=true    (unchanged)
+```
+
+Drain the queue first (`templates/shared/drain-change-requests.py`), then retry. If the realm is
+already multiAdmin and no script can drain it, the documented escape hatch is the **master-realm admin
+disabling IGA on that realm** — there is no other recovery.
+
+#### Never probe the vendor surface with this endpoint
+
+`POST toggle-iga` does distinguish TideCloak (200) from plain Keycloak (404) — and leaves IGA
+**enabled** on whatever realm you probed, usually `master`. Use a read-only, equally Tide-specific
+probe instead:
+
+```bash
+curl -s -o /dev/null -w '%{http_code}\n' \
+  "$URL/admin/realms/master/iga/change-requests?status=PENDING" -H "Authorization: Bearer $TOKEN"
+# 200 = TideCloak, 404 = plain Keycloak. VERIFIED read-only: master's isIGAEnabled unchanged.
+```
+
+#### Assert Tide mode; do not just stamp it
+
+`setUpTideRealm` sets `iga.attestor=tide` on current builds, so the older "stamp `iga.attestor` first"
+step is usually already satisfied — and an instruction that is already satisfied teaches nothing. What
+matters is catching the build where it is **not** set, because Tide vs Tideless is the difference
+between governance approvals being cryptographically sealed and being enforced by server logic the
+host controls (GAP-065, and see `hosting-options.md`):
+
+```bash
+curl -sf "$URL/admin/realms/$REALM" -H "Authorization: Bearer $TOKEN" \
+  | python3 -c 'import json,sys; a=json.load(sys.stdin).get("attributes") or {}; \
+      assert a.get("iga.attestor")=="tide", f"TIDELESS mode: {a.get(\"iga.attestor\")}"'
+```
+
+If absent, stamp it (GET then PUT `/admin/realms/{realm}`) and re-assert. Note `toggle-iga` alone does
+**not** set it — on a realm enabled without licensing, `iga.attestor` stayed unset (measured).
+
+VERIFIED 2026-08-10 (LEARNINGS-tidewater-001 L-01/L-02, extended by direct measurement).
 
 ### Approve/commit change requests
 
 Current `/iga/change-requests/...` surface (replaces legacy `/tide-admin/change-set/...`, GAP-065). **Full spec + bootstrap loop: `canon/iga-change-requests-api.md`.**
-- List pending: `GET /admin/realms/{realm}/iga/change-requests?status=PENDING` (objects keyed by `id`)
+- List pending: `GET /admin/realms/{realm}/iga/change-requests?status=PENDING` — returns a JSON **ARRAY** of CR objects, each with a top-level `id`. Some docs say "objects keyed by id"; **handle both shapes**. A drain written from the keyed-object description does `Object.keys(response)` and gets array indices `"0","1","2"…`, which then 404 as change-request ids. Three lines of defensiveness. VERIFIED (LEARNINGS-agent-quorum-001 L-04)
+
+**Use the shipped drain rather than writing one inline:**
+
+```bash
+templates/shared/drain-change-requests.py <tidecloak-url> <realm> <token> [max-rounds]
+```
+
+It takes **arguments, not stdin**, loops in **rounds** (committing one CR can make another ready),
+tolerates `412` (threshold/dependency unmet) and reports `409` four-eyes distinctly, and normalises a
+trailing slash in the URL.
+
+⚠️ **Never implement the drain as a bash heredoc with a piped payload.** `python3 - <<'PY'` takes the
+*script* from stdin, so the pipe is silently discarded, `sys.stdin.read()` returns empty, and every
+drain reports "0 change requests" while the queue fills behind it. The bootstrap log stays completely
+green and you end up with a realm containing zero roles and zero users. VERIFIED (LEARNINGS-agent-quorum-001 L-12).
 - Authorize (sign): `POST /admin/realms/{realm}/iga/change-requests/{id}/authorize` (body `{}` optional; records an approval, does **not** commit; simple firstAdmin/Tideless lane — refuses multiAdmin CRs)
 - Batch authorize (bootstrap): `POST /admin/realms/{realm}/iga/change-requests/bulk-authorize` with `{ "actionTypeIn": ["CREATE","DELETE"], "limit": 100 }`
 - Approve (multiAdmin): `POST /admin/realms/{realm}/iga/change-requests/{id}/approve` (enclave lane; approves AND auto-commits once quorum met — the console "Authorize" button)
@@ -210,6 +315,41 @@ curl -X POST "$TIDECLOAK_URL/admin/realms/$REALM_NAME/authentication/register-re
 ```
 
 Without this, invite links redirect to VERIFY_PROFILE or the default login flow instead of Tide account linking. VERIFIED (session-001).
+
+### Invite links require the `tideInvitable` user attribute
+
+`get-required-action-link` refuses any user who does not carry it:
+
+```
+POST /admin/realms/{realm}/tideAdminResources/get-required-action-link
+     ?userId=...&clientId=...&redirectUri=...&lifespan=43200
+Body: ["link-tide-account-action"]
+
+→ HTTP 400
+  {"errorMessage":"This user cannot be invited: the 'tideInvitable' attribute is not set to true."}
+```
+
+The error names the attribute, which is good — but nothing tells you to set it in advance, and
+setting it collides with the governed-write problem. **All three steps, in this order:**
+
+```bash
+# 1. set the attribute (returns 204 — which does NOT mean it applied)
+curl -X PUT "$URL/admin/realms/$REALM/users/$USER_ID" -H "Authorization: Bearer $TOKEN" \
+  -H 'Content-Type: application/json' \
+  -d '{"attributes":{"tideInvitable":["true"]}}'
+
+# 2. DRAIN the SET_USER_ATTRIBUTE change request — without this the attribute is silently absent
+#    (GET /users/{id} → "attributes": null). See concepts.md: 2xx means accepted, not applied.
+
+# 3. read it back, THEN generate the link
+curl -s "$URL/admin/realms/$REALM/users/$USER_ID" -H "Authorization: Bearer $TOKEN" \
+  | grep -q tideInvitable || echo "attribute still not applied — drain did not run"
+```
+
+⚠️ Do **not** chase `unmanagedAttributePolicy` when the attribute goes missing. That is a real and
+well-known cause of dropped attributes, so it is the natural next hypothesis — and here it is a dead
+end that leaves you more confused, because `/users/profile` will show `unmanagedAttributePolicy:
+ENABLED` and look fine. The cause is the undrained change request. VERIFIED (LEARNINGS-agent-quorum-001 L-02/L-03).
 
 ### Admin user profile requirements
 

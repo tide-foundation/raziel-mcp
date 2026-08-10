@@ -141,7 +141,19 @@ export function Providers({ children }: { children: React.ReactNode }) {
 ```
 
 **Critical**: `TideCloakContextProvider` uses the `configUrl` prop, NOT `configFilePath`. The `useTideCloak()` hook returns flat properties (`authenticated`, `login`, `logout`, `secureFetch`, `getToken`, `hasRealmRole`, etc.) — NOT a `tc` wrapper object. VERIFIED (LEARNINGS-ratidefy-batch-001 L-19).
+
+⚠️ **`secureFetch` requires an ABSOLUTE url and is not otherwise distinguishable from `fetch`.**
+`secureFetch('/api/x')` throws `Failed to construct 'URL': Invalid URL` from inside the SDK before any
+request — it derives the DPoP `htu` with a bare `new URL()` and no base. And bare `fetch('/api/x')` to
+your own DPoP-guarded API is a silent 401. The only correct combination is `secureFetch` **with an
+absolute url**, and neither failure points at it (AP-73/AP-74):
+
+```typescript
+const absoluteUrl = (path: string) => new URL(path, window.location.origin).href;
+await secureFetch(absoluteUrl('/api/policy/contract'));
 ```
+
+Thread `secureFetch` from the hook **into helper modules** rather than letting them call `fetch`.
 
 ```typescript
 // app/layout.tsx
@@ -160,15 +172,27 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
 
 The provider reads all config (auth-server-url, realm, resource/clientId, redirect URIs) from `data/tidecloak.json`. Do not duplicate these values into `NEXT_PUBLIC_TIDECLOAK_*` env vars.
 
-**DPoP configuration** **VERIFIED** (vendor confirmation, GAP-032 resolved):
+**DPoP configuration** — ⚠️ **the two providers take different prop shapes. Do not mix them.**
+
+| Component | From | Props |
+|---|---|---|
+| `TideCloakProvider` | `@tidecloak/nextjs` | **`{ config, children }` ONLY.** Init options must be folded **into `config`** |
+| `TideCloakContextProvider` | `@tidecloak/react` | `configUrl` + `initOptions` + `useDPoP` as siblings |
+
 ```typescript
-<TideCloakContextProvider
-  useDPoP={{ mode: 'strict', alg: 'ES256' }}
-  // ... other props
->
+// @tidecloak/nextjs — TideCloakProvider. Its type is { config: Record<string, any>; children: ReactNode }
+<TideCloakProvider config={{ ...tcConfig, useDPoP: { mode: 'strict', alg: 'ES256' } }}>
+
+// @tidecloak/react — TideCloakContextProvider takes them as separate props
+<TideCloakContextProvider configUrl="/tidecloak.json" useDPoP={{ mode: 'strict', alg: 'ES256' }}>
 ```
 
-ES256 is the default and recommended algorithm. EdDSA also supported. DPoP is required for Tide's full security guarantees.
+⚠️ Passing `useDPoP` or `initOptions` as a **sibling prop** to the Next.js `TideCloakProvider`
+**silently does nothing** — the type accepts only `config` and `children`, so extra props are ignored
+rather than rejected. Fold them into `config`. VERIFIED against the shipped
+`TideCloakProviderProps` type (LEARNINGS-agent-quorum-001 L-10).
+
+ES256 is the default and recommended algorithm. EdDSA also supported. DPoP is required for Tide's full security guarantees — and needs the relay page and CSP wiring in **Browser Prerequisites** below.
 
 ---
 
@@ -509,6 +533,147 @@ export default function RootLayout({ children }) {
 ```
 
 **Agent implication**: Defensive pattern from keylessh; not SDK-provided.
+
+---
+
+### Browser Prerequisites — Three Files and One Config, All Required
+
+**Before first login, all three files must exist.** Each one, omitted, fails **silently** — no error
+in the console, no failed request, no clue pointing at the missing piece.
+
+| File | Omitting it causes |
+|---|---|
+| `public/silent-check-sso.html` | silent SSO / token refresh fails |
+| `public/tide_dpop_auth.html` | `Popup DPoP verification failed to load`; the relay 404s |
+| `app/auth/redirect/page.tsx` | TideCloak redirects with `?code=…`, the app 404s, the SDK never runs, **no error appears anywhere** |
+
+The redirect path is **`/auth/redirect`** — not `/auth/callback`, which is what almost every other
+OIDC integration uses and the name an agent reaches for by default. The page must **process** the
+callback with `useAuthCallback`, not merely render text, and must be gated on mount because the hook
+touches `window` and throws during SSR. See [redirect-handler.md](redirect-handler.md), AP-REDIR-01/02.
+
+#### The complete `next.config.ts` — copy this whole block
+
+Four pieces. Three of the four are individually easy to get subtly wrong, and every wrong version
+produces the *same* misleading error. This is VERIFIED against a live server (see the verification
+command below), not reasoned about.
+
+```ts
+async headers() {
+  return [
+    {
+      // I-06: frame-src '*' is required for the SWE iframe and ORK re-homing.
+      // Do NOT add `frame-ancestors 'self'`. It looks like routine hardening and it BREAKS
+      // the enclave, which frames your own origin for silent SSO and the approval popup.
+      source: "/:path*",
+      headers: [{ key: "Content-Security-Policy", value: "frame-src 'self' *" }],
+    },
+    {
+      // MUST come AFTER the catch-all: for a given header key the later matching rule wins.
+      source: "/tide_dpop/:path*",
+      headers: [
+        { key: "Content-Security-Policy", value: "default-src 'self'; script-src 'unsafe-inline'" },
+        { key: "Allow-CSP-From", value: "*" },
+      ],
+    },
+  ];
+},
+async rewrites() {
+  // WILDCARD `:path*`, not `/tide_dpop`. A static rewrite, NOT a route handler.
+  return [{ source: "/tide_dpop/:path*", destination: "/tide_dpop_auth.html" }];
+},
+```
+
+**1. The rewrite must be a WILDCARD.** The relay page parses `iss` and `aud` **out of its own URL
+path**:
+
+```js
+const paths = new URL(window.location.href).pathname.split("/");
+const iss = hexToStr(paths[paths.indexOf("iss") + 1]);
+const aud = hexToStr(paths[paths.indexOf("aud") + 1]);
+```
+
+So the enclave requests `/tide_dpop/iss/<hex>/aud/<hex>/tide_dpop_auth.html`. An exact-path
+`source: "/tide_dpop"` matches none of that, the URL 404s, and a 404 page cannot satisfy the
+embedder's pinned-script CSP.
+
+**2. The relay path needs `Allow-CSP-From: *`.** This is **CSP Embedded Enforcement**: the embedder
+sets a `csp` attribute on the iframe, and the framed document must either deliver an at-least-as-strong
+policy *or* opt in with `Allow-CSP-From`. Omitting it is precisely what refuses the frame.
+
+**3. Static rewrite, never a route handler.** The Next dev server injects its own hash-based CSP on
+route-handler responses, which blocks the relay's inline script. Static rewrites bypass that pipeline.
+
+**4. Order the specific rule last.** For the same header key, the later matching rule wins — path
+specificity does **not** decide it. Exactly one `Content-Security-Policy` header is sent per response.
+
+#### Verify it — do not reason about it
+
+Rule ordering and header merging are not reliably predictable by reading config. Read the wire:
+
+```bash
+# catch-all path -> frame-src
+curl -sS -D - -o /dev/null http://localhost:3000/ | grep -i content-security-policy
+# expect: Content-Security-Policy: frame-src 'self' *
+
+# relay path -> its own CSP *and* the opt-in header
+curl -sS -D - -o /dev/null \
+  "http://localhost:3000/tide_dpop/iss/6161/aud/6262/tide_dpop_auth.html" \
+  | grep -iE "^(HTTP|content-security-policy|allow-csp-from)"
+# expect: HTTP/1.1 200 OK
+#         Content-Security-Policy: default-src 'self'; script-src 'unsafe-inline'
+#         Allow-CSP-From: *
+
+# and the body must be the real relay, not a 404 page
+curl -sS "http://localhost:3000/tide_dpop/iss/6161/aud/6262/tide_dpop_auth.html" | grep -c window.opener
+# expect: 3   (0 means a stale relay copy — see AP-62)
+```
+
+VERIFIED on Next.js 15.3.3 and 16.3.0 against a live dev server, 2026-08-10 — but **use 16.x**:
+15.3.3 carries a published advisory (CVE-2025-66478) and `npm i next@15.3.3` now prints a deprecation
+warning. The pack templates pin `^16.0.0`. 16.3.0 needed no changes beyond what is already documented
+here (`next dev --webpack` / `next build --webpack`, plus the two mandatory `@tidecloak/*` webpack
+workarounds). Both the pack templates
+and two working apps use exactly this configuration.
+
+> **REFUTED — do not "simplify" this to one CSP for all paths.** It was reported that the catch-all
+> rule always overrides the per-path one regardless of order, and that the fix was to drop the
+> `/tide_dpop` entry entirely. Measured on a live server, the per-path rule **wins** when ordered last:
+> `/` served `frame-src 'self' *` while `/tide_dpop/iss/…/tide_dpop_auth.html` served
+> `default-src 'self'; script-src 'unsafe-inline'` **and** `Allow-CSP-From: *`, as exactly one CSP
+> header. Collapsing to a single policy would also delete `Allow-CSP-From`, which is the very header
+> the CSP error says is missing — so that "simplification" reintroduces the bug it is trying to avoid.
+> If you see the catch-all winning, your specific rule is ordered **first**; move it last and re-read
+> the header. (LEARNINGS-agent-quorum-001 L-08, refuted.)
+
+#### Reading the failure correctly
+
+```
+Refused to display 'http://localhost:3000/' in a frame. The embedder requires it to
+enforce the following Content Security Policy: 'default-src 'none'; script-src 'self'
+'sha256-utc6UrebuHOyLd/2aiMXS/p1EDy9UZBDe/XEMKDw9Mc='; ...'. However, the frame neither
+accepts that policy using the Allow-CSP-From header nor delivers a Content Security
+Policy which is at least as strong as that one.
+
+[Tide] TIDE-SWE-UNHANDLED — Popup DPoP verification failed to load
+```
+
+⚠️ **The `sha256-` in that error is the hash of the relay file's inline script, and it MATCHING your
+copy EXONERATES the file.** It is the hash the embedder expects to find. A match means you have the
+**right file at the wrong address** — look at the rewrite and the headers, not at the file. This error
+sends almost everyone to hunt a stale `tide_dpop_auth.html` (a real, separate failure — AP-62/GAP-068)
+and that is the wrong destination when the file is fine.
+
+**The popup is a symptom, not a setting.** The relay runs in an **iframe** first and needs
+unpartitioned IndexedDB via `document.requestStorageAccess({ indexedDB: true })`. When that path fails
+— including when the iframe 404s — the SDK falls back to a **popup**, which has first-party context.
+So "the popup appears every time" means *the iframe path is broken*; no CSP setting suppresses it.
+Once the rewrite and headers are right, the popup should appear only when the browser genuinely blocks
+third-party storage access.
+
+**The relay URL is driven entirely from the enclave side.** `grep -c tide_dpop` in
+`@tidecloak/js/dist/esm/lib/tidecloak.js` returns **0** — reasoning about the app-side SDK source will
+never find this.
 
 ---
 

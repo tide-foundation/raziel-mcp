@@ -185,10 +185,17 @@ curl -s -X PUT "$TIDECLOAK_URL/admin/realms/$REALM_NAME" \
 
 echo "==> Enabling IGA..."
 TOKEN="$(get_token)"
-curl -s -X POST "$TIDECLOAK_URL/admin/realms/$REALM_NAME/tide-admin/toggle-iga" \
+# toggle-iga reads the FORM parameter `isIGAEnabled`. A JSON body is accepted, parsed by
+# nothing, and the missing parameter FAILS OPEN TO true — so `{"enabled":false}` ENABLES IGA.
+# Always form-encode, and assert the response, because the endpoint does not refuse a wrong request.
+IGA_OUT="$(curl -s -X POST "$TIDECLOAK_URL/admin/realms/$REALM_NAME/tide-admin/toggle-iga" \
   -H "Authorization: Bearer $TOKEN" \
-  -H "Content-Type: application/json" \
-  -d '{"enabled":true}' > /dev/null
+  -H "Content-Type: application/x-www-form-urlencoded" \
+  --data-urlencode "isIGAEnabled=true")"
+case "$IGA_OUT" in
+  *'"enabled":true'*) : ;;
+  *) echo "ERROR: toggle-iga did not report enabled=true. Response: $IGA_OUT" >&2; exit 1 ;;
+esac
 
 # --- Step 6: Approve client change requests ---
 echo "==> Approving client change requests..."

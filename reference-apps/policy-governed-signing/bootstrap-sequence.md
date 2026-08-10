@@ -25,8 +25,29 @@ All steps must complete before users can safely use signing features. Order matt
    - Returns licensing JSON as `text/plain`.
 
 5. **Enable IGA**
-   - First stamp `iga.attestor=tide` on the realm (GET then PUT `/admin/realms/{realm}`) so governance comes up in Tide mode, then `POST /admin/realms/{realm}/tide-admin/toggle-iga` with JSON body `{"enabled":true}`.
+   - `POST /admin/realms/{realm}/tide-admin/toggle-iga` with **form-encoded** `isIGAEnabled=true`.
+     ⚠️ The endpoint reads the FORM parameter. A JSON body is accepted, parsed by nothing, and the
+     missing parameter **fails open to `true`** — so `{"enabled":false}` ENABLES IGA. Always
+     form-encode, and assert the response, because the endpoint never refuses a wrong request:
+     ```bash
+     OUT=$(curl -sf -X POST "$URL/admin/realms/$REALM/tide-admin/toggle-iga" \
+       -H "Authorization: Bearer $TOKEN" \
+       -H 'Content-Type: application/x-www-form-urlencoded' \
+       --data-urlencode "isIGAEnabled=true")
+     case "$OUT" in *'"enabled":true'*) : ;; *) echo "toggle-iga returned $OUT" >&2; exit 1 ;; esac
+     ```
    - Must happen after licensing. Enables change-set governance for role/user mutations.
+   - **Assert Tide mode rather than stamping it.** `setUpTideRealm` sets `iga.attestor=tide` on
+     current builds, so the old "stamp it first" step is usually already satisfied — and an
+     instruction that is already satisfied teaches nothing. What matters is catching the build where
+     it is NOT set, because Tide vs Tideless is the difference between governance approvals being
+     cryptographically sealed and being enforced by server logic the host controls (GAP-065):
+     ```bash
+     curl -sf "$URL/admin/realms/$REALM" -H "Authorization: Bearer $TOKEN" \
+       | python3 -c 'import json,sys; a=json.load(sys.stdin).get("attributes") or {}; \
+           assert a.get("iga.attestor")=="tide", f"TIDELESS mode: {a.get(\"iga.attestor\")}"'
+     ```
+     If it is absent, stamp it (GET then PUT `/admin/realms/{realm}`) and re-assert.
 
 ## Phase 3: Approve initial change requests
 
@@ -46,6 +67,12 @@ All steps must complete before users can safely use signing features. Order matt
 
 9. **Generate account-linking invite**
    - `POST /admin/realms/{realm}/tideAdminResources/get-required-action-link?userId={userId}&lifespan=43200` with body `["link-tide-account-action"]`.
+   - ⚠️ **`tideInvitable` must be set FIRST, and the change request drained.** Otherwise this
+     returns `400 {"errorMessage":"This user cannot be invited: the 'tideInvitable' attribute is
+     not set to true."}` for every principal. Three steps, in order: `PUT /users/{id}` with
+     `attributes.tideInvitable=["true"]` → **drain the `SET_USER_ATTRIBUTE` change request** →
+     request the link. A `204` on the PUT does NOT mean it applied (AP-72). Put this in its own
+     script rather than inline. Full sequence: `canon/tidecloak-bootstrap.md` → invite links.
    - Admin must complete this link in a browser to bind their identity to the Tide Fabric.
 
 10. **Wait for account linking**

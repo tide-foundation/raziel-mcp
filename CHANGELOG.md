@@ -2,6 +2,31 @@
 
 All notable changes to `@tideorg/mcp` (the Tide Agent Pack) are documented here.
 
+## 1.9.9 — 2026-08-10
+
+- **`toggle-iga` fails open — form-encode and assert.** The
+  `/tide-admin/toggle-iga` endpoint reads the **form** parameter `isIGAEnabled`;
+  a JSON body is parsed by nothing and the missing parameter **defaults to
+  `true`**, so `{"enabled":false}` silently *enables* IGA and a malformed request
+  never errors. Every bootstrap script now form-encodes `isIGAEnabled=true` and
+  **asserts `"enabled":true`** in the response instead of trusting the 200.
+- **Giving an autonomous agent Tide authority** — new `canon/agent-authority.md`:
+  an AI agent **cannot hold a Tide identity or sign by itself** (GAP-064, no
+  headless auth). States the quorum pattern that does work *and its limit*, so
+  nobody ships it believing it proves more than it does.
+- **Seamless DPoP relay + CSP wiring** — the DPoP popup relay and the
+  Content-Security-Policy needed to serve it now wire up without manual fixups.
+- **`forseti-parity-tests` template** — assert your app code still matches the
+  signed contract in ~200 ms, with no ORK / .NET / enclave / approval. Catches
+  silent drift between the C# every ORK runs and the UI that teaches users the
+  approval ladder.
+- **`drain-change-requests.py`** — a real file (not a bash heredoc, which
+  swallows the piped payload and makes every drain falsely report "0 change
+  requests") to approve + commit all pending IGA change requests.
+- Canon/playbook refinements: `anti-patterns`, `framework-matrix`,
+  `tidecloak-bootstrap`, `custom-contracts`, `concepts`, `invariants`,
+  `deploy-forseti-policy`, and the reference-app bootstrap sequences.
+
 ## 1.9.8 — 2026-08-10
 
 Applies a full learnings cycle (L-01…L-20) from a real integration project.

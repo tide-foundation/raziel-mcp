@@ -548,7 +548,18 @@ if (!(jwt as { cnf?: { jkt?: string } }).cnf?.jkt) {
 
 Omitting this is the silent failure mode: the app enables `useDPoP`, believes it is protected, and still accepts unbound bearer tokens (SG-03). Re-verify the proof itself **only** if you hand-roll RFC 9449 proofs instead of using `secureFetch`. VERIFIED (LEARNINGS-batch-005 L-06; check activated in the pack's `withAuth` 2026-08-07, where it had shipped commented out).
 
-**Client-side is four pieces, not one.** `useDPoP` alone is insufficient: you also need `public/tide_dpop_auth.html` (not shipped in the npm packages — a stale copy after an SDK upgrade causes an unexplained 500), the `/tide_dpop/:path*` rewrite, and that path's CSP **ordered after** any generic CSP rule (last matching rule wins for a header key). Then API calls must use `secureFetch`; a plain `fetch` with a Bearer header carries no proof. Full configuration and verification commands: `playbooks/add-auth-nextjs-fresh.md` Step 4; symptom-led diagnosis: `canon/troubleshooting.md` T-26.
+**Client-side is four pieces, not one.** `useDPoP` alone is insufficient. You also need:
+
+1. `public/tide_dpop_auth.html` — not shipped in the npm packages; a stale copy breaks the popup fallback (AP-62)
+2. the **wildcard** rewrite `/tide_dpop/:path*` → `/tide_dpop_auth.html`, as a **static rewrite, not a route handler**. The relay parses `iss`/`aud` out of its own URL path, so the enclave requests `/tide_dpop/iss/<hex>/aud/<hex>/tide_dpop_auth.html` and an exact-path rewrite 404s
+3. that path's CSP (`default-src 'self'; script-src 'unsafe-inline'`) **plus `Allow-CSP-From: *`** — this is CSP Embedded Enforcement; omitting the opt-in header is exactly what refuses the frame
+4. `secureFetch` for API calls; a plain `fetch` with a Bearer header carries no proof
+
+Order the `/tide_dpop` rule **after** the generic rule — for a given header key the later matching rule wins, and path specificity does not decide it. **Verify by reading the served header, not by reasoning about rule order** (`curl -D -`); exactly one `Content-Security-Policy` header is sent per response. VERIFIED on Next.js 15.3.3 and 16.3.0 against a live server, 2026-08-10.
+
+⚠️ **Do NOT add `frame-ancestors 'self'`.** It reads as routine hardening and it breaks the enclave, which frames your own origin for silent SSO and the approval popup. Canon specifies exactly `frame-src 'self' *` — that is the whole policy, and additions are what break it.
+
+Complete copyable config, the curl verification, and how to read the CSP error: `canon/framework-matrix.md` → **Browser Prerequisites**. Symptom-led diagnosis: `canon/troubleshooting.md` → Error-Text Lookup.
 
 **Disabling DPoP is a governed change, not a code edit.** Removing `useDPoP` client-side leaves the server still demanding proofs, so login stays broken. Turning it off also requires flipping the client attribute to `false` — a change request on an IGA realm, needing human enclave approval once the realm is multiAdmin. Since DPoP-off is not a supported configuration anyway, the correct move is always to finish wiring the client, never to disable the server.
   - Server off, client left at default strict → init fails ("server does not advertise DPoP support"). Set `useDPoP: false` or enable DPoP on the realm.

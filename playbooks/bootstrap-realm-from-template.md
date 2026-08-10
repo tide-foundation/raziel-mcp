@@ -103,8 +103,8 @@ curl -s -X PUT "$TIDECLOAK_URL/admin/realms/$REALM_NAME" \
 
 curl -s -X POST "$TIDECLOAK_URL/admin/realms/$REALM_NAME/tide-admin/toggle-iga" \
   -H "Authorization: Bearer $TOKEN" \
-  -H "Content-Type: application/json" \
-  -d '{"enabled":true}'
+  -H "Content-Type: application/x-www-form-urlencoded" \
+  --data-urlencode "isIGAEnabled=true"
 ```
 
 ### Step 6: Approve and commit client change requests
@@ -191,7 +191,26 @@ approve_and_commit clients
 
 If re-running bootstrap against an existing realm, delete the old realm first. On the H2 dev database, `DELETE /admin/realms/{realm}` fails with FK constraint violations on composite roles. Use this sequence:
 
-1. Disable IGA: `POST /tide-admin/toggle-iga` with JSON body `{"enabled":false}`
+1. Disable IGA: `POST /tide-admin/toggle-iga`, **form-encoded**, `isIGAEnabled=false`.
+
+   ⚠️ **This step previously said JSON `{"enabled":false}`, which ENABLES IGA.** The endpoint reads
+   the form parameter `isIGAEnabled`; a JSON body is accepted, parsed by nothing, and the missing
+   parameter **fails open to `true`**. A teardown path that turns the thing on is a bad way to spend
+   an afternoon. Assert the response:
+
+   ```bash
+   OUT=$(curl -sf -X POST "$TIDECLOAK_URL/admin/realms/$REALM_NAME/tide-admin/toggle-iga" \
+     -H "Authorization: Bearer $TOKEN" \
+     -H 'Content-Type: application/x-www-form-urlencoded' \
+     --data-urlencode "isIGAEnabled=false")
+   case "$OUT" in *'"enabled":false'*) : ;; *) echo "toggle-iga returned $OUT" >&2; exit 1 ;; esac
+   ```
+
+   ⚠️ **Disabling can be REFUSED while change requests are pending.** From an enabled realm the call
+   may return `{"error":…,"conflictingChangeRequestId":…}` and leave IGA on — drain the queue first
+   (`templates/shared/drain-change-requests.py`), then retry. If the realm is already multiAdmin and
+   you are locked out, the only recovery is the **master-realm admin disabling IGA on that realm**;
+   there is no other path. VERIFIED 2026-08-10.
 2. Delete Tide IdP: `DELETE /identity-provider/instances/tide`
 3. Strip ALL composite roles (realm-level and per-client) — remove composites from `default-roles-*`, `realm-admin`, `manage-account`, etc.
 4. Delete realm: `DELETE /admin/realms/{realm}`

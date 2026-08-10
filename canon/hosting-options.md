@@ -125,9 +125,20 @@ A broken automation client also breaks Skycloak's own `/clusters/{id}/realms` AP
 
 ```bash
 jq -r '.type' cluster-create.json                                   # → tidecloak
-# toggle-iga on master                                              # → 200, not 404
+# READ-ONLY vendor-surface probe (see warning below):
+curl -s -o /dev/null -w '%{http_code}\n' \
+  "$TIDECLOAK_URL/admin/realms/master/iga/change-requests?status=PENDING" \
+  -H "Authorization: Bearer $TOKEN"                                 # → 200, not 404
 jq 'has("jwk") and has("vendorId") and has("homeOrkUrl")' data/tidecloak.json   # → true
 ```
+
+> ⚠️ **Do not probe the vendor surface with `POST /tide-admin/toggle-iga`.** Earlier revisions of this
+> page used `-d '{"enabled":false}'` against `master`, which does distinguish TideCloak (200) from
+> plain Keycloak (404) — **and silently ENABLES IGA on the master realm as a side effect.** The
+> endpoint reads the form parameter `isIGAEnabled`; a JSON body is parsed by nothing and the missing
+> parameter fails open to `true`. On a fresh realm this also runs a Phase-6 ADOPT scan over every
+> entity and warns about admin lockout. Use the read-only `GET .../iga/change-requests` above, which
+> is equally Tide-specific and mutates nothing. VERIFIED 2026-08-10.
 
 ---
 
@@ -144,6 +155,8 @@ A hosting-choice step is done when:
 - **AP-HOST-1** — Presenting partner-hosting as a security *downgrade* ("now a third party holds your auth"). It isn't, because of the threshold model — but state the real caveats (availability, metadata, Tideless-IGA), don't overcorrect into either fear or false comfort.
 - **AP-HOST-2** — Claiming the hosted Tide path works without checking `type`, the vendor surface, and the adapter's `jwk`. GAP-066 is resolved *for `0.14.17`*; older versions provision happily and then fail at licensing.
 - **AP-HOST-5** — Granting `tide-realm-admin` before finishing every governed write. It flips the realm to multiAdmin, after which no change request can be approved from a script (`409 MULTIADMIN_REQUIRES_APPROVAL_ENCLAVE`) and every later config change needs a human enclave approval. Register all redirect URIs and web origins during bootstrap.
+
+  ⚠️ **But Forseti policy deployment needs that grant.** `GET /iga/role-policies` returns `200 []` until `tide-realm-admin` is granted to the first admin — the `tide-realm-admin` policy is created *as part of* that grant, and policy deployment requires it. So "grant it last" and "you cannot deploy a policy without it" are both true: sequence every other governed write before the grant, then expect **policy deployment itself to be a post-flip, enclave-approved operation**. An empty `role-policies` array is not a broken endpoint. VERIFIED (LEARNINGS-agent-quorum-001 L-09); see `playbooks/deploy-forseti-policy.md` Step 8.
 - **AP-HOST-3** — Putting the Skycloak API key or the `skycloak-automation-*` client secret in application code or the repo. These are operator/bootstrap secrets (like master admin creds, AP-41) — never in app runtime.
 - **AP-HOST-4** — Hardcoding `API-Version` omission. Every Skycloak API call needs the `API-Version` header or it fails.
 

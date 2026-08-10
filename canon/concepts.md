@@ -118,7 +118,10 @@ PENDING → APPROVED (committed) → (ACTIVE)
 
 **Change-request API endpoints** — current `/iga/change-requests/...` surface (replaces legacy `/tide-admin/change-set/...`, GAP-065). **Full spec: `canon/iga-change-requests-api.md`.**
 ```
-GET  /admin/realms/{realm}/iga/change-requests?status=PENDING          → list (objects keyed by id)
+GET  /admin/realms/{realm}/iga/change-requests?status=PENDING          → JSON ARRAY of CR objects,
+                                                                        each with a top-level `id`
+                                                                        (older docs said "keyed by id" —
+                                                                         handle BOTH shapes, see below)
 GET  /admin/realms/{realm}/iga/change-requests/{id}                    → one change request
 POST /admin/realms/{realm}/iga/change-requests/{id}/authorize          → approve (sign), body {} optional
 POST /admin/realms/{realm}/iga/change-requests/bulk-authorize          → batch approve
@@ -140,7 +143,11 @@ GET/POST /admin/realms/{realm}/iga/change-requests/{id}/approval-model → Tide-
 - Canonical setup ordering: license (`setUpTideRealm`) → IGA (`toggle-iga`) → E2EE. This is the only valid sequence. **VERIFIED** (vendor confirmation, batch-02 Q-04, A-21/A-22 resolved). License required for all Tide features (BYOiD login, signing, IGA, vouchers). IGA required for E2EE because `jwk` only injected when IGA enabled. BYOiD-only (license + no IGA) is a valid deployment mode but has no E2EE. DPoP is standard Keycloak, not gated by Tide licensing.
 - After IGA commit, new roles are NOT immediately visible in the doken. Token refresh is required, and propagation may take up to 120s **VERIFIED** (test-cases F3, F6)
 - Change requests have a hardcoded 1-month (2628000 seconds) cryptographic expiry enforced by the Tide enclave. After this window, signing requests are rejected. No automatic database cleanup — stale drafts persist until manually cancelled. Expiry not configurable. **VERIFIED** (vendor confirmation, batch-02 Q-08, A-25 resolved)
-- **ACTIVE vs DRAFT distinction** **VERIFIED** (vendor confirmation, GAP-041 resolved): Role creation (`POST .../roles`) and default-role assignment get `ACTIVE` status (recorded for audit but non-blocking, no sign/commit needed). All other draft-triggering actions get `DRAFT` status requiring quorum sign/commit. This matters for automation: agents creating roles do not need sign/commit, but agents assigning those roles to users do.
+- **ACTIVE vs DRAFT distinction** — ⚠️ **DO NOT RELY ON THIS FOR AUTOMATION.** Vendor confirmation (GAP-041) said role creation (`POST .../roles`) and default-role assignment get `ACTIVE` status (recorded for audit, non-blocking, no sign/commit needed), with all other draft-triggering actions getting `DRAFT`. **Observed behaviour contradicts this on TideCloak-dev / Keycloak 26.7.0**: `CREATE_ROLE` returned HTTP **202** with `{"status":"PENDING","actionType":"CREATE_ROLE"}` and the role **did not exist** (`GET .../roles` → `[]`) until the change request was committed. `SET_USER_ATTRIBUTE` behaved the same way — HTTP **204**, attribute silently absent, a `SET_USER_ATTRIBUTE` change request pending. VERIFIED (LEARNINGS-agent-quorum-001 L-01/L-02). Treat the ACTIVE/DRAFT split as **version-specific and unreliable**; the safe rule is below.
+
+- **THE RULE THAT ALWAYS HOLDS: with IGA enabled, a `2xx` from an admin endpoint means ACCEPTED, not APPLIED.** Verify realm state after every mutation; never infer success from the status code. Concretely: mutate → **drain** the change requests → **read back** and assert. `201` and `202` mean different things and only one of them means the entity exists.
+
+  **Why this is the most expensive class of bug in a bootstrap script**: six role creations return six `2xx`, the script moves on, and every later lookup fails against an empty list. The visible symptom (`role not found` during role *assignment*) points at the assignment step rather than the creation step several stages earlier. For `SET_USER_ATTRIBUTE` it is worse — `204` plus a silently-absent attribute is the worst combination available, because there is no error to search for, and the natural next hypothesis (the user-profile `unmanagedAttributePolicy`) sends you somewhere unrelated and leaves you more confused than when you started.
 
 **Common confusion**: IGA is NOT generic approval workflow. Approval is sealed by threshold signatures. No single admin can bypass.
 
@@ -196,8 +203,21 @@ frame-src 'self' *
 ```
 `frame-src '*'` required for ORK re-homing. Without correct CSP, SWE iframe silently fails.
 
+⚠️ **That is the whole policy — additions are what break it.** Do NOT add `frame-ancestors 'self'`:
+the SWE frames your own origin for silent SSO and the approval popup, and a same-origin ancestor
+policy refuses that with `Refused to display … in a frame`, which reads as a Tide bug rather than
+self-inflicted CSP. VERIFIED (LEARNINGS-agent-quorum-001 L-07).
+
+**When DPoP is enabled, the SWE also needs the relay page**, at a **wildcard** path with its own CSP
+plus `Allow-CSP-From: *` (CSP Embedded Enforcement). The relay runs in an **iframe** first and falls
+back to a **popup** when unpartitioned storage access fails — so a popup appearing every time means
+the iframe path is broken, not that a setting is wrong. Complete copyable config and the curl
+verification: [framework-matrix.md](framework-matrix.md) → **Browser Prerequisites**.
+
 **Agent implication**:
 - Include `silent-check-sso.html` in `public/` for silent token refresh **VERIFIED** (docs + keylessh)
+- With DPoP on, also include `public/tide_dpop_auth.html` + the `/tide_dpop/:path*` rewrite and headers
+- Create the post-auth handler at **`/auth/redirect`** (not `/auth/callback`) — omitting it 404s silently
 - Do not modify or vendor SWE code; SRI hash verification will fail
 - SWE failure symptoms: login hangs, E2EE operations timeout, no visible errors (check browser console for CSP violations)
 

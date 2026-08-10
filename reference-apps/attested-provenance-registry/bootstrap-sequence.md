@@ -44,9 +44,15 @@ that costs a human enclave approval — everything catchable before it should be
    - Returns licensing JSON as `text/plain`.
 
 6. **Enable IGA**
-   - Stamp `iga.attestor=tide` on the realm (GET then PUT `/admin/realms/{realm}`) so governance
-     comes up in Tide mode, then `POST /admin/realms/{realm}/tide-admin/toggle-iga` with
-     `{"enabled":true}`.
+   - `POST /admin/realms/{realm}/tide-admin/toggle-iga` with **form-encoded** `isIGAEnabled=true`.
+     ⚠️ The endpoint reads the FORM parameter. A JSON body is accepted, parsed by nothing, and the
+     missing parameter **fails open to `true`** — so `{"enabled":false}` ENABLES IGA. Always
+     form-encode and assert the response.
+   - **Assert Tide mode** rather than stamping it: `setUpTideRealm` sets `iga.attestor=tide` on
+     current builds, so verify it instead of assuming. Tide vs Tideless is the difference between
+     approvals being cryptographically sealed and enforced by host-controlled server logic (GAP-065).
+     If absent, stamp it (GET then PUT `/admin/realms/{realm}`) and re-assert.
+     Full call + assertions: `canon/tidecloak-bootstrap.md` → toggle-iga.
    - Must happen **after** licensing.
 
 ## Phase 3: Approve initial change requests
