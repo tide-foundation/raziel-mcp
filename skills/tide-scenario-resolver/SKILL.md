@@ -47,7 +47,8 @@ Read `reference-apps/INDEX.md`. If the MCP server is connected, use the `tide_ch
 
 | Branch | Question | If yes | If no |
 |--------|----------|--------|-------|
-| Encryption vs signing | Does the app encrypt/decrypt data, or produce signatures? | Check sharing next | Signing → `policy-governed-signing` scenario |
+| Encryption vs signing | Does the app encrypt/decrypt data, or produce signatures? | Check sharing next | Signing → check the next row before picking a signing scenario |
+| Durable artifact vs immediate signature | Does the signature become an artifact a THIRD PARTY verifies later, without contacting the issuer? | → `attested-provenance-registry` (custom contract binding signer vuid + timestamp skew) | → `policy-governed-signing`, or `git-pr-signing-service` for git/GitHub |
 | Self vs shared encryption | Do other users need to decrypt the same ciphertext? | → shared/policy path (IAM / Policy Engineer) | → self-encryption (IAM / Policy Engineer) |
 | Fresh vs retrofit | Does the project have existing auth? | → Application Engineer (retrofit) | → Application Engineer (fresh) |
 | Bootstrap needed? | Is TideCloak running with a configured realm? | Skip Setup | → Setup / Platform Engineer |
