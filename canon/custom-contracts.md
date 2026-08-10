@@ -319,6 +319,32 @@ public string Priority { get; set; } = "medium";
 | `AllowedValues` | Enum-like string validation |
 | `Description` | Human-readable description |
 
+#### ⚠️ Only `string` and `int` binding are verified. Declare 64-bit values as `string`.
+
+Every documented example binds a `string` or an `int`. **Whether `[PolicyParam]` binds `long`,
+`decimal` or `bool` is UNVERIFIED** (GAP-073), and a binding surprise does not fail politely: it
+surfaces as a contract failure at request time, **on the ORKs, after an enclave approval has been
+spent.**
+
+This matters most for money. Currency amounts in cents overflow `int` quickly — a $21,474,836.48
+ceiling is the limit, which is fine for a demo and not for a corporate one.
+
+**Until it is tested, declare 64-bit values as `string` and parse them in the contract:**
+
+```csharp
+[PolicyParam(Required = true, Description = "Hard ceiling in cents.")]
+public string AbsoluteMaxCents { get; set; }
+
+private static bool TryParseNonNegativeLong(string value, out long result) { /* digit loop */ }
+```
+
+A hand-written digit loop also buys **determinism** for free: reject signs, separators, whitespace and
+leading zeros, and no culture setting can change what a number means on one ORK versus another.
+`long.Parse` with an implicit culture is exactly the kind of thing that produces a 13-of-20 split.
+
+This is a workaround, not an answer. VERIFIED as the safe path; the binding question is open
+(LEARNINGS-tidewater-001 L-06).
+
 ---
 
 ## ForsetiSdk Runtime
@@ -665,8 +691,42 @@ if (type !== 'forseti') throw new Error(`contract transport type is '${type}', e
 
 LEARNINGS-music-license-001 L-09. AP-64.
 
+#### ✅ RESOLVED: `PolicySignRequest` and `BaseTideRequest` are two HALVES of one flow, not alternatives
+
+Earlier pack revisions carried this as an open contradiction — `PolicySignRequest.New(policy)` was
+documented as the transport-correct path, while direct `BaseTideRequest` construction was VERIFIED as
+necessary for create→approve→execute. **They never disagreed.** Each finding described one half, and
+the docs read as a conflict because neither said so.
+
+**VERIFIED END TO END 2026-08-10** against mainnet ORKs (T=14/N=20), producing a stored policy that
+parses as TideMemory v1 with a 64-byte Ed25519 signature attached
+(LEARNINGS-tidewater-001 L-05):
+
+```typescript
+// 1. PolicySignRequest owns the THREE-level contract transport. Do not hand-roll it.
+const policyRequest = PolicySignRequest.New(policy).addForsetiContractToUpload(contractSource);
+const initialized   = await tc.createTideRequest(policyRequest.encode());
+
+// 2. The enclave approval comes back as an ENCODED request. Decode it with BaseTideRequest and
+//    attach the admin policy THERE — after the approval, not before it.
+const approval = await tc.requestTideOperatorApproval([{ id: 'policy-deploy', request: initialized }]);
+const approved = Models.BaseTideRequest.decode(approval[0].request);
+approved.addPolicy(adminPolicyBytes);          // the tide-realm-admin bytes
+
+// 3. Execute.
+const signatures = await tc.executeSignRequest(approved.encode(), true);   // 64-byte Ed25519
+```
+
+Three details made this work first time, and it is their **combination** that matters — each is
+documented separately elsewhere:
+
+- the admin policy is attached to the **approved** request, not the initial one (AP: premature `addPolicy`);
+- it is looked up **by name** `tide-realm-admin` with no `?? policies[0]` fallback (AP-63), and the
+  base64 is handed to the browser as **text** and decoded there — never decoded and re-encoded server-side;
+- `request.id() === policy.modelIds[0]` is asserted client-side before submitting, so the
+  `BasicCustom<…>` wrapping question is settled by the code rather than by reasoning (GAP-072).
+
 **Critical notes**:
-- The pack carries two flows and they disagree on the request class. `PolicySignRequest.New(policy)` from `heimdall-tide` is the documented, transport-correct path (T-12 cause 2, and it owns the nesting above). Direct `BaseTideRequest` construction was VERIFIED as necessary for the full create→approve→execute flow in LEARNINGS-ratidefy-batch-001 L-24. **Prefer `PolicySignRequest`**; if you drop to `BaseTideRequest`, you inherit responsibility for the three-level transport and must run the assertion above. REQUIRES_RUNTIME_VALIDATION — the two findings have not been reconciled on one live instance.
 - Use `tc.createTideRequest()` → `tc.requestTideOperatorApproval()` → `tc.executeSignRequest()` — the React context's `initializeTideRequest` does not expose the approve/execute steps. VERIFIED (LEARNINGS-ratidefy-batch-001 L-24).
 - `initializeTideRequest` returns a **new object** — it does NOT mutate in place. If using it, capture the return value (AP-59).
 - Store `policy.toBytes()` (with signature attached), NOT `request.encode()` (AP-57).

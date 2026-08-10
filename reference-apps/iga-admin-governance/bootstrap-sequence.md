@@ -42,7 +42,11 @@
    ```
    **Content-Type**: `application/x-www-form-urlencoded`, NOT JSON.
 
-5. Enable IGA (stamp `iga.attestor=tide` first so governance comes up in Tide mode):
+5. Enable IGA — **form-encoded `isIGAEnabled=true`**, then ASSERT. The endpoint reads the form
+   parameter; a JSON body is parsed by nothing and the missing parameter **fails open to `true`**,
+   so `{"enabled":false}` ENABLES IGA. Also assert `iga.attestor=tide` rather than stamping it
+   blindly — `setUpTideRealm` sets it on current builds (GAP-065; see
+   `canon/tidecloak-bootstrap.md` → toggle-iga):
    ```bash
    REALM_REP=$(curl -s "http://localhost:8080/admin/realms/$REALM" -H "Authorization: Bearer $TOKEN")
    echo "$REALM_REP" | jq '.attributes = ((.attributes // {}) + {"iga.attestor":"tide"})' \
@@ -51,8 +55,8 @@
 
    curl -s -X POST "http://localhost:8080/admin/realms/$REALM/tide-admin/toggle-iga" \
      -H "Authorization: Bearer $TOKEN" \
-     -H "Content-Type: application/json" \
-     -d '{"enabled":true}'
+     -H "Content-Type: application/x-www-form-urlencoded" \
+     --data-urlencode "isIGAEnabled=true"
    ```
 
 6. Approve/commit initial change requests (current `/iga/change-requests/...` surface; see `canon/iga-change-requests-api.md`):

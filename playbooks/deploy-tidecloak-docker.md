@@ -378,8 +378,8 @@ curl -s -X PUT "$TIDECLOAK_URL/admin/realms/$REALM_NAME" \
 
 curl -s -X POST "$TIDECLOAK_URL/admin/realms/$REALM_NAME/tide-admin/toggle-iga" \
   -H "Authorization: Bearer $TOKEN" \
-  -H "Content-Type: application/json" \
-  -d '{"enabled":true}'
+  -H "Content-Type: application/x-www-form-urlencoded" \
+  --data-urlencode "isIGAEnabled=true"
 
 # 5. Auto-approve change requests created during realm setup.
 #    Uses the current /iga/change-requests/... surface (replaces the legacy
