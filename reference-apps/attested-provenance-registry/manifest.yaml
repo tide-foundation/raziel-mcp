@@ -1,0 +1,166 @@
+# Attested Provenance Registry — Scenario Manifest
+
+id: attested-provenance-registry
+title: Attested Provenance Registry
+category: threshold-signing
+description: Issues timestamped, third-party-verifiable attestations about content. A custom Forseti contract enforces WHO signed (vuid byte-compared against the doken) and WHEN (client timestamp bounded against each ORK's own clock), so neither the app's backend nor a single compromised ORK can forge or backdate a claim. The output is a portable certificate a recipient verifies offline, without contacting the issuer.
+
+frameworks:
+  - nextjs
+
+core_patterns:
+  - forseti
+  - custom-forseti-contract
+  - doken
+  - dpop
+  - iga
+  - oidc
+  - threshold-signing
+  - policy-signing
+  - basic-custom-request
+  - client-roles
+  - signing
+  - attestation
+  - provenance
+  - trusted-timestamp
+  - third-party-verification
+  - binary-envelope
+  - vuid-binding
+  - lineage
+  - verify-on-read
+
+match_keywords:
+  - provenance
+  - attestation
+  - attest
+  - attested
+  - timestamped claim
+  - trusted timestamp
+  - timestamping
+  - notarisation
+  - notarization
+  - proof of authorship
+  - authorship claim
+  - content authenticity
+  - content credentials
+  - chain of custody
+  - certificate of authenticity
+  - verifiable certificate
+  - verifiable claim
+  - signed claim
+  - third party verification
+  - independently verifiable
+  - prove i created
+  - prove they created
+  - prove who created
+  - prove i made
+  - prove authorship
+  - prove ownership
+  - proof of creation
+  - who created
+  - who made this
+  - created it first
+  - made it first
+  - first to register
+  - register my work
+  - register works
+  - registry of works
+  - copyright registry
+  - licensing registry
+  - derivative lineage
+  - cannot be backdated
+  - tamper evident
+  - tamper proof
+  - offline verification
+  - verify without trusting
+  - attested claim
+  - timestamped attestation
+
+bootstrap_required: true
+requires_admin_preapproval: true
+requires_iga: true
+requires_e2ee: false
+signing_mode: policy-governed
+
+default_roles:
+  - _tide_enabled
+  - appUser
+
+policy_roles: []
+
+# Client roles on the app's own OIDC client.
+#   <attest-role>: in the realm default-roles composite, so every user can attest.
+#   <admin-role>:  deliberately NOT a default role — gates policy deployment.
+signing_role_pattern: "<attest-role>"
+
+required_protocol_mappers:
+  # The vuid claim is REQUIRED. The contract binds authorship to the vuid, and the browser
+  # must read it to build the envelope. Without this mapper the claim is absent and every
+  # attestation is refused (correctly) by the fail-closed guard.
+  - name: Tide vuid
+    mapper: oidc-usermodel-attribute-mapper
+    user_attribute: vuid
+    claim_name: vuid
+  - name: Tide User Key
+    mapper: oidc-usermodel-attribute-mapper
+    user_attribute: tideUserKey
+    claim_name: tideuserkey
+
+custom_contract:
+  entry_class: Contract
+  interface: IAccessPolicy
+  policy_params:
+    - name: SigningRole
+      type: string
+      required: true
+    - name: SigningResource
+      type: string
+      required: true
+    - name: MaxClockSkewSeconds
+      type: int
+      required: false
+      default: 10
+      min: 1
+      max: 60
+  validators:
+    validate_data: Envelope shape, claim/content type codes, non-zero content hash, timestamp skew vs ORK clock; captures signer vuid for the executor check
+    validate_approvers: Allow — a claim about one's own content needs no third-party quorum
+    validate_executor: Not expired, holds the signing role, and the envelope's vuid equals the doken's UserId (fail closed if never captured)
+  trusted_time_source: Cryptide.Tools.Utils.GetEpochSeconds
+  model_id_pattern: "BasicCustom<Name>:BasicCustom<Version>"
+  auth_flow: "Policy:1"
+  approval_type: IMPLICIT
+  execution_type: PRIVATE
+
+default_playbooks:
+  - start-tidecloak-dev
+  - bootstrap-realm-from-template
+  - initialize-admin-and-link-account
+  - add-auth-nextjs-fresh
+  - protect-routes-nextjs
+  - protect-api-nextjs
+  - verify-jwt-server-side
+  - add-rbac-nextjs
+  - deploy-forseti-policy
+
+discriminating_question: Does the app hand someone a portable artifact that a THIRD PARTY verifies later, without contacting the issuer? If the signature is consumed immediately by a protocol (SSH login, a transaction, a git commit), use `policy-governed-signing` or `git-pr-signing-service` instead.
+
+valid_only_when: App issues signed claims ABOUT content that outlive the signing session and are checked by someone other than the issuer. Requires a custom Forseti contract; the built-in contracts cannot bind signer identity or bound a timestamp.
+
+notes: >
+  This is a specialization of policy-governed-signing for durable, externally-verifiable claims.
+  Two properties distinguish it and both live in the contract, not the app:
+  (1) authorship — the signer vuid sits at a FIXED OFFSET in the envelope so the contract can
+  byte-compare it to the doken without a JSON parser, which moves "who signed" from an app
+  assertion to a network-enforced fact;
+  (2) freshness — a symmetric skew check against each ORK's own clock, which bounds backdating
+  in both directions. Native request expiry alone does NOT do this: it rejects stale requests
+  without preventing a client from declaring an old creation time.
+  The honest claim is "this attestation existed by approximately time T", never RFC 3161
+  timestamping — no authority signs a time token and there is no clock-agreement protocol
+  between ORKs. The strength rests on operator independence.
+  Verification is SIX checks, not one, and the app must publish evidence rather than a verdict:
+  an issuer-hosted /verify returning VALID/INVALID is worthless to a third party.
+  Reference implementation: `~/music-license` (Origin) — Next.js 16, Prisma/Postgres,
+  171 passing tests, typecheck clean. ORK acceptance of the deployed policy is
+  REQUIRES_RUNTIME_VALIDATION; see reference-app-notes in scenario.md.

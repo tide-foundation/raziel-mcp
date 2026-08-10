@@ -130,6 +130,14 @@ function getScenarioSummary(scenario: string) {
 const SCENARIO_NEGATIVE_SIGNALS: Record<string, string[]> = {
   "policy-governed-signing": ["ssh", "sign", "signing", "document", "transaction", "certificate"],
   "git-pr-signing-service": ["git", "commit", "merge", "pr", "pull request", "verified", "github"],
+  // Requires a provenance/attestation signal. Without one, a bare "signing" request should fall to
+  // policy-governed-signing rather than matching on shared words like "certificate" or "verify".
+  "attested-provenance-registry": [
+    "provenance", "attest", "notaris", "notariz", "authorship", "authenticity",
+    "chain of custody", "verifiable", "timestamp", "backdate", "backdated",
+    "tamper", "registry", "copyright", "licensing", "who made", "who created",
+    "prove", "proof", "created", "creator", "claim", "register", "certificate",
+  ],
 };
 
 function scoreScenarioMatch(scenario: string, situation: string) {

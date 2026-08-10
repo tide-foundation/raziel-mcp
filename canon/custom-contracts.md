@@ -520,6 +520,26 @@ so the constructor takes the **unwrapped** name and version while the policy dec
 > documented wrong turn (L-13). Assert `request.id() === policy.modelIds[0]` and let the code
 > settle it. GAP-072.
 
+**Two equivalent constructions, and this is why L-13 looked self-contradictory.** The wire `modelId`
+is whatever `request.id()` returns (`BaseTideRequest.encode()` writes `"modelId": te.encode(this.id())`):
+
+| Construction | `id()` | Resulting model id |
+|---|---|---|
+| `new BasicCustomRequest("MyModel", "1", …)` — `asgard-tide` | `` `BasicCustom<${name}>:BasicCustom<${version}>` `` | `BasicCustom<MyModel>:BasicCustom<1>` |
+| `new BaseTideRequest("BasicCustom<MyModel>", "BasicCustom<1>", …)` | `name + ":" + version` | `BasicCustom<MyModel>:BasicCustom<1>` |
+
+Both produce the **same** id, so passing **pre-wrapped** name/version to `BaseTideRequest` is
+equivalent to passing **raw** name/version to `BasicCustomRequest`. That second form is a legitimate
+workaround when `asgard-tide` is not installed — note `BasicCustomRequest` is **not** exported from
+the `@tideorg/js` Models barrel (it lives in `dist/Models/CustomTideRequest.js`, unexported), so
+`asgard-tide` really is the only import path for it.
+
+✅ **VERIFIED IN PRODUCTION**: a policy with `modelId` `BasicCustom<OriginAttestation>:BasicCustom<1>`,
+built via `BaseTideRequest` with pre-wrapped name/version, was accepted and threshold-signed by the
+ORK network, and attestations were subsequently signed under it (reference app
+`attested-provenance-registry`, 2026-08-07). The `request.id() === policy.modelIds[0]` assertion is
+the invariant that matters; which constructor you use is not.
+
 **Custom models carry a display contract too**: `CustomSignRequestBuilder` does
 `JSON.parse(draft[0])` and reads `humanReadableName` and `additionalInfo`. A custom request whose
 draft slot 0 is raw bytes will not render in the enclave approval UI.

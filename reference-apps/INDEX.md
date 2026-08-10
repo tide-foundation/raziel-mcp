@@ -33,6 +33,8 @@ If the request could map to multiple scenarios, resolve with these questions:
 | Governance vs end-user app | Does the app need a custom admin UI for approving IGA change requests? | `iga-admin-governance` | Standard auth playbooks |
 | Admin panel vs built-in console | Is the built-in TideCloak Admin Console sufficient for governance? | Standard playbooks (no custom governance needed) | `iga-admin-governance` |
 | Signing service vs direct signing | Does the app sign git commits/merges server-side after PR-based admin approval? | `git-pr-signing-service` | `policy-governed-signing` (direct in-app signing) |
+| Durable certificate vs immediate signature | Does the app hand someone an artifact that a THIRD PARTY verifies later, without contacting the issuer? | `attested-provenance-registry` | `policy-governed-signing` (signature consumed immediately by a protocol) |
+| Attestation vs generic signing | Does the app need to prove WHO made a claim and WHEN, enforced by the network rather than asserted by the app? | `attested-provenance-registry` (custom contract binding vuid + timestamp skew) | `policy-governed-signing` |
 | Single scenario vs no match | Does the description mention domain-specific keywords (SSH, vault, signing, admin, governance, chat, video, messaging)? | Use matched scenario | Use generic playbook routing |
 
 ## Scenarios
@@ -44,6 +46,7 @@ If the request could map to multiple scenarios, resolve with these questions:
 | `git-pr-signing-service` | Enterprise PR-based commit signing via GitHub webhooks | Policy-governed threshold signing (Forseti) + GitHub API | `_tide_enabled` | Per-branch signing roles (e.g., `git-sign:main`) | Git commit signing, verified commits, enterprise code signing, PR signing service |
 | `iga-admin-governance` | Custom admin panel for IGA change request governance | IGA change-set lifecycle + multi-admin quorum | `_tide_enabled`, `tide-realm-admin` | None (governance, not data) | Admin dashboard, approval workflow, change request management, governance panel |
 | `encrypted-communication` | Real-time encrypted chat/video with Tide-protected key storage | Self-encryption (key storage) + external crypto (runtime E2E) | `_tide_enabled`, `_tide_<tag>.selfencrypt`, `_tide_<tag>.selfdecrypt` | None | Encrypted chat, encrypted video calls, secure messaging, zero-knowledge server |
+| `attested-provenance-registry` | Timestamped, third-party-verifiable attestations about content | Custom Forseti contract binding signer vuid + ORK-clock timestamp skew | `_tide_enabled`, `appUser`, `<attest-role>` (in default-roles composite) | `<admin-role>` gates policy deployment | Provenance, notarisation, content authenticity, certificates of authenticity, verifiable claims, rights/licensing registry, "prove I made this first" |
 
 ## Matching rules
 
@@ -52,6 +55,7 @@ If the request could map to multiple scenarios, resolve with these questions:
 - `policy-governed-signing` matches: "keyless ssh", "ssh signing", "policy signing", "threshold signing", "document signing", "transaction signing", "forseti signing", "ork signing", "decentralised signing", "sign with tide".
 - `git-pr-signing-service` matches: "git signing", "git commit signing", "commit signing", "signed commits", "verified commits", "github signing", "github verified", "pr signing", "merge signing", "sign commits", "sign merges", "code signing service", "enterprise commit signing", "verified badge", "git tag signing".
 - `iga-admin-governance` matches: "admin panel", "admin dashboard", "governance panel", "governance dashboard", "change request", "approval workflow", "multi-admin", "quorum approval", "iga admin", "iga panel", "manage change requests", "approve changes", "admin console", "policy management panel".
+- `attested-provenance-registry` matches: "provenance", "attestation", "attest", "timestamped claim", "trusted timestamp", "notarisation", "notarization", "proof of authorship", "authorship claim", "content authenticity", "content credentials", "chain of custody", "certificate of authenticity", "verifiable certificate", "verifiable claim", "signed claim", "third party verification", "independently verifiable", "prove i created", "registry of works", "copyright registry", "licensing registry", "derivative lineage", "who made this", "cannot be backdated", "tamper evident".
 - `encrypted-communication` matches: "encrypted chat", "encrypted messaging", "encrypted video", "e2e chat", "e2e messaging", "secure chat", "secure messaging", "private messaging", "zero knowledge", "encrypted group chat", "encrypted video call", "signal-like", "whatsapp-like", "chat app with encryption", "video app with encryption", "encrypted collaboration", "forward secrecy", "key exchange".
 - If the user describes a **single-user private vault** with no sharing, do NOT use the password manager scenario. Use the `nextjs-e2ee-vault` template instead.
 - If the user describes **only authentication** with no signing or encryption, do NOT use these scenarios. Use the standard playbook sequence.
@@ -71,17 +75,17 @@ Each scenario directory contains:
 
 ## Key differences between scenarios
 
-| Aspect | organisation-password-manager | policy-governed-signing | git-pr-signing-service | iga-admin-governance | encrypted-communication |
-|--------|------------------------------|------------------------|------------------------|---------------------|------------------------|
-| Primary operation | Encrypt/decrypt data | Sign data | Sign git merge commits | Approve/commit admin changes | Real-time encrypted communication |
-| Encryption | Self-encryption + policy-governed | None | None | None | Self-encryption (key storage) + external crypto (runtime) |
-| Signing | None | Forseti contract-authorized threshold signing | Forseti contract-authorized threshold signing (git commits) | Enclave signing for change-set approval | None |
-| Org-scoped roles | Yes (`org:{uuid}:{role}`) | No | No | No | No |
-| E2EE roles | Yes (`_tide_<tag>.selfencrypt/selfdecrypt`) | No | No | No | Yes (`_tide_<tag>.selfencrypt/selfdecrypt`) |
-| Forseti contracts | Validate org scope + VVK signatures | Validate data + authorize signer | Validate commit content + authorize approvers + verify service | Optional: manage role-policy attachments | None |
-| External integration | No | No | Yes (GitHub webhooks, Checks API, Git Data API) | No | No |
-| External crypto library | No | No | No (SSH wire format wrapping only) | No | Yes (libsodium, WebCrypto, etc.) |
-| IGA required | Yes | Yes | Yes | Yes (core purpose) | Yes |
-| Admin pre-approval | Yes (appUser, orgOwner policies) | Yes (signing policies per role) | Yes (signing policies per branch) | Yes (quorum for all admin mutations) | Yes (E2E roles) |
-| Min admins | 1 | 1 | 2 (signing quorum) | 2 (for quorum governance) | 1 |
-| Developer interacts with Tide | Yes | Yes | No (developers push code normally) | Yes | Yes |
+| Aspect | organisation-password-manager | policy-governed-signing | git-pr-signing-service | iga-admin-governance | encrypted-communication | attested-provenance-registry |
+|--------|------------------------------|------------------------|------------------------|---------------------|------------------------|------|
+| Primary operation | Encrypt/decrypt data | Sign data | Sign git merge commits | Approve/commit admin changes | Real-time encrypted communication | Issue verifiable attestations about content |
+| Encryption | Self-encryption + policy-governed | None | None | None | Self-encryption (key storage) + external crypto (runtime) | None |
+| Signing | None | Forseti contract-authorized threshold signing | Forseti contract-authorized threshold signing (git commits) | Enclave signing for change-set approval | None | Forseti contract-authorized threshold signing (durable certificates) |
+| Org-scoped roles | Yes (`org:{uuid}:{role}`) | No | No | No | No | No |
+| E2EE roles | Yes (`_tide_<tag>.selfencrypt/selfdecrypt`) | No | No | No | Yes (`_tide_<tag>.selfencrypt/selfdecrypt`) | No |
+| Forseti contracts | Validate org scope + VVK signatures | Validate data + authorize signer | Validate commit content + authorize approvers + verify service | Optional: manage role-policy attachments | None | **Bind signer vuid to doken + bound timestamp vs ORK clock** |
+| External integration | No | No | Yes (GitHub webhooks, Checks API, Git Data API) | No | No | No |
+| External crypto library | No | No | No (SSH wire format wrapping only) | No | Yes (libsodium, WebCrypto, etc.) | No |
+| IGA required | Yes | Yes | Yes | Yes (core purpose) | Yes | Yes |
+| Admin pre-approval | Yes (appUser, orgOwner policies) | Yes (signing policies per role) | Yes (signing policies per branch) | Yes (quorum for all admin mutations) | Yes (E2E roles) | Yes (one custom attestation policy) |
+| Min admins | 1 | 1 | 2 (signing quorum) | 2 (for quorum governance) | 1 | 1 |
+| Developer interacts with Tide | Yes | Yes | No (developers push code normally) | Yes | Yes | Yes (attestation is browser-only — GAP-063/064) |
