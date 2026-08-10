@@ -6,6 +6,100 @@ Symptom-led debugging for common Tide implementation failures. Each entry includ
 
 ---
 
+## Error-Text Lookup
+
+**Start here.** Paste the error string you actually received. Symptom-grouped entries (T-01…T-26)
+list many causes per symptom, which is the wrong index when you already have an exact message —
+that flat-list-under-one-symptom shape cost a full deploy cycle on a failure that printed both
+mismatched values.
+
+Grep this file for your error text before reading anything else.
+
+### Policy deployment / Forseti
+
+| Error text | Cause | Fix |
+|---|---|---|
+| `Version is not a string` | Policy constructor: `version` missing | AP-60 — all five fields; `version: '3'` |
+| `Breaking changes made to Policies. Update how you create a policy` | `version` present but `!== "3"` | AP-60 — must equal `Policy.latestVersion` |
+| `ContractId is not a string` | Policy constructor: `contractId` missing | AP-60 |
+| `ModelId is not a string` | Policy constructor: passed **plural** `modelIds`, or missing | AP-60 — the key is singular `modelId` |
+| `KeyId is not a string` | Policy constructor: `keyId` missing | AP-60 — `keyId` IS the vendorId |
+| `Params is null` | Policy constructor: `params` missing | AP-60 / AP-54 — `[key, value]` pairs |
+| `object is not iterable` | `params` passed as a plain object | AP-54 |
+| `Unknown contract type ''` | Contract transport built with 2 levels, not 3 | AP-64 — outer `"forseti"` wrapper |
+| `Model id '...' not found in registry` | `modelId` not one of the nine built-ins, not `BasicCustom<...>` | AP-65 |
+| `Could not find specified policy version: 2` | Emitting the V2 policy layout | The ORKs are **V3-only**. Do not subclass `Policy` to emit V2 (GAP-070 WITHDRAWN) |
+| `Policy refers to wrong contract. Expected 'X' but policy has 'Y'` | Compare X and Y | Differ only in **case** → lowercase hex, `.toUpperCase()`. Differ entirely → contract edited after deploy, redeploy the policy |
+| `VmHost.CompileFailed: ... error CS####` | Contract does not compile on the ORK | AP-67 — compile locally first ([forseti-compile-harness](../templates/forseti-compile-harness/)) |
+| `'ExecutorContext' does not contain a definition for 'Data'` | Used `ctx.Data` in `ValidateExecutor` | The contexts are disjoint — capture in `ValidateData`, compare in `ValidateExecutor` |
+| `Index out of range` at `Policy.From` | Stored `request.encode()` as the policy | AP-57 — store `policy.toBytes()` |
+| `Policy supplied has not been signed` | VVK signature not attached before storing | AP-55 |
+| `Could not fetch the realm admin policy` (app-generated) | Generic client message hiding 3 server causes | Read `body.error`. Usually: admin token absent from the dev server's shell |
+| `Could not reach enough VVK ORKs (0 of N, N failed)` | Envelope-level rejection — read the **inner** bracketed error | The inner `[TIDE-ORK-...]` string is the real cause |
+| `BadPolicy.ForbiddenCall:{target}` | Contract used a blocked namespace | Sandbox restrictions — see custom-contracts.md |
+| `BadPolicy.EntryTypeNotFound` | Entry class not found / doesn't implement `IAccessPolicy` | AP-56 |
+| `BadPolicy.BudgetExceeded` / `OutOfGasException` | Gas limit (50,000) exceeded | Reduce `ForsetiSdk.Claim`/`Log` calls |
+
+### DPoP / auth
+
+| Error text | Cause | Fix |
+|---|---|---|
+| `Popup DPoP verification failed to load` | Relay page posts to `window.parent` in a popup context | AP-62 — `window.opener \|\| window.parent`. The blank popup is **normal**; the page loaded fine (HTTP 200) |
+| `Must initialize request to generate unique id` | Assumed `initializeTideRequest` mutates in place | AP-59 — capture the return value |
+| `IAMService.createTideRequest is not a function` | — | T-16 |
+| `Cannot destructure property 'Policy' of 'Models'` | Imported from `@tidecloak/nextjs` | T-15 / AP-32 |
+| `Client origin could not be verified` | — | T-21 |
+
+### No error at all — the silent failures
+
+These produce **no** message, which makes them the most expensive class. Nothing to grep for, so
+they are listed by symptom.
+
+| Symptom | Cause | Fix |
+|---|---|---|
+| Identity/claim fields all render `—` or empty; no console error | Read `tide.tokenParsed` — a keycloak-js property that does not exist on `TideCloakContextValue`; `undefined ?? {}` renders nothing | AP-69 — use `getValueFromToken(key)` / `getValueFromIdToken(key)`, and **fail closed** rather than defaulting |
+| Signature never verifies, key set fetched successfully | Verifier pointed at the OIDC JWKS (RSA keys), not the realm VVK (Ed25519) | GAP-071 — see [verifiable-claims.md](verifiable-claims.md) |
+| Certificate verifies but describes different content | Check 1 skipped — the file was never supplied | verifiable-claims.md — report SKIPPED, not PASS |
+| Contract denies every signature | Contract compares the JWT subject; a doken has no `sub` | AP-66 — compare the vuid |
+| Wrong app's static assets served | Two dev servers competing for port 3000 | Give each Tide app a distinct dev port |
+
+---
+
+## Diagnostic Principle: Every Layer Reports the Symptom, Not the Cause
+
+Worth internalising before debugging anything in this stack, because it predicts where the time
+goes. Across a single real deployment session, **every layer reported a symptom instead of the cause
+it already knew**:
+
+- The Policy constructor threw a **bare string** (`'Version is not a string'`) that names the failed
+  guard but not the accepted shape — and validated sequentially, so each fix revealed one more.
+- The DPoP relay reported **"failed to load"** for a page that returned HTTP 200 with a full body.
+- A route that produced a genuinely helpful body for each of three distinct failures was wrapped in
+  `if (!response.ok) throw new Error("<static text>")` — **the server's diagnosis was already
+  written and never reached the person who needed it**.
+- The ORK model registry printed a **.NET type name** (`ReadOnlyCollection\`1[System.String]`)
+  instead of the id that failed to resolve, sending diagnosis down a wire-format dead end.
+- A React screen read a **non-existent context property**, got `undefined`, defaulted it to `{}`,
+  and rendered a confirmation UI with no identity and a live action button — **no error at all**.
+
+**Two operational consequences:**
+
+1. **Do not trust an error message's framing.** Treat "failed to load", "not found", and any message
+   quoting a runtime **type name** as the outermost symptom, not the cause. Specifically: an error
+   quoting a .NET/JVM type name where a value belongs is **not** reliable evidence of a wire-format
+   mismatch (GAP-070 was withdrawn for exactly this reason).
+2. **Always surface the inner error.** When proxying or wrapping, append `body.error` and the status
+   code. When reading an ORK threshold failure, read the inner bracketed `[TIDE-ORK-...]` string.
+
+**When writing Tide app code, make each layer say what it knows.** This costs almost nothing and is
+worth more to Tide app DX than any new feature. Concretely: never discard a response body in an
+error path; never default an identity field to a placeholder; throw with the accepted shape, not
+just the rejected one.
+
+(LEARNINGS-music-license-001 L-01, L-03, L-05, L-07, L-11, L-20)
+
+---
+
 ## T-01: Login Hangs Indefinitely
 
 **Symptom**: User clicks login, redirects to TideCloak, then hangs with spinner. No error visible. Browser tab never completes loading.
@@ -952,15 +1046,32 @@ jq '
 
 **Symptom**: ORK rejects with "Index out of range", "Policy supplied has not been signed", "Policy refers to wrong contract", or similar errors during policy operations.
 
-**Possible Causes**:
-1. Destructuring `{ ApprovalType, ExecutionType }` from `Models.Policy` instead of `Models` (`Models.Policy` is the Policy class, not a namespace)
-2. Building `PolicySignRequest` manually with `BaseTideRequest` + `TideMemory` instead of using `PolicySignRequest.New(policy)` from `heimdall-tide`
-3. Not decoding `createTideRequest` result via `BaseTideRequest.decode()` before passing to approval
-4. Calling `addPolicy(policy.toBytes())` during `BaseTideRequest` construction (attaching unsigned policy)
-5. Using `modelId: "any"` instead of specific IDs like `["PolicyEnabledEncryption:1", "PolicyEnabledDecryption:1"]`
-6. Admin policy bytes are base64 text passed as raw bytes instead of decoded
-7. Contract hash mismatch (`contractId` doesn't match deployed contract source)
-8. Contract hash is lowercase but ORK stores uppercase (case-sensitive comparison)
+> **If you have an exact error string, use the [Error-Text Lookup](#error-text-lookup) instead.**
+> The cause list below is a flat enumeration under one symptom; it is the wrong index when the error
+> already names the failure. Cause 8 (lowercase hash) sat in this list and still cost a full deploy
+> cycle, because nothing connected the message to it.
+
+**Possible Causes** (client-side, before the network):
+
+1. Policy constructor shape — missing `version`/`contractId`/`modelId`/`keyId`/`params`, or the **plural** `modelIds` key. Throws a **bare string**, sequentially, one per wrong field (AP-60)
+2. `modelId` not one of the nine registered models and not `BasicCustom<Name>:BasicCustom<Version>` (AP-65)
+3. Contract transport built with **two** nested levels instead of three — missing the outer `"forseti"` wrapper (AP-64)
+4. `contractId` is lowercase hex; the ORKs compare case-sensitively. `.toUpperCase()` at the point of computation (L-14)
+5. `contractId` no longer matches the contract source — the contract was edited after deployment, even a comment (L-19)
+6. Contract does not compile on the ORK — compile locally first (AP-67)
+7. Destructuring `{ ApprovalType, ExecutionType }` from `Models.Policy` instead of `Models` (`Models.Policy` is the Policy class, not a namespace)
+8. Building the request manually with `BaseTideRequest` + `TideMemory` instead of using `PolicySignRequest.New(policy)` from `heimdall-tide` — which also builds the contract transport correctly
+9. Not decoding `createTideRequest` result via `BaseTideRequest.decode()` before passing to approval
+10. Calling `addPolicy(policy.toBytes())` during `BaseTideRequest` construction (attaching unsigned policy)
+11. Using `modelId: "any"`. For E2EE use `["PolicyEnabledEncryption:1", "PolicyEnabledDecryption:1"]`; for a custom contract use the `BasicCustom<...>` form
+12. Admin policy bytes are base64 text passed as raw bytes instead of decoded
+13. Admin policy looked up as `admin-policy`; the name is **`tide-realm-admin`**, and a `?? policies[0]` fallback hides the miss (AP-63)
+14. Admin token absent from the shell the dev server was started in — the route 503s and the client usually reports a generic message (L-05/L-07)
+
+**Causes 1–6 are all catchable client-side before any network call.** Run the
+[pre-flight checklist](custom-contracts.md#pre-flight-checklist-all-client-side-no-network) — causes
+2, 3, 4 and 6 fail at the **threshold signature**, after the enclave operator approval, so each
+attempt costs an approval cycle.
 
 **Diagnostics**:
 

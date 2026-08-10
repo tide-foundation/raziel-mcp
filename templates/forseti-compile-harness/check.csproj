@@ -1,0 +1,51 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    Forseti local compile harness.
+
+    Compiles YOUR contract source against shape-only stubs (Stubs.cs) so that shape errors surface
+    locally in ~1s instead of as `VmHost.CompileFailed` on the ORK after an operator approval.
+
+    Usage:
+      dotnet build check.csproj -p:ContractPath=../../src/contracts/MyContract.cs
+      dotnet build check.csproj -p:ContractPath="../../src/contracts/**/*.cs"
+
+    Or set ContractPath once in a Directory.Build.props next to your app.
+  -->
+
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <OutputType>Library</OutputType>
+    <AssemblyName>ForsetiCompileCheck</AssemblyName>
+    <RootNamespace>ForsetiCompileCheck</RootNamespace>
+
+    <!-- Only compile what we name explicitly — never sweep the tree. -->
+    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
+    <GenerateAssemblyInfo>false</GenerateAssemblyInfo>
+    <Nullable>disable</Nullable>
+    <ImplicitUsings>disable</ImplicitUsings>
+
+    <!-- Stub fields/properties are intentionally unused; do not let that mask real errors. -->
+    <NoWarn>CS0169;CS0649;CS0414;CS0067</NoWarn>
+
+    <!-- Default: a `contracts/` folder beside this harness. Override with -p:ContractPath=... -->
+    <ContractPath Condition="'$(ContractPath)' == ''">contracts/**/*.cs</ContractPath>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Compile Include="Stubs.cs" />
+    <Compile Include="$(ContractPath)" />
+  </ItemGroup>
+
+  <!-- Fail loudly if ContractPath matched nothing: a green build over zero contract files is the
+       one outcome that looks like success and proves nothing. -->
+  <Target Name="AssertContractFilesFound" BeforeTargets="CoreCompile">
+    <ItemGroup>
+      <_ContractFiles Include="$(ContractPath)" />
+    </ItemGroup>
+    <Error Condition="'@(_ContractFiles)' == ''"
+           Text="ContractPath '$(ContractPath)' matched no .cs files. Pass -p:ContractPath=path/to/YourContract.cs — a build with no contract files would pass and prove nothing." />
+    <Message Importance="high" Text="Compiling contract file(s): @(_ContractFiles)" />
+  </Target>
+
+</Project>

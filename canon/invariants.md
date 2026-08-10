@@ -563,6 +563,47 @@ Omitting this is the silent failure mode: the app enables `useDPoP`, believes it
 - **The HTML must match the SDK version**. The only source is the pack template — the file is NOT shipped inside `@tidecloak/*` npm packages. If the pack template is stale and the enclave rejects it, contact the Tide team for the updated file. VERIFIED (LEARNINGS-batch-005 L-05, LEARNINGS-batch-007 L-03).
 - Without this: DPoP login fails with `Tide user did not provided a dpop bound token` or `Popup DPoP verification failed to load`. VERIFIED (learning-batch-004, L-07).
 
+**⚠️ Verify the copy — the page is distributed by copy-paste and stale copies break the popup fallback.**
+
+Because it is copied rather than packaged, there is no version marker in the file and **nothing tells
+an app its copy is stale**. Two versions are in circulation:
+
+| sha256 | Size | Behaviour |
+|---|---|---|
+| `9d7844b938f0a2565fa910d3d30e9b8797cbfd6e0b73d59d804169a089aea757` | 9120 | **KNOWN-GOOD** — `targetWindow = window.opener \|\| window.parent`, with a guard that refuses to post to self |
+| `e725df1231f0050117de1a95948c3da3aca2757282ffdf65821940e668d95756` | 7183 | **STALE** — three bare `window.parent.postMessage` calls |
+
+`window.parent` is correct in an **iframe**. In a **popup** — which is what `_popupDPoPFallback` →
+`_openDPoPPopup` opens — `window.parent === window`, so the page messages **itself**, the opener
+never receives `pageLoaded`, and tide-js reports `Popup DPoP verification failed to load`.
+
+**Two things make this near-undiagnosable:**
+- The popup is legitimately **blank**. The page has no markup, only a `<script>`; it renders text
+  only on the storage-blocked error path. "Blank popup" looks like a load failure and is the normal
+  appearance.
+- The reported error says "failed to load" for a page that returned **HTTP 200 with a full body**.
+
+**Check it, do not assume it:**
+```bash
+scripts/check-dpop-asset.sh .        # hashes every copy under a tree, flags stale ones
+```
+
+- All four pack templates ship the known-good copy (corrected 2026-08-07 — they had shipped the
+  stale 7183-byte version, which made the pack itself the distribution vector for AP-62).
+- A **missing** page is worse than a stale one when DPoP is enabled (it is on by default): the popup
+  404s. Every template that sets `useDPoP` needs the asset **and** the `/tide_dpop/:path*` route.
+- **Non-Next.js apps need the same two pieces.** Vite/static-served SPAs must rewrite
+  `/tide_dpop/:path*` → `/tide_dpop_auth.html` and serve that path with
+  `script-src 'unsafe-inline'` + `Allow-CSP-From: *`. The pack's Vite and vanilla templates carry the
+  asset; their rewrite wiring is REQUIRES_RUNTIME_VALIDATION.
+- If two dev servers compete for port **3000**, one silently serves the other's `public/` — producing
+  this exact symptom from an unrelated project's stale copy. Give each Tide app a distinct dev port.
+- The vendor's own ASP.NET SDK ships a stale variant (7195 bytes) at
+  `Tide.Asgard.AspNetCore.DPoP/Views/tide_dpop_auth.html` and
+  `Tide.Asgard.AspNetCore.Example/Resources/tide_dpop_auth.html` — vendor-side fix needed (GAP-068).
+
+VERIFIED (LEARNINGS-music-license-001 L-03/L-04/L-08; asgard-sdk copies found 2026-08-07). AP-62, GAP-068.
+
 **`secureFetch` requirements** (when DPoP is enabled):
 - Use `IAMService.secureFetch` with `await IAMService.getToken()` for the managed token. **`getToken()` is async** — must be awaited. `secureFetch` attaches DPoP proofs when it sees `Authorization: Bearer <managed-token>`. VERIFIED (LEARNINGS-batch-005 L-07).
 - URLs must be **absolute** — relative paths throw. VERIFIED (session-002).

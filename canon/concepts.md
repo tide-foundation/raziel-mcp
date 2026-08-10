@@ -753,21 +753,32 @@ CORRECT: GET /admin/realms/{realm}/iga/role-policies   (server-side, admin beare
          live in each record's `policy` field (base64), alongside `policySig`.
 ```
 
-**Response handling**: Fetch server-side with an admin bearer token, pick the `admin-policy` record, and decode its `policy` field. Proxy the bytes to the browser:
+**Response handling**: Fetch server-side with an admin bearer token, pick the **`tide-realm-admin`** record, and decode its `policy` field. Proxy the bytes to the browser:
 ```js
 // Backend proxy (admin token required)
 const rpUrl = `${authServerUrl}/admin/realms/${realm}/iga/role-policies`;
 const rolePolicies = await fetch(rpUrl, {
   headers: { Authorization: `Bearer ${adminToken}` },
 }).then(r => r.json());
-const adminPolicyB64 = rolePolicies.find(p => p.name === 'admin-policy')?.policy;
-const raw = Buffer.from(adminPolicyB64, "base64");
+
+// The realm admin policy is named `tide-realm-admin` — NOT `admin-policy`.
+// Fail loudly rather than falling back to index 0 (AP-63).
+const matches = rolePolicies.filter(p => p.name === 'tide-realm-admin');
+if (matches.length !== 1) {
+  throw new Error(`Expected exactly one tide-realm-admin policy, got ${matches.length}`);
+}
+const raw = Buffer.from(matches[0].policy, "base64");
 res.json({ policyBytes: Array.from(new Uint8Array(raw)) });
 
 // Frontend
 const data = await res.json();
 const adminPolicyBytes = new Uint8Array(data.policyBytes);
 ```
+
+⚠️ VERIFIED against a live realm: `GET /iga/role-policies` returns exactly one record, named
+`tide-realm-admin`. A lookup for `admin-policy` with a `?? policies[0]` fallback works today only
+because there is one policy; add a second and it silently deploys under the wrong authority
+(LEARNINGS-music-license-001 L-06, AP-63).
 
 **Common mistake**: Treating the base64 string as raw bytes (passing each character's char code as a byte value). If admin policy bytes start with `[65, 81, 65, 65, ...]` (ASCII for `"AQAA..."`), you are passing base64 text as byte values instead of decoding it. The ORK fails with `Index out of range` because the policy structure is garbage.
 
