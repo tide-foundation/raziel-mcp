@@ -85,6 +85,15 @@ export default {
   sourceAssertions: [
     // { name: 'officer branch keys off the top band',
     //   pattern: '_amountCents >= band3[\\s\\S]{0,120}RequireAnyWithRole', shouldMatch: true },
+    //
+    // Good uses: manifest FIELD ORDER agreeing between the C# reads and the TS encoder; the
+    // magic/version string; a specific Deny branch the UI teaches.
+    //
+    // Two false positives that recur when writing these — both cost real time:
+    //   1. A bare array-literal regex over the WHOLE file also matches unrelated string arrays.
+    //      Scope the pattern to the enclosing function body.
+    //   2. A template-literal field regex must NOT require a trailing ` +` — the final line of a
+    //      multi-line template has no continuation operator.
   ],
 
   /**

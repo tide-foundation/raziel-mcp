@@ -1,36 +1,88 @@
 // Forseti local compile harness — SHAPE-ONLY stubs.
 //
 // PURPOSE: catch shape errors in your contract before deploying it. Contracts are compiled by the
-// ORK at request time, so a typo or a wrong context property surfaces as `VmHost.CompileFailed`
-// AFTER an operator approval has been spent in the enclave. `dotnet build` against these stubs
-// takes under a second and catches exactly that class of error, because shape errors are what
-// VmHost.CompileFailed reports.
+// ORK at request time, so a typo or a wrong API assumption surfaces as `VmHost.CompileFailed`
+// AFTER an operator approval has been spent in the enclave.
 //
-// BEHAVIOUR IS DELIBERATELY ABSENT. Every method returns a fixed value. Do not run logic against
-// these stubs and do not treat a passing build as proof the contract DECIDES correctly — only that
-// it COMPILES.
+// BEHAVIOUR IS DELIBERATELY ABSENT. Every method returns a fixed value. A passing build says the
+// contract COMPILES, never that it DECIDES correctly.
 //
-// STATUS: ASSUMED shapes, derived from canon/custom-contracts.md (which is VERIFIED against
-// Ork.Forseti.Sdk for IAccessPolicy, the context property names, DokenDto and the Decision
-// builder). If the real SDK differs, a stub that is MORE PERMISSIVE than reality yields a false
-// PASS — widen or correct the stub and re-run. See README.md.
+// ---------------------------------------------------------------------------------------------
+// FIDELITY: these shapes are derived from the two WORKING reference contracts vendored in the
+// pack, not from prose:
+//   sources/example-app-forseti-crypto-quickstart/template-ts-app/lib/forsetiContract.ts
+//   sources/example-app-tidecloak-test-cases/test-app/src/lib/forsetiDecryptionContract.ts
+// Both are deployed, working contracts. `check.sh --self-test` compiles both against these stubs,
+// so drift between the stubs and the real SDK shows up as a failure here rather than as a false
+// PASS on your own contract.
+//
+// An earlier revision of this file guessed `ctx.Data` as `byte[]` and gave `PolicyDecision` a
+// public `IsAllowed`. Both were wrong, and a `byte[]` stub is WORSE than a missing one: contracts
+// written against it (indexing, `.Length`) compile locally and fail on the ORK. Corrected
+// 2026-08-11 against the references above.
+// ---------------------------------------------------------------------------------------------
 
 using System;
 using System.Collections.Generic;
 using System.Linq;
 
+namespace Ork.Shared.Models.Contracts
+{
+    // Policy metadata visible to the contract via `ctx.Policy`. VERIFIED members: ExecutionType,
+    // ApprovalType (both read by the reference contracts). Namespace placement is ASSUMED — what
+    // matters for a compile check is that it resolves with the six required usings present.
+    public enum ApprovalType { EXPLICIT = 0, IMPLICIT = 1 }
+    public enum ExecutionType { PRIVATE = 0, PUBLIC = 1 }
+
+    public class Policy
+    {
+        public ExecutionType ExecutionType => ExecutionType.PRIVATE;
+        public ApprovalType ApprovalType => ApprovalType.EXPLICIT;
+        public string ContractId => string.Empty;
+        public IReadOnlyList<string> ModelIds => Array.Empty<string>();
+    }
+
+    /// TideMemory accessors over the serialized request payload.
+    ///
+    /// `ctx.Data` is a `ReadOnlyMemory<byte>` holding a NESTED TideMemory structure — NOT a
+    /// collection of objects, and NOT a flat `byte[]`. You walk it with these:
+    ///
+    ///     ReadOnlyMemory&lt;byte&gt; data = ctx.Data;
+    ///     var inner = data.GetValue(1);
+    ///     for (int i = 2; inner.TryGetValue(i, out var tag); i++) { ... }
+    ///
+    /// Read a leaf as text with `Encoding.UTF8.GetString(tag.Span)`.
+    public static class TideMemoryExtensions
+    {
+        /// Value at `index`. Throws in the real SDK when the index is absent — use TryGetValue to probe.
+        public static ReadOnlyMemory<byte> GetValue(this ReadOnlyMemory<byte> data, int index)
+            => ReadOnlyMemory<byte>.Empty;
+
+        public static bool TryGetValue(this ReadOnlyMemory<byte> data, int index, out ReadOnlyMemory<byte> value)
+        {
+            value = ReadOnlyMemory<byte>.Empty;
+            return false;
+        }
+    }
+}
+
+namespace Cryptide.Tools
+{
+    /// The ONLY sanctioned clock inside a contract. IL vetting runs with BlockNonDeterminism = true
+    /// and rejects direct `DateTime.Now`/`UtcNow`/`Guid.NewGuid` call sites; `Utils` is a
+    /// pre-compiled method in a separate assembly, so calling it passes vetting.
+    public static class Utils
+    {
+        public static long GetEpochSeconds() => 0;
+        public static byte[] Hash(byte[] data) => Array.Empty<byte>();
+        public static string ToHexString(byte[] data) => string.Empty;
+        public static byte[] FromHexString(string hex) => Array.Empty<byte>();
+    }
+}
+
 namespace Ork.Forseti.Sdk
 {
-    // ---------------------------------------------------------------------
-    // Contract entry point
-    // ---------------------------------------------------------------------
-
-    public interface IAccessPolicy
-    {
-        PolicyDecision ValidateData(DataContext ctx);
-        PolicyDecision ValidateApprovers(ApproversContext ctx);
-        PolicyDecision ValidateExecutor(ExecutorContext ctx);
-    }
+    using Ork.Shared.Models.Contracts;
 
     // ---------------------------------------------------------------------
     // Decision result
@@ -38,53 +90,81 @@ namespace Ork.Forseti.Sdk
 
     public class PolicyDecision
     {
-        public bool IsAllowed { get; private set; }
-        public string Reason { get; private set; }
+        // NOTE: no public `IsAllowed` / `Reason`. The reference contracts never inspect a decision —
+        // they RETURN one. `Decision.RequireX(...)` chains return a decision directly, so there is
+        // nothing to interrogate. Exposing an inspection surface here would let a contract compile
+        // against a member the real SDK does not have (the original error that prompted this fix).
+        private PolicyDecision() { }
 
-        public static PolicyDecision Allow() => new PolicyDecision { IsAllowed = true };
+        public static PolicyDecision Allow() => new PolicyDecision();
+        public static PolicyDecision Deny(string reason) => new PolicyDecision();
 
-        public static PolicyDecision Deny(string reason) =>
-            new PolicyDecision { IsAllowed = false, Reason = reason };
-
-        // NOTE: PolicyDecision.Approve() does NOT exist in the real SDK (see canon). It is
-        // deliberately absent here so that using it fails the local build.
+        // PolicyDecision.Approve() deliberately does NOT exist — using it must fail locally.
     }
 
     // ---------------------------------------------------------------------
     // Contexts — DISJOINT BY DESIGN.
     //
-    // ValidateData sees the bytes. ValidateExecutor sees the doken. NEITHER SEES BOTH.
-    // Writing ctx.Data inside ValidateExecutor is the canonical mistake this harness catches:
-    //   error CS1061: 'ExecutorContext' does not contain a definition for 'Data'
-    // To compare payload identity against signer identity, capture in ValidateData (which always
-    // runs) into an instance field, compare in ValidateExecutor, and DENY if it was never set.
+    // `ctx.Data` exists ONLY on DataContext. ValidateExecutor sees the doken, not the payload, so
+    // anything derived from the payload must be captured into an INSTANCE FIELD in ValidateData
+    // and read later. Both reference contracts do exactly this (`isEncryptionRequest`, `DataTags`,
+    // `ApproverSuccessfulRole`). Writing `ctx.Data` in ValidateExecutor compiles in an editor and
+    // fails ON THE ORK with CS1061, after an approval has been spent.
     // ---------------------------------------------------------------------
 
     public class DataContext
     {
-        public byte[] Data => Array.Empty<byte>();
-        public byte[] DynamicData => Array.Empty<byte>();
+        /// A nested TideMemory structure, not a flat buffer. See TideMemoryExtensions.
+        public ReadOnlyMemory<byte> Data => ReadOnlyMemory<byte>.Empty;
+        public ReadOnlyMemory<byte> DynamicData => ReadOnlyMemory<byte>.Empty;
+
+        /// e.g. "PolicyEnabledEncryption:1" / "PolicyEnabledDecryption:1" — how a contract tells
+        /// encrypt from decrypt, which matters because their payload layouts differ.
         public string RequestId => string.Empty;
+
+        /// The policy governing this request. Reference contracts assert
+        /// `ctx.Policy.ExecutionType` / `ctx.Policy.ApprovalType`.
+        public Policy Policy => new Policy();
     }
 
     public class ApproversContext
     {
-        // NOTE: `Dokens`, not `Approvers` (AP: wrong context properties).
+        /// `Dokens`, not `Approvers`. Wrap with `DokenDto.WrapAll(ctx.Dokens)`.
         public List<byte[]> Dokens => new List<byte[]>();
+        public string RequestId => string.Empty;
     }
 
     public class ExecutorContext
     {
-        // NOTE: `Doken`, not `Executor`. There is deliberately NO `Data` property here.
+        /// `Doken`, not `Executor`. There is deliberately NO `Data` here.
         public byte[] Doken => Array.Empty<byte>();
         public string RequestId => string.Empty;
     }
 
     // ---------------------------------------------------------------------
+    // Contract entry point
+    //
+    // Only ValidateData is required. The forseti-crypto-quickstart reference implements
+    // ValidateData + ValidateExecutor and OMITS ValidateApprovers entirely, so declaring all three
+    // as required members would fail correct contracts. Default implementations mirror that.
+    //
+    // TRADE-OFF worth knowing: because these are optional, a MISSPELLED override (ValidateExecuter)
+    // compiles and silently never runs. The parity-test template pins method presence by name —
+    // see templates/forseti-parity-tests/.
+    // ---------------------------------------------------------------------
+
+    public interface IAccessPolicy
+    {
+        PolicyDecision ValidateData(DataContext ctx);
+        PolicyDecision ValidateApprovers(ApproversContext ctx) => PolicyDecision.Allow();
+        PolicyDecision ValidateExecutor(ExecutorContext ctx) => PolicyDecision.Allow();
+    }
+
+    // ---------------------------------------------------------------------
     // DokenDto — token wrapper
     //
-    // UserId returns the VUID. A doken carries NO `sub` claim, so a contract can only ever enforce
-    // the vuid — never an OIDC subject (AP-66).
+    // UserId returns the VUID. A doken carries NO OIDC `sub`, so a contract can only ever enforce
+    // the vuid (AP-66).
     // ---------------------------------------------------------------------
 
     public class DokenDto
@@ -98,8 +178,9 @@ namespace Ork.Forseti.Sdk
         public bool IsExpired => false;
         public bool IsNull => false;
 
-        public bool HasRole(string resource, string role) => false;
+        /// 1-arg form = REALM role (used by the Cola reference). 2-arg form = client role.
         public bool HasRole(string realmRole) => false;
+        public bool HasRole(string resource, string role) => false;
         public bool HasAnyRole(string resource, params string[] roles) => false;
         public bool HasAllRoles(string resource, params string[] roles) => false;
 
@@ -113,51 +194,43 @@ namespace Ork.Forseti.Sdk
     // ---------------------------------------------------------------------
     // Decision builder
     //
-    // `Decision.X(...)` is the static entry point and returns a chainable DecisionBuilder, which
-    // carries the same surface as instance methods so checks compose in any order:
-    //   return Decision.RequireNotExpired(x).RequireRole(x, "res", "role");
-    // DecisionBuilder converts implicitly to PolicyDecision so the above typechecks in a method
-    // returning PolicyDecision.
+    // `Decision.X(...)` returns a chainable builder that converts implicitly to PolicyDecision, so
+    //   return Decision.RequireNotExpired(x).RequireRole(x, role);
+    // typechecks in a method returning PolicyDecision. There is no result to inspect.
     //
-    // C# forbids a static and an instance method with the same signature on one type, which is why
-    // this is split across two types. Keep the two surfaces IDENTICAL — a method present on one and
-    // missing from the other produces a build error that depends on where in the chain it appears.
+    // C# forbids a static and an instance method with the same signature on one type, hence the
+    // split. Keep both surfaces IDENTICAL — a method on one and not the other fails depending on
+    // where in the chain it appears.
     // ---------------------------------------------------------------------
 
     public class DecisionBuilder
     {
         public static implicit operator PolicyDecision(DecisionBuilder b) => PolicyDecision.Allow();
 
-        // --- Role checks ---
         public DecisionBuilder RequireRole(DokenDto doken, string resource, string role) => this;
         public DecisionBuilder RequireRole(DokenDto doken, string realmRole) => this;
         public DecisionBuilder RequireAnyRole(DokenDto doken, string resource, params string[] roles) => this;
         public DecisionBuilder RequireAllRoles(DokenDto doken, string resource, params string[] roles) => this;
         public DecisionBuilder ForbidRole(DokenDto doken, string resource, string role) => this;
 
-        // --- Approval checks ---
         public DecisionBuilder RequireMinWithRole(List<DokenDto> approvers, int min, string resource, string role) => this;
         public DecisionBuilder RequireAnyWithRole(List<DokenDto> approvers, string resource, string role) => this;
         public DecisionBuilder ForbidSelfApproval(string requestorId, List<DokenDto> approvers) => this;
         public DecisionBuilder RequireDistinctOrgs(List<DokenDto> approvers, int count) => this;
 
-        // --- Time checks ---
         public DecisionBuilder RequireWeekday() => this;
         public DecisionBuilder RequireBusinessHours() => this;
         public DecisionBuilder RequireHourBetween(int startHour, int endHour) => this;
         public DecisionBuilder ForbidHourBetween(int startHour, int endHour) => this;
         public DecisionBuilder RequireDayOfWeek(DayOfWeek day) => this;
 
-        // --- Token checks ---
         public DecisionBuilder RequireNotExpired(DokenDto doken) => this;
         public DecisionBuilder RequireFromAudience(DokenDto doken, string audience) => this;
         public DecisionBuilder RequireUserId(DokenDto doken, string userId) => this;
 
-        // --- Geo checks ---
         public DecisionBuilder RequireCountry(string country, params string[] allowed) => this;
         public DecisionBuilder ForbidCountry(string country, params string[] blocked) => this;
 
-        // --- Generic ---
         public DecisionBuilder Require(bool condition, string denyReason) => this;
         public DecisionBuilder Forbid(bool condition, string denyReason) => this;
     }
@@ -166,36 +239,30 @@ namespace Ork.Forseti.Sdk
     {
         private static DecisionBuilder B() => new DecisionBuilder();
 
-        // --- Role checks ---
         public static DecisionBuilder RequireRole(DokenDto doken, string resource, string role) => B();
         public static DecisionBuilder RequireRole(DokenDto doken, string realmRole) => B();
         public static DecisionBuilder RequireAnyRole(DokenDto doken, string resource, params string[] roles) => B();
         public static DecisionBuilder RequireAllRoles(DokenDto doken, string resource, params string[] roles) => B();
         public static DecisionBuilder ForbidRole(DokenDto doken, string resource, string role) => B();
 
-        // --- Approval checks ---
         public static DecisionBuilder RequireMinWithRole(List<DokenDto> approvers, int min, string resource, string role) => B();
         public static DecisionBuilder RequireAnyWithRole(List<DokenDto> approvers, string resource, string role) => B();
         public static DecisionBuilder ForbidSelfApproval(string requestorId, List<DokenDto> approvers) => B();
         public static DecisionBuilder RequireDistinctOrgs(List<DokenDto> approvers, int count) => B();
 
-        // --- Time checks ---
         public static DecisionBuilder RequireWeekday() => B();
         public static DecisionBuilder RequireBusinessHours() => B();
         public static DecisionBuilder RequireHourBetween(int startHour, int endHour) => B();
         public static DecisionBuilder ForbidHourBetween(int startHour, int endHour) => B();
         public static DecisionBuilder RequireDayOfWeek(DayOfWeek day) => B();
 
-        // --- Token checks ---
         public static DecisionBuilder RequireNotExpired(DokenDto doken) => B();
         public static DecisionBuilder RequireFromAudience(DokenDto doken, string audience) => B();
         public static DecisionBuilder RequireUserId(DokenDto doken, string userId) => B();
 
-        // --- Geo checks ---
         public static DecisionBuilder RequireCountry(string country, params string[] allowed) => B();
         public static DecisionBuilder ForbidCountry(string country, params string[] blocked) => B();
 
-        // --- Generic ---
         public static DecisionBuilder Require(bool condition, string denyReason) => B();
         public static DecisionBuilder Forbid(bool condition, string denyReason) => B();
     }
@@ -225,19 +292,5 @@ namespace Ork.Forseti.Sdk
         public object Max { get; set; }
         public string[] AllowedValues { get; set; }
         public string Description { get; set; }
-    }
-}
-
-namespace Cryptide.Tools
-{
-    // Stubbed with the WRONG shape once already, and that miss is exactly why this file exists:
-    // a stub whose signature does not match the SDK produces a build error on correct contract
-    // code (false FAIL) or hides a real one (false PASS). Correct against the real SDK when known.
-    public static class Utils
-    {
-        public static long GetEpochSeconds() => 0;
-        public static byte[] Hash(byte[] data) => Array.Empty<byte>();
-        public static string ToHexString(byte[] data) => string.Empty;
-        public static byte[] FromHexString(string hex) => Array.Empty<byte>();
     }
 }

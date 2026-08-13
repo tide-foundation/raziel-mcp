@@ -1,3 +1,7 @@
 node_modules/
 *.vsix
 *.tgz
+
+# python bytecode from local checks
+__pycache__/
+*.pyc

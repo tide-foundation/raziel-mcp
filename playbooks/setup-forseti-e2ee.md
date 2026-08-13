@@ -125,20 +125,56 @@ Getting the order wrong is what makes Forseti feel painful. After the flip, ever
 
 ## Step 1: Write the Forseti Contract (C#)
 
-Every contract implements `IAccessPolicy` from `Ork.Forseti.Sdk`. Without the `using` directive, the ORK compiler fails with `"The type or namespace name 'IAccessPolicy' could not be found"`.
+Every contract implements `IAccessPolicy` and needs **all six** using directives. `using Ork.Forseti.Sdk;` alone does not compile: `GetValue`/`TryGetValue` are extension methods, `Utils` is in `Cryptide.Tools`, and `ctx.Policy`'s enums are in `Ork.Shared.Models.Contracts`.
+
+> ⚠️ **Compile this locally before deploying.** Contracts are compiled by the ORK at request time, so a wrong API assumption surfaces as `VmHost.CompileFailed` **after** an operator approval has been spent. `templates/forseti-compile-harness/` catches it in a second, and its stubs are self-tested against two working deployed contracts. An earlier revision of the example below did not compile at all — `ctx.Data` is a `ReadOnlyMemory<byte>` **struct**, so `ctx.Data == null` is `error CS0019`.
 
 ```csharp
 using Ork.Forseti.Sdk;
+using Cryptide.Tools;
+using Ork.Shared.Models.Contracts;
+using System;
+using System.Collections.Generic;
+using System.Text;
 
 public class Contract : IAccessPolicy
 {
     [PolicyParam(Required = true)]
     public string Role { get; set; }
 
+    // State threaded from ValidateData — ctx.Data exists ONLY on DataContext.
+    private bool isEncryptionRequest = false;
+    private List<string> DataTags = new();
+
     public PolicyDecision ValidateData(DataContext ctx)
     {
-        if (ctx.Data == null || ctx.Data.Length == 0)
-            return PolicyDecision.Deny("No data provided");
+        // 1. Branch on the request type FIRST: encrypt and decrypt have different layouts.
+        if (ctx.RequestId == "PolicyEnabledEncryption:1")      isEncryptionRequest = true;
+        else if (ctx.RequestId == "PolicyEnabledDecryption:1") isEncryptionRequest = false;
+        else return PolicyDecision.Deny("This contract handles only encryption/decryption requests");
+
+        // 2. Refuse a policy shape this contract was not written for.
+        if (ctx.Policy.ExecutionType != ExecutionType.PRIVATE)
+            return PolicyDecision.Deny("Policy against this contract must be PRIVATE");
+
+        // 3. ctx.Data is a NESTED ReadOnlyMemory<byte>, walked with GetValue/TryGetValue.
+        //    Tags start at index 2 for ENCRYPTION and index 3 for DECRYPTION.
+        ReadOnlyMemory<byte> data = ctx.Data;
+        if (isEncryptionRequest)
+        {
+            var time  = data.GetValue(0);
+            var first = data.GetValue(1);
+            for (int i = 2; first.TryGetValue(i, out var tag); i++)
+                DataTags.Add(Encoding.UTF8.GetString(tag.Span));
+        }
+        else
+        {
+            var first = data.GetValue(0);
+            for (int i = 3; first.TryGetValue(i, out var tag); i++)
+                DataTags.Add(Encoding.UTF8.GetString(tag.Span));
+        }
+
+        if (DataTags.Count == 0) return PolicyDecision.Deny("At least one data tag is required");
         return PolicyDecision.Allow();
     }
 
@@ -152,10 +188,17 @@ public class Contract : IAccessPolicy
 }
 ```
 
-For contracts that also need approver validation (EXPLICIT approval mode):
+For contracts that also need approver validation (EXPLICIT approval mode). Note `ValidateApprovers`
+runs **only** under `ApprovalType.EXPLICIT`, and is **optional** — omit it entirely if you do not need
+a quorum:
 
 ```csharp
 using Ork.Forseti.Sdk;
+using Cryptide.Tools;
+using Ork.Shared.Models.Contracts;
+using System;
+using System.Collections.Generic;
+using System.Text;
 
 public class Contract : IAccessPolicy
 {
@@ -167,7 +210,9 @@ public class Contract : IAccessPolicy
 
     public PolicyDecision ValidateData(DataContext ctx)
     {
-        if (ctx.Data == null || ctx.Data.Length == 0)
+        // ctx.Data is a ReadOnlyMemory<byte> STRUCT — `== null` is error CS0019. Probe the
+        // structure instead: absent index means nothing was supplied.
+        if (!ctx.Data.TryGetValue(0, out var _))
             return PolicyDecision.Deny("No data provided");
         return PolicyDecision.Allow();
     }

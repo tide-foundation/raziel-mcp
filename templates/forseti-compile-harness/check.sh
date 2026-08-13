@@ -10,13 +10,53 @@
 
 set -euo pipefail
 
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# --- self-test: prove the STUBS still match the real SDK ------------------------------
+# Compiles two working, deployed reference contracts against Stubs.cs. A stub that is more
+# permissive than the real SDK yields a FALSE PASS on your own contract — that is the one failure
+# this harness must never have, and prose cannot prevent it. Run after editing Stubs.cs, and in CI.
+if [[ "${1:-}" == "--self-test" ]]; then
+  echo "==> self-test: compiling the reference contracts against Stubs.cs"
+  st_failed=0
+  for ref in "$HERE"/reference/*.cs; do
+    [[ "$(basename "$ref")" == "MustFail.cs" ]] && continue
+    if dotnet build "$HERE/check.csproj" -p:ContractPath="$ref" --nologo -v quiet >/dev/null 2>&1; then
+      echo "    OK   $(basename "$ref")"
+    else
+      echo "    FAIL $(basename "$ref") — the STUBS are wrong, not the reference. Do not edit the reference." >&2
+      dotnet build "$HERE/check.csproj" -p:ContractPath="$ref" --nologo -v quiet 2>&1 | grep -E "error CS" | head -5 >&2
+      st_failed=1
+    fi
+  done
+  # The other half: fixtures that MUST NOT compile — ONE error each.
+  #
+  # Positive references cannot detect an over-permissive stub. byte[] is implicitly convertible to
+  # ReadOnlyMemory<byte>, so a byte[]-typed ctx.Data compiles both references happily. And a SINGLE
+  # must-fail file with several errors is no better: it keeps failing whichever protection you lose,
+  # so it reports nothing. One discriminator per file is what makes drift visible.
+  for neg in "$HERE"/reference/mustfail/*.cs; do
+    if dotnet build "$HERE/check.csproj" -p:ContractPath="$neg" --nologo -v quiet >/dev/null 2>&1; then
+      echo "    FAIL $(basename "$neg") COMPILED — the stubs have drifted PERMISSIVE." >&2
+      sed -n 's|^// MUST NOT COMPILE — exactly ONE error: |         expected to be rejected: |p' "$neg" >&2
+      echo "         A stub wider than the real SDK yields a false PASS that fails on the ORK" >&2
+      echo "         after an approval is spent. Fix Stubs.cs; do not edit the fixture." >&2
+      st_failed=1
+    else
+      echo "    OK   $(basename "$neg") correctly rejected"
+    fi
+  done
+
+  [[ $st_failed -eq 0 ]] && echo "    Stubs match the reference SDK surface." || echo "    SELF-TEST FAILED." >&2
+  exit $st_failed
+fi
+
 CONTRACT="${1:-}"
 if [[ -z "$CONTRACT" ]]; then
   echo "usage: $0 <path-to-contract.cs>" >&2
+  echo "       $0 --self-test          # verify Stubs.cs against the vendored reference contracts" >&2
   exit 2
 fi
-
-HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 FAILED=0
 
 # --- 1. Compile against the stubs -------------------------------------------------
@@ -32,14 +72,18 @@ fi
 
 # --- 2. Sandbox scan --------------------------------------------------------------
 # The compiler CANNOT catch these: blocked namespaces compile fine and fail IL vetting at upload
-# with BadPolicy.ForbiddenCall. A grep is crude but it is the only local check available.
+# with BadPolicy.ForbiddenCall.
+#
+# This is NOT a grep. A grep matches comments, so a contract that merely documents the sandbox
+# restrictions fails its own pre-flight — and the obvious workaround (delete the comment) removes
+# documentation instead of fixing anything. scan-sandbox.py strips comments with a C#-aware
+# scanner that respects string literals, so "http://x" cannot hide a real call after it, and
+# reports comment mentions as WARN rather than FAIL.
 echo "==> scanning for sandbox-blocked namespaces and non-deterministic calls"
-BLOCKED='System\.IO|System\.Net|System\.Threading|System\.Reflection|System\.Diagnostics|System\.Console|DateTime\.Now|DateTime\.UtcNow|Guid\.NewGuid|new Random|Random\.Shared'
-if grep -REn "$BLOCKED" $CONTRACT 2>/dev/null; then
-  echo "    FAIL — blocked in the Forseti sandbox; fails IL vetting as BadPolicy.ForbiddenCall" >&2
-  FAILED=1
+if python3 "$HERE/scan-sandbox.py" $CONTRACT; then
+  :
 else
-  echo "    OK — no blocked namespaces found"
+  FAILED=1
 fi
 
 # --- 3. Contract structure --------------------------------------------------------

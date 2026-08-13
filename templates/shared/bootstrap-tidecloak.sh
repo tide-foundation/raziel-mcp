@@ -36,6 +36,32 @@ ADMIN_EMAIL="${ADMIN_EMAIL:-admin@yourorg.com}"
 ADAPTER_OUTPUT="${ADAPTER_OUTPUT:-./data/tidecloak.json}"
 TIDECLOAK_IMAGE="${TIDECLOAK_IMAGE:-tideorg/tidecloak-dev:latest}"
 
+# --- Master-admin credentials: from the environment / .env, NEVER hardcoded (AP-41) ---
+# Load .env from the invoking directory if present (it must be gitignored).
+if [ -f ".env" ]; then
+  set -a; . "./.env"; set +a
+fi
+
+KC_BOOTSTRAP_ADMIN_USERNAME="${KC_BOOTSTRAP_ADMIN_USERNAME:-${KC_ADMIN_USER:-admin}}"
+# Accept KC_ADMIN_PASSWORD as an alias, but require ONE of them to be set. No default:
+# a default password is a hardcoded credential with extra steps.
+KC_BOOTSTRAP_ADMIN_PASSWORD="${KC_BOOTSTRAP_ADMIN_PASSWORD:-${KC_ADMIN_PASSWORD:-}}"
+if [ -z "$KC_BOOTSTRAP_ADMIN_PASSWORD" ]; then
+  cat >&2 <<'MSG'
+ERROR: KC_BOOTSTRAP_ADMIN_PASSWORD is not set.
+
+  The TideCloak master-admin password must come from the environment, not this script:
+
+    cp templates/shared/.env.template .env
+    $EDITOR .env                       # set KC_BOOTSTRAP_ADMIN_PASSWORD
+    bash bootstrap-tidecloak.sh
+
+  Confirm .env is gitignored first. Beyond local Docker, inject the value from a
+  secret manager instead of a file.
+MSG
+  exit 1
+fi
+
 # --- Helpers ---
 get_token() {
   curl -s -X POST "$TIDECLOAK_URL/realms/master/protocol/openid-connect/token" \
@@ -88,6 +114,41 @@ approve_all_pending() {
 approve_and_commit() { approve_all_pending; }
 
 # --- Step 0: Clean previous state ---
+#
+# DESTRUCTIVE. This wipes the shared H2 database, which holds EVERY realm on this container —
+# not just the one you are bootstrapping. A TideCloak container commonly hosts several, and a
+# realm cannot be un-flipped from multiAdmin, so some may not be cheaply rebuildable.
+#
+# So: refuse if the running instance holds realms besides `master`. To add ONE realm to a live
+# container, do not run this script — skip Step 0 and assert your realm does not already exist.
+# Override deliberately with FORCE_WIPE=1.
+if [ "${FORCE_WIPE:-0}" != "1" ] && curl -sf -m 3 "$TIDECLOAK_URL/realms/master" >/dev/null 2>&1; then
+  echo "==> An instance is already responding on $TIDECLOAK_URL — checking for existing realms..."
+  EXISTING=""
+  if EXISTING_TOKEN="$(curl -sf -m 5 -X POST \
+        "$TIDECLOAK_URL/realms/master/protocol/openid-connect/token" \
+        -d "client_id=admin-cli" -d "grant_type=password" \
+        --data-urlencode "username=$KC_BOOTSTRAP_ADMIN_USERNAME" \
+        --data-urlencode "password=$KC_BOOTSTRAP_ADMIN_PASSWORD" \
+      | sed -n 's/.*"access_token":"\([^"]*\)".*/\1/p')" && [ -n "$EXISTING_TOKEN" ]; then
+    EXISTING="$(curl -sf -m 5 "$TIDECLOAK_URL/admin/realms" \
+      -H "Authorization: Bearer $EXISTING_TOKEN" \
+      | tr ',' '\n' | sed -n 's/.*"realm":"\([^"]*\)".*/\1/p' | grep -v '^master$' | tr '\n' ' ')"
+  fi
+  if [ -n "$EXISTING" ]; then
+    cat >&2 <<EOF
+ERROR: refusing to wipe — this container already hosts realm(s): $EXISTING
+
+Step 0 deletes ./data/keycloakdb*, which is the SHARED database for every realm above.
+A realm cannot be un-flipped from multiAdmin, so these may not be cheaply rebuildable.
+
+  To add one realm to this live container : do NOT run this script. Skip Step 0.
+  To wipe everything anyway               : FORCE_WIPE=1 $0
+EOF
+    exit 1
+  fi
+fi
+
 echo "==> Cleaning previous state..."
 docker stop tidecloak 2>/dev/null || true
 docker rm tidecloak 2>/dev/null || true
@@ -116,8 +177,8 @@ esac
 sudo docker run -d --name tidecloak \
   -v "$(pwd)/data:/opt/keycloak/data/h2" \
   -p 8080:8080 \
-  -e KC_BOOTSTRAP_ADMIN_USERNAME=admin \
-  -e KC_BOOTSTRAP_ADMIN_PASSWORD=password \
+  -e KC_BOOTSTRAP_ADMIN_USERNAME="$KC_BOOTSTRAP_ADMIN_USERNAME" \
+  -e KC_BOOTSTRAP_ADMIN_PASSWORD="$KC_BOOTSTRAP_ADMIN_PASSWORD" \
   "$TIDECLOAK_IMAGE"
 
 if [ $? -ne 0 ]; then

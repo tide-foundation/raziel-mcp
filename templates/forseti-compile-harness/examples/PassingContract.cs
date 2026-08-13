@@ -1,4 +1,9 @@
 using Ork.Forseti.Sdk;
+using Cryptide.Tools;
+using Ork.Shared.Models.Contracts;
+using System;
+using System.Collections.Generic;
+using System.Text;
 
 public class Contract : IAccessPolicy
 {
@@ -13,7 +18,11 @@ public class Contract : IAccessPolicy
     public PolicyDecision ValidateData(DataContext ctx)
     {
         if (ctx.RequestId == "PolicyEnabledEncryption:1") return PolicyDecision.Allow();
-        _claimedVuid = System.Text.Encoding.UTF8.GetString(ctx.Data);
+        // ctx.Data is a NESTED TideMemory (ReadOnlyMemory<byte>), not a flat buffer and not a
+        // collection of objects. Walk it with GetValue / TryGetValue and read leaves via .Span.
+        ReadOnlyMemory<byte> data = ctx.Data;
+        if (data.TryGetValue(0, out var vuidLeaf))
+            _claimedVuid = Encoding.UTF8.GetString(vuidLeaf.Span);
         if (string.IsNullOrEmpty(_claimedVuid)) return PolicyDecision.Deny("no vuid");
         return Decision.RequireWeekday().RequireHourBetween(9, 17);
     }

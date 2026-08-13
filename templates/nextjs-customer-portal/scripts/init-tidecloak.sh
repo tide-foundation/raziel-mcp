@@ -37,11 +37,41 @@ ADMIN_EMAIL="${ADMIN_EMAIL:-admin@example.com}"
 ADAPTER_OUTPUT="${ADAPTER_OUTPUT:-./data/tidecloak.json}"
 TIDECLOAK_IMAGE="${TIDECLOAK_IMAGE:-tideorg/tidecloak-dev:latest}"
 
+# --- Master-admin credentials: from the environment / .env, NEVER hardcoded ---
+# Load .env if present (gitignored). `set -a` exports everything it defines.
+if [ -f "$PROJECT_DIR/.env" ]; then
+  set -a; . "$PROJECT_DIR/.env"; set +a
+fi
+
+KC_BOOTSTRAP_ADMIN_USERNAME="${KC_BOOTSTRAP_ADMIN_USERNAME:-admin}"
+
+# No default. A default password IS a hardcoded credential, just with extra steps —
+# and one that silently ships to whoever runs this next (AP-41).
+if [ -z "${KC_BOOTSTRAP_ADMIN_PASSWORD:-}" ]; then
+  cat >&2 <<'MSG'
+ERROR: KC_BOOTSTRAP_ADMIN_PASSWORD is not set.
+
+  This is the TideCloak master-admin password. It must come from the environment,
+  not from this script:
+
+    cp .env.example .env
+    $EDITOR .env            # set KC_BOOTSTRAP_ADMIN_PASSWORD
+    npm run init
+
+  .env is gitignored. For anything beyond local Docker, inject the value from your
+  secret manager instead of a file.
+MSG
+  exit 1
+fi
+
 # --- Helpers ---
 get_token() {
+  # --data-urlencode so a password containing &, =, + or spaces still works.
+  # Master-admin tokens live ~60 SECONDS, so call this per operation, not once.
   curl -s -X POST "$TIDECLOAK_URL/realms/master/protocol/openid-connect/token" \
-    -H "Content-Type: application/x-www-form-urlencoded" \
-    -d "username=admin&password=password&grant_type=password&client_id=admin-cli" \
+    -d "client_id=admin-cli" -d "grant_type=password" \
+    --data-urlencode "username=$KC_BOOTSTRAP_ADMIN_USERNAME" \
+    --data-urlencode "password=$KC_BOOTSTRAP_ADMIN_PASSWORD" \
     | jq -r '.access_token'
 }
 
@@ -123,8 +153,8 @@ esac
 sudo docker run -d --name tidecloak \
   -v "$PROJECT_DIR/data:/opt/keycloak/data/h2" \
   -p 8080:8080 \
-  -e KC_BOOTSTRAP_ADMIN_USERNAME=admin \
-  -e KC_BOOTSTRAP_ADMIN_PASSWORD=password \
+  -e KC_BOOTSTRAP_ADMIN_USERNAME="$KC_BOOTSTRAP_ADMIN_USERNAME" \
+  -e KC_BOOTSTRAP_ADMIN_PASSWORD="$KC_BOOTSTRAP_ADMIN_PASSWORD" \
   "$TIDECLOAK_IMAGE"
 
 # --- Step 3: Wait for readiness ---

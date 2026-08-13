@@ -34,12 +34,17 @@
 
 ```csharp
 using Ork.Forseti.Sdk;
+using Cryptide.Tools;
+using Ork.Shared.Models.Contracts;
+using System;
+using System.Collections.Generic;
+using System.Text;
 
-public class GitCommitSigningPolicy : IAccessPolicy
+public class Contract : IAccessPolicy
 {
-    [PolicyParam] public string Role { get; set; }       // e.g. "git-sign:main"
-    [PolicyParam] public string Resource { get; set; }    // client ID
-    [PolicyParam] public int threshold { get; set; }      // e.g. 2 admins
+    [PolicyParam(Required = true)] public string Role { get; set; }      // e.g. "git-sign:main"
+    [PolicyParam(Required = true)] public string Resource { get; set; }  // client id the role is on
+    [PolicyParam(Default = 2, Min = 1)] public int Threshold { get; set; }
 
     public PolicyDecision ValidateData(DataContext ctx)
     {
@@ -59,14 +64,18 @@ public class GitCommitSigningPolicy : IAccessPolicy
     public PolicyDecision ValidateApprovers(ApproversContext ctx)
     {
         var approvers = DokenDto.WrapAll(ctx.Dokens);
-        return Decision.RequireAnyWithRole(approvers, Role, Resource, threshold);
+        // N approvers holding {Resource, Role}. Argument order is (approvers, min, resource, role).
+        return Decision.RequireMinWithRole(approvers, Threshold, Resource, Role);
     }
 
     public PolicyDecision ValidateExecutor(ExecutorContext ctx)
     {
         var executor = new DokenDto(ctx.Doken);
-        return Decision.RequireNotExpired(executor)
-            .And(Decision.RequireRole(executor, "signing-service", Resource));
+        // CHAINING *is* the conjunction — there is no .And() combinator, and a chain returns the
+        // decision directly (nothing to inspect).
+        return Decision
+            .RequireNotExpired(executor)
+            .RequireRole(executor, Resource, "signing-service");
     }
 }
 ```

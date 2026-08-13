@@ -4,6 +4,7 @@ import { PACK_ROOT, packRead, packExists, listDir, walkFiles, Checks } from "./h
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 
+const existsSyncSafe = (p) => { try { return readFileSync(p, "utf8") !== null; } catch { return false; } };
 const rel = (abs) => abs.replace(PACK_ROOT, "").replace(/\\/g, "/").replace(/^\//, "");
 
 export async function run() {
@@ -23,6 +24,112 @@ export async function run() {
     }
   }
   c.ok("no stray legacy /tide-admin/change-set endpoints in active files", leaks.length === 0, leaks.join("  "));
+
+  // 1b. No realm template may declare a `tide-*` protocol-mapper provider.
+  //     MEASURED on tideorg/tidecloak-dev:latest (the production image): /admin/serverinfo lists
+  //     24 openid-connect protocolMapperTypes and NONE contains "tide". `tide-roles-mapper` does
+  //     not exist, and a realm import declaring it returns 201 Created with the mapper SILENTLY
+  //     DROPPED — so roles go missing from tokens with no error anywhere. Stock types only:
+  //     oidc-usermodel-attribute-mapper, oidc-hardcoded-claim-mapper, oidc-usermodel-*-role-mapper.
+  //     See AP-80 / canon/tidecloak-bootstrap.md. sources/ is a bounded audit record and exempt.
+  //     Scope: realm-template and script files only. Markdown is EXCLUDED on purpose — canon has to
+  //     be able to show the wrong form in order to warn against it (AP-80 quotes it verbatim), and a
+  //     gate that forbids documenting an anti-pattern is worse than no gate.
+  const badMapper = [];
+  for (const d of activeDirs) {
+    for (const f of walkFiles(join(PACK_ROOT, d), [".json", ".template", ".sh"])) {
+      readFileSync(f, "utf8").split("\n").forEach((ln, i) => {
+        if (/"protocolMapper"\s*:\s*"tide-[^"]*"/.test(ln)) badMapper.push(`${rel(f)}:${i + 1}`);
+      });
+    }
+  }
+  c.ok(
+    'no realm template declares a "tide-*" protocolMapper (no such provider exists — AP-80)',
+    badMapper.length === 0,
+    badMapper.join("  "),
+  );
+
+  // 1d. No hardcoded master-admin password in active scripts/docs. It belongs in .env, and the
+  //     script must FAIL when unset — a default password is a hardcoded credential with extra
+  //     steps, and it also lands in shell history, CI logs and `ps` output (AP-41).
+  //     Allowed: a variable expansion ("$VAR" / ${VAR}) or an empty assignment in a template.
+  const PW_VARS = "(?:KC_BOOTSTRAP_ADMIN_PASSWORD|KC_ADMIN_PASSWORD|KEYCLOAK_ADMIN_PASSWORD)";
+  const okValue = (v) =>
+    v.startsWith('"$') || v.startsWith("$") || v.startsWith("${") || v === '""' || v === "''";
+  //  - Runnable files (.sh/.yml/.json/.template/.example): ANY literal assignment is a leak.
+  //  - Markdown: only the COPYABLE `-e VAR=literal` docker form. Prose must be able to quote the
+  //    wrong shape in order to warn against it — the same reason gate 1b excludes .md.
+  const pwLeaks = [];
+  for (const d of activeDirs) {
+    for (const f of walkFiles(join(PACK_ROOT, d), [".sh", ".yml", ".yaml", ".json", ".template", ".example"])) {
+      const re = new RegExp(PW_VARS + "\\s*=\\s*(\\S+)");
+      readFileSync(f, "utf8").split("\n").forEach((ln, i) => {
+        const m = re.exec(ln);
+        if (m && !okValue(m[1])) pwLeaks.push(`${rel(f)}:${i + 1}`);
+      });
+    }
+    for (const f of walkFiles(join(PACK_ROOT, d), [".md"])) {
+      // canon/anti-patterns.md is definitionally the place that QUOTES wrong forms in order to
+      // forbid them — AP-41's ❌ block shows this exact literal. Exempt that one file rather than
+      // weakening the rule for every playbook and template, where copyable snippets actually live.
+      if (rel(f) === "canon/anti-patterns.md") continue;
+      const re = new RegExp("-e\\s+" + PW_VARS + "=(\\S+)");
+      readFileSync(f, "utf8").split("\n").forEach((ln, i) => {
+        const m = re.exec(ln);
+        if (m && !okValue(m[1])) pwLeaks.push(`${rel(f)}:${i + 1}`);
+      });
+    }
+  }
+  c.ok(
+    "no hardcoded master-admin password in active scripts or docs (AP-41 — use .env)",
+    pwLeaks.length === 0,
+    pwLeaks.join("  "),
+  );
+
+  // 1e. If a template tells you to put a secret in .env, .env must be gitignored there.
+  const envUnignored = [];
+  for (const tdir of listDir("templates")) {
+    const base = join(PACK_ROOT, "templates", tdir);
+    const hasEnvDoc = ["\.env.example", "\.env.template"].some((n) =>
+      existsSyncSafe(join(base, n.replace("\\", ""))),
+    );
+    if (!hasEnvDoc) continue;
+    const gi = packRead(`templates/${tdir}/.gitignore`) ?? "";
+    if (!/^\.env\s*$/m.test(gi)) envUnignored.push(`templates/${tdir}/.gitignore`);
+  }
+  c.ok(
+    "every template that ships a .env example also gitignores .env",
+    envUnignored.length === 0,
+    envUnignored.join("  "),
+  );
+
+  // 1c. Every shipped realm template must still carry the tideUserKey + vuid attribute mappers,
+  //     so "remove tide-roles-mapper" can never be satisfied by deleting the Tide claims wholesale.
+  const realmTemplates = [];
+  for (const d of activeDirs) {
+    for (const f of walkFiles(join(PACK_ROOT, d), [".json", ".template"])) {
+      if (/realm.*\.json(\.template)?$/.test(rel(f))) realmTemplates.push(f);
+    }
+  }
+  const missingClaims = [];
+  for (const f of realmTemplates) {
+    const src = readFileSync(f, "utf8");
+    const hasUserKey = /"user\.attribute"\s*:\s*"tideUserKey"/.test(src);
+    const hasVuid = /"user\.attribute"\s*:\s*"vuid"/.test(src);
+    if (!hasUserKey || !hasVuid) {
+      missingClaims.push(`${rel(f)}(${!hasUserKey ? " tideUserKey" : ""}${!hasVuid ? " vuid" : ""})`);
+    }
+  }
+  c.ok(
+    "realm templates found to check for Tide claim mappers",
+    realmTemplates.length > 0,
+    `found ${realmTemplates.length}`,
+  );
+  c.ok(
+    "every realm template maps tideUserKey and vuid (stock attribute mappers)",
+    missingClaims.length === 0,
+    missingClaims.join("  "),
+  );
 
   // 2. No unresolved merge-conflict markers in pack content.
   //    Unambiguous git markers only ("<<<<<<< " / ">>>>>>> "); the bare "=======" line
