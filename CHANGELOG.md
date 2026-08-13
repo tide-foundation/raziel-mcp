@@ -2,6 +2,33 @@
 
 All notable changes to `@tideorg/mcp` (the Tide Agent Pack) are documented here.
 
+## 1.9.10 — 2026-08-10
+
+Correctness and security fixes surfaced by real ORK/TideCloak runs after 1.9.9.
+
+- **Removed the invalid `tide-roles-mapper` (AP-80).** It is **not a real
+  protocol-mapper provider** — measured against the production image, a realm
+  import declaring it returns `201 Created` but the mapper is **silently dropped**,
+  so role claims go missing. Purged from the realm templates, **gated so it can't
+  come back**, and the eval that wrongly *required* it (EVAL-053) inverted.
+  Templates still carry the stock `tideUserKey` + `vuid` attribute mappers, so the
+  removal can't be "fixed" by deleting the Tide claims wholesale.
+- **Corrected the Forseti/ORK contract SDK surface.** Canon, playbooks, and the
+  compile-harness stubs were teaching an ORK contract API that does not exist (a
+  real compile failure). Reconciled against the two working, deployed contracts;
+  adds reference contracts (`ColaContract`, `QuickstartContract`), `mustfail`
+  cases, and a `scan-sandbox.py`.
+- **Master-admin password out of the script (AP-41).** Bootstrap now reads
+  `KC_BOOTSTRAP_ADMIN_PASSWORD` from the environment / a gitignored `.env` with
+  **no default** (a default password is a hardcoded credential with extra steps);
+  ships `.env.template` + `.gitignore` across templates.
+- **Red-team correction** — TideCloak is **not an identity concentration** and does
+  not own a verifier; the `tide-red-team` skill wrongly claimed it did. Also a
+  model-id "equivalent constructions" correction (LEARNINGS-deploy-gate-001).
+- Canon refinements: substantially expanded `anti-patterns` and `custom-contracts`,
+  plus `tidecloak-bootstrap`, `security-gap-mapping`, and the reference-app
+  role-policy matrices.
+
 ## 1.9.9 — 2026-08-10
 
 - **`toggle-iga` fails open — form-encode and assert.** The
@@ -23,25 +50,6 @@ All notable changes to `@tideorg/mcp` (the Tide Agent Pack) are documented here.
 - **`drain-change-requests.py`** — a real file (not a bash heredoc, which
   swallows the piped payload and makes every drain falsely report "0 change
   requests") to approve + commit all pending IGA change requests.
-- **Removed the invalid `tide-roles-mapper` (AP-80).** It is **not a real
-  protocol-mapper provider** — measured against the production image, a realm
-  import declaring it returns `201 Created` but the mapper is **silently dropped**,
-  so role claims go missing. Purged from the realm templates, **gated so it can't
-  come back**, and the eval that wrongly *required* it (EVAL-053) inverted.
-  Templates still carry the stock `tideUserKey` + `vuid` attribute mappers, so the
-  removal can't be "fixed" by deleting the Tide claims wholesale.
-- **Corrected the Forseti/ORK contract SDK surface.** Canon, playbooks, and the
-  compile-harness stubs were teaching an ORK contract API that does not exist (a
-  real compile failure). Reconciled against the two working, deployed contracts;
-  adds reference contracts (`ColaContract`, `QuickstartContract`), `mustfail`
-  cases, and a `scan-sandbox.py`.
-- **Master-admin password out of the script (AP-41).** Bootstrap now reads
-  `KC_BOOTSTRAP_ADMIN_PASSWORD` from the environment / a gitignored `.env` with
-  **no default** (a default password is a hardcoded credential with extra steps);
-  ships `.env.template` + `.gitignore` across templates.
-- **Red-team correction** — TideCloak is **not an identity concentration** and does
-  not own a verifier; the `tide-red-team` skill wrongly claimed it did. Also a
-  model-id "equivalent constructions" correction (LEARNINGS-deploy-gate-001).
 - Canon/playbook refinements: `anti-patterns`, `framework-matrix`,
   `tidecloak-bootstrap`, `custom-contracts`, `concepts`, `invariants`,
   `deploy-forseti-policy`, and the reference-app bootstrap sequences.
