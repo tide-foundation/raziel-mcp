@@ -66,7 +66,51 @@ For projects that do not use the init script, follow the manual sequence below. 
 | `tideorg/tidecloak-dev:latest` | Standard development, full Tide protocol | Yes | **No** — built-in defaults |
 | `tideorg/tidecloak-stg-dev:latest` | **Not supported** — internal pre-release build | — | — |
 
-**Role mapper fallback (defensive)**: The Tide role/claim mappers in the shipped realm templates use **stock Keycloak mapper types** — `oidc-usermodel-attribute-mapper` (for `tideUserKey`/`vuid`) and `oidc-hardcoded-claim-mapper` (for `t.uho`). There is no distinct `tide-roles-mapper` provider in the extension repos on `main`; a mapper by that instance name only appears in some external app realm.json files. A prior note claimed a `tide-roles-mapper` protocolMapper provider exists on the prod image but is silently dropped on the staging image — this could not be confirmed against source and image contents were not inspected. Treat it as unverified. As a defensive measure, include standard Keycloak role mappers (`realm roles`, `client roles`) in the template so token role claims survive regardless of image.
+### ⚠️ `tide-roles-mapper` does not exist. Never put it in a realm.json.
+
+**There is no Tide-specific protocol-mapper provider at all** — not on the production image, not on
+staging. MEASURED against `tideorg/tidecloak-dev:latest` (the production image), 2026-08-11:
+
+```bash
+GET /admin/serverinfo   ->   protocolMapperTypes["openid-connect"]
+# 24 providers registered. NONE contains "tide".
+```
+
+**The failure mode is silent.** Importing a realm whose client declares it:
+
+```
+POST /admin/realms   (client.protocolMappers[].protocolMapper = "tide-roles-mapper")
+→ 201 Created                      # no error, no warning
+→ GET .../protocol-mappers/models  # the mapper is simply NOT THERE — silently dropped
+```
+
+So a realm.json referencing it imports "successfully" and the mapper does not exist. If anything
+depended on it for role claims, roles would be missing from tokens with **nothing anywhere saying
+why** — and the natural conclusion ("IGA isn't propagating roles") sends you somewhere unrelated.
+
+⚠️ **This corrects a long-standing pack claim.** A prior finding (LEARNINGS-batch-004 L-06, RB-024)
+said the provider exists on the prod image and is dropped only on staging. **Disproved** — it is
+absent on prod too. Another (LEARNINGS-batch-006) prescribed *using* `tide-roles-mapper` to fix
+missing role claims; that instruction is wrong and would have produced exactly the symptom it was
+meant to cure.
+
+#### How claims actually reach the token — all STOCK provider types
+
+| Claim(s) | Comes from | Mapper type |
+|---|---|---|
+| `realm_access.roles` | the default **`roles`** client scope | `oidc-usermodel-realm-role-mapper` |
+| `resource_access.<client>.roles` | the default **`roles`** client scope | `oidc-usermodel-client-role-mapper` |
+| `tideuserkey` | the **`tide-claims`** scope (provisioned by `setUpTideRealm`) | `oidc-usermodel-attribute-mapper` |
+| `vuid` | the **`tide-claims`** scope | `oidc-usermodel-attribute-mapper` |
+| `t\.uho` (home ORK URL) | the **`tide-claims`** scope | `oidc-hardcoded-claim-mapper` |
+
+VERIFIED on live Tide realms: `roles` is a **default** client scope carrying `realm roles` and
+`client roles`, and `setUpTideRealm` provisions a `tide-claims` scope holding `tide-uho`,
+`Tide User Key` and `Tide vuid` — every one a stock Keycloak provider.
+
+Declaring the `tideUserKey`/`vuid` attribute mappers inline on the client (as the pack templates do)
+also works and is harmless belt-and-braces. Declaring role mappers inline is likewise fine. **What is
+never fine is naming a `tide-*` provider type.** AP-80.
 
 **Always use `tideorg/tidecloak-dev:latest`.** Despite the `-dev` suffix this IS the production image, and it is the only image the pack supports — for development and production alike. It has built-in ORK/threshold defaults and does not need `KC_HOSTNAME`, `SYSTEM_HOME_ORK`, `USER_HOME_ORK`, `THRESHOLD_T`, `THRESHOLD_N`, or `PAYER_PUBLIC`; supplying them by hand risks a broken threshold config. Do **not** use `tideorg/tidecloak-stg-dev` — it is an internal pre-release build.
 
@@ -78,10 +122,16 @@ For projects that do not use the init script, follow the manual sequence below. 
 sudo docker run -d --name tidecloak \
   -v ./data:/opt/keycloak/data/h2 \
   -p 8080:8080 \
-  -e KC_BOOTSTRAP_ADMIN_USERNAME=admin \
-  -e KC_BOOTSTRAP_ADMIN_PASSWORD=password \
+  -e KC_BOOTSTRAP_ADMIN_USERNAME="${KC_BOOTSTRAP_ADMIN_USERNAME:-admin}" \
+  -e KC_BOOTSTRAP_ADMIN_PASSWORD="$KC_BOOTSTRAP_ADMIN_PASSWORD" \
   tideorg/tidecloak-dev:latest
 ```
+
+> ⚠️ **The admin password comes from `.env`, never from a script or the command line.** Copy
+> `templates/shared/.env.template` → `.env` (gitignored), set `KC_BOOTSTRAP_ADMIN_PASSWORD`, and let the
+> shell expand it as above. A literal `KC_BOOTSTRAP_ADMIN_PASSWORD=password` is a hardcoded credential
+> that also lands in shell history, CI logs and `ps` output (AP-41). Bootstrap scripts must **fail
+> loudly** when it is unset — a default password is a hardcoded credential with extra steps.
 
 ---
 
@@ -92,7 +142,7 @@ sudo docker run -d --name tidecloak \
 | Variable | Purpose | Example |
 |----------|---------|---------|
 | `KC_BOOTSTRAP_ADMIN_USERNAME` | Initial admin user | `admin` |
-| `KC_BOOTSTRAP_ADMIN_PASSWORD` | Initial admin password | `password` |
+| `KC_BOOTSTRAP_ADMIN_PASSWORD` | Initial admin password — **from `.env`, no default** | *(unset → script must fail)* |
 
 ### Tide protocol — DO NOT SET THESE
 
@@ -228,11 +278,15 @@ curl -s -o /dev/null -w '%{http_code}\n' \
 
 #### Assert Tide mode; do not just stamp it
 
-`setUpTideRealm` sets `iga.attestor=tide` on current builds, so the older "stamp `iga.attestor` first"
-step is usually already satisfied — and an instruction that is already satisfied teaches nothing. What
-matters is catching the build where it is **not** set, because Tide vs Tideless is the difference
+**Do not assume either way — the field is set on some builds and not others.** Measured on
+`tideorg/tidecloak-dev:latest`: `iga.attestor=tide` was present after `setUpTideRealm` on three realms
+(2026-08-10), and **absent** after a successful `setUpTideRealm` on another (2026-08-11, free-tier
+subscription created). So a bootstrap that only *stamps* papers over a build where the field means
+something new, and one that only *asserts* hard-fails on a build that does not set it.
+
+**The correct shape is assert → stamp if absent → re-assert.** Tide vs Tideless is the difference
 between governance approvals being cryptographically sealed and being enforced by server logic the
-host controls (GAP-065, and see `hosting-options.md`):
+host controls (GAP-065, and see `hosting-options.md`), so this is not cosmetic:
 
 ```bash
 curl -sf "$URL/admin/realms/$REALM" -H "Authorization: Bearer $TOKEN" \
@@ -240,10 +294,12 @@ curl -sf "$URL/admin/realms/$REALM" -H "Authorization: Bearer $TOKEN" \
       assert a.get("iga.attestor")=="tide", f"TIDELESS mode: {a.get(\"iga.attestor\")}"'
 ```
 
-If absent, stamp it (GET then PUT `/admin/realms/{realm}`) and re-assert. Note `toggle-iga` alone does
-**not** set it — on a realm enabled without licensing, `iga.attestor` stayed unset (measured).
+If absent, stamp it (GET then PUT `/admin/realms/{realm}`) and **re-assert**. Note `toggle-iga` alone
+does **not** set it either — on a realm enabled without licensing, `iga.attestor` stayed unset
+(measured).
 
-VERIFIED 2026-08-10 (LEARNINGS-tidewater-001 L-01/L-02, extended by direct measurement).
+VERIFIED 2026-08-10 (LEARNINGS-tidewater-001 L-01/L-02, extended by direct measurement); the
+"not always set by `setUpTideRealm`" counter-example is LEARNINGS-deploy-gate-001 L-05, 2026-08-11.
 
 ### Approve/commit change requests
 

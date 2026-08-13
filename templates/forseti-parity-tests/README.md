@@ -56,32 +56,39 @@ options are **skipped**, not silently passed — but read what each one buys bef
 | Deployed `contractId` == fresh SHA-512 of the source | "Signing mysteriously broke" instead of "you edited the contract and did not redeploy" (AP-19) |
 | Your own `sourceAssertions` | Someone rewires a threshold and the UI keeps teaching the old rules |
 
-## The blocked-namespace scan reads comments too, on purpose
+## The blocked-namespace scan strips comments — correctly
 
-A doc comment saying *"the contract cannot call `DateTime.UtcNow`"* **will fail the scan.** That is
-deliberate:
+A doc comment saying *"the contract cannot call `DateTime.UtcNow`"* is **reported as a note and does
+not fail the check.** A contract that documents its own restrictions is correct, and failing it would
+only teach people to ignore the checker.
 
-> Stripping comments first would be more convenient and is the wrong trade. A naive stripper treats
-> the `//` inside a string literal as a comment start and can swallow the rest of the line, hiding a
-> **real** call. A false positive costs you one reworded comment; a false negative costs an operator
-> approval and a `BadPolicy.ForbiddenCall` at upload.
+The obvious shortcut — strip everything after `//` — would be **unsafe**: the `//` inside a string
+literal such as `"http://example.com"` starts a fake comment and swallows the rest of the line, which
+can hide a **real** call after it. A false positive costs one reworded comment; a false negative costs
+an operator approval and a `BadPolicy.ForbiddenCall` at upload.
 
-The failure report marks each hit `[in a COMMENT — reword it]` or `<-- REAL CALL SITE`, so telling
-them apart takes a second. **Reword the comment; do not weaken the scan.**
+So the scanner tracks string state — `"..."` with escapes, verbatim `@"..."` where `""` is an escaped
+quote, and `'...'` char literals — and treats `//` and `/* */` as comments **only outside a string**.
+With a correct stripper you get both: comment mentions are tolerated, and nothing real is hidden.
+
+> An earlier revision of this template failed on comment mentions and argued that stripping was
+> inherently unsafe. That identified a real hazard and drew the wrong conclusion — the hazard is
+> specific to a *naive* stripper. Corrected 2026-08-11 (LEARNINGS-deploy-gate-001 L-07).
 
 ## Verified behaviour
 
 Run against a real deployed contract (`~/music-license`, `OriginAttestation.cs`, whose policy is
-threshold-signed on mainnet), 2026-08-10:
+threshold-signed on mainnet):
 
-- 14 pass, 3 skipped (unconfigured wire/ladder options)
-- the sandbox scan flagged 3 hits, **all three in a doc comment**, correctly labelled
-- the deployed-policy freshness check **passed** against the real signed policy
-- after rewording those comments, the freshness check then **failed and printed both hashes** —
-  because editing the contract at all, even a comment, changes its SHA-512 and invalidates the
-  deployed policy
+- **15 pass, 0 fail, 3 skipped** (unconfigured wire/ladder options)
+- the sandbox scan reported 3 comment mentions as notes and correctly found **no code violations**
+- a contract with `var u = "http://x"; var t = DateTime.UtcNow;` on one line still **fails** — the
+  string literal does not hide the real call
+- the deployed-policy freshness check **passed** against the real signed policy, then **failed and
+  printed both hashes** once the contract's comments were reworded — because editing a contract at
+  all, even a comment, changes its SHA-512 and invalidates the deployed policy
 
-That last pair is the whole thesis in one run: the scan is strict, and the contract's identity is its
+That last pair is the thesis in one run: the scan does not cry wolf, and a contract's identity is its
 exact bytes.
 
 ## Related

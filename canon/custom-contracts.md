@@ -52,12 +52,25 @@ Built-in contracts only validate approvers (or tags). They do NOT validate the e
 ## Contract Template
 
 Every contract must:
-- Use namespace `Ork.Forseti.Sdk`
 - Have a class named `Contract`
 - Implement `IAccessPolicy`
+- Open with **all six** using directives below
+
+### ⚠️ SIX using directives are required, not one
+
+`using Ork.Forseti.Sdk;` alone does not compile a real contract. `GetValue`/`TryGetValue` are
+extension methods, `Utils` lives in `Cryptide.Tools`, `ctx.Policy`'s enums live in
+`Ork.Shared.Models.Contracts`, and you need `System.Text` for `Encoding` and
+`System.Collections.Generic` for the `List<string>` you will use to thread state. Copy the block
+verbatim — both working reference contracts open with exactly these, in this order:
 
 ```csharp
 using Ork.Forseti.Sdk;
+using Cryptide.Tools;
+using Ork.Shared.Models.Contracts;
+using System;
+using System.Collections.Generic;
+using System.Text;
 
 public class Contract : IAccessPolicy
 {
@@ -125,6 +138,143 @@ public PolicyDecision ValidateData(DataContext ctx)
 }
 ```
 
+### `ctx.Data` is a nested `ReadOnlyMemory<byte>` — not a collection, not a flat buffer
+
+This is the single most commonly invented API in a Forseti contract, and the ORK's compiler is the
+first thing that tells you. There is **no `DataItem` type**. `ctx.Data` is a `ReadOnlyMemory<byte>`
+holding a **nested TideMemory structure**, walked with two extension methods:
+
+```csharp
+ReadOnlyMemory<byte> data = ctx.Data;
+
+var inner = data.GetValue(1);                              // positional child
+for (int i = 2; inner.TryGetValue(i, out var tag); i++)    // probe until absent
+{
+    DataTags.Add(Encoding.UTF8.GetString(tag.Span));       // leaf -> text via .Span
+}
+```
+
+| You might write | Reality |
+|---|---|
+| `foreach (DataItem d in ctx.Data)` | ❌ no such type; `ReadOnlyMemory<byte>` is not enumerable |
+| `ctx.Data[0]` | ❌ no indexer — use `data.GetValue(0)`, or `.Span[0]` for a raw byte |
+| `byte[] b = ctx.Data` | ❌ no implicit conversion in that direction |
+| `Encoding.UTF8.GetString(ctx.Data)` | ❌ pass a `Span`: `GetString(leaf.Span)` |
+
+VERIFIED against two working, deployed contracts (`forseti-crypto-quickstart`,
+`tidecloak-test-cases`), both vendored in `sources/`.
+
+#### Encrypt and decrypt have DIFFERENT payload layouts
+
+The tag offsets are not the same, and nothing in the request tells you except `ctx.RequestId`:
+
+| Request | Outer layout | Tags start at |
+|---|---|---|
+| `PolicyEnabledEncryption:1` | `GetValue(0)` = time, `GetValue(1)` = first encryption request | index **2** of the inner value |
+| `PolicyEnabledDecryption:1` | `GetValue(0)` = first decryption request | index **3** of the inner value |
+
+```csharp
+if (ctx.RequestId == "PolicyEnabledEncryption:1")
+{
+    var time  = data.GetValue(0);
+    var first = data.GetValue(1);
+    for (int i = 2; first.TryGetValue(i, out var tag); i++) { /* tags */ }
+}
+else if (ctx.RequestId == "PolicyEnabledDecryption:1")
+{
+    var first = data.GetValue(0);
+    for (int i = 3; first.TryGetValue(i, out var tag); i++) { /* tags */ }
+}
+else return PolicyDecision.Deny("This contract handles only encryption/decryption requests");
+```
+
+Reading the wrong offset silently collects the wrong strings as "tags" — a contract that then allows
+or denies on garbage. **Branch on `ctx.RequestId` first**, and deny anything you did not expect.
+
+To reject multi-payload requests, probe the **outer** structure — and note the asymmetry, which
+follows from the layouts above: encryption's second item is at outer index 2, decryption's at 1.
+
+```csharp
+if (data.TryGetValue(2, out var _)) return PolicyDecision.Deny("one item per encryption");  // encrypt
+if (data.TryGetValue(1, out var _)) return PolicyDecision.Deny("one item per decryption");  // decrypt
+```
+
+#### `ctx.Policy` — assert the policy shape the contract assumes
+
+`DataContext` also exposes the governing policy, and both references use it to refuse a policy that
+does not match their design:
+
+```csharp
+if (ctx.Policy.ExecutionType != ExecutionType.PRIVATE ||
+    ctx.Policy.ApprovalType  != ApprovalType.EXPLICIT)
+    return PolicyDecision.Deny("Policy used against this contract must be EXPLICIT PRIVATE");
+```
+
+Worth copying: a contract written for a quorum is dangerous under `IMPLICIT`, and this is a one-line
+guard against being deployed the wrong way.
+
+#### A decision cannot be inspected
+
+There is **no `IsAllowed`** on `PolicyDecision` or on the `Decision` chain. `Decision.RequireX(...)`
+chains **return** the decision — you return it, you never interrogate it:
+
+```csharp
+return Decision.RequireNotExpired(executor).RequireRole(executor, Role);   // ✅
+if (someDecision.IsAllowed) { … }                                          // ❌ no such member
+```
+
+If you need branching, branch on your own state before building the decision (as the Cola reference
+does with `ApproverSuccessfulRole`).
+
+#### `ValidateApprovers` is optional
+
+`IAccessPolicy` requires only `ValidateData`. The `forseti-crypto-quickstart` reference implements
+`ValidateData` + `ValidateExecutor` and **omits `ValidateApprovers` entirely**. Implement it only when
+you need a quorum — and remember it runs **only** under `ApprovalType.EXPLICIT`.
+
+⚠️ Because it is optional, a **misspelled** override (`ValidateExecuter`) compiles and silently never
+runs. Pin method presence with the parity tests
+([templates/forseti-parity-tests/](../templates/forseti-parity-tests/)).
+
+### Per-resource capabilities are IGA-governed — so binding to one costs an approval per share
+
+A natural design for fine-grained E2EE is a **per-resource capability**: the contract demands proof
+that the caller holds a capability for *this specific* note/record, so access is enforced by the
+network rather than by the app.
+
+The catch is issuance. Anything the contract can verify has to be something the **network** knows
+about, and creating it is a **governed change** — so on an IGA realm **every share needs a human
+enclave approval**. That is fine for a handful of long-lived grants and unusable for ordinary sharing.
+
+**The honest trade-off, and how to keep the option open:**
+
+| Enforced by | What the contract validates | Cost per share |
+|---|---|---|
+| **Network** (per-resource capability) | that the caller holds a capability naming this resource | one enclave approval |
+| **Contract + app ACL** (usual choice) | operation type, tag structure, id format, participation role | none |
+
+The workable pattern is to put the **structural** checks in the contract — which cannot be bypassed by
+a compromised backend — and leave per-resource access to the app's ACL, then **say so explicitly**.
+Keep the capability check behind a single parameter (e.g. an empty `ReadCapabilityTemplate`) so
+flipping one string re-enables full binding if per-resource capabilities ever become cheaply issuable:
+
+```csharp
+[PolicyParam(Required = false, Description = "Capability template; empty disables per-resource binding")]
+public string ReadCapabilityTemplate { get; set; }
+
+// ...
+if (!string.IsNullOrEmpty(ReadCapabilityTemplate))
+{
+    // network-enforced per-resource binding
+}
+// else: structural checks only — per-resource access is enforced by the app ACL (documented limit)
+```
+
+⚠️ **Document the limit where a reader will hit it, not only in an architecture note.** A contract that
+looks like it binds per-resource access but does not is worse than one that never claimed to — and the
+gap is invisible in the contract's *name*. State it in the contract source, in the app's docs, and in
+any security write-up.
+
 ### Identity in Contracts: the VUID, never the JWT subject
 
 A contract asserting WHO acted needs an identifier both sides can see. The OIDC `sub` is **not**
@@ -174,16 +324,30 @@ in `ValidateExecutor`, and DENY if the field was never set. "The identity check 
 only mean refuse:
 
 ```csharp
+using Ork.Forseti.Sdk;
+using Cryptide.Tools;
+using Ork.Shared.Models.Contracts;
+using System;
+using System.Collections.Generic;
+using System.Text;
+
 public class Contract : IAccessPolicy
 {
     private string _claimedVuid = null;   // captured in ValidateData, read in ValidateExecutor
 
     public PolicyDecision ValidateData(DataContext ctx)
     {
-        _claimedVuid = ExtractVuid(ctx.Data);            // your parsing, fixed offset
+        _claimedVuid = ExtractVuid(ctx.Data);
         if (string.IsNullOrEmpty(_claimedVuid))
             return PolicyDecision.Deny("No creator vuid in payload");
         return PolicyDecision.Allow();
+    }
+
+    // Your parsing. ctx.Data is a nested ReadOnlyMemory<byte>: walk it with GetValue/TryGetValue
+    // and read a leaf as text via .Span. Adjust the index to wherever YOUR encoder writes the vuid.
+    private static string ExtractVuid(ReadOnlyMemory<byte> data)
+    {
+        return data.TryGetValue(0, out var leaf) ? Encoding.UTF8.GetString(leaf.Span) : null;
     }
 
     public PolicyDecision ValidateExecutor(ExecutorContext ctx)
@@ -546,25 +710,98 @@ so the constructor takes the **unwrapped** name and version while the policy dec
 > documented wrong turn (L-13). Assert `request.id() === policy.modelIds[0]` and let the code
 > settle it. GAP-072.
 
-**Two equivalent constructions, and this is why L-13 looked self-contradictory.** The wire `modelId`
-is whatever `request.id()` returns (`BaseTideRequest.encode()` writes `"modelId": te.encode(this.id())`):
+### TWO consumers read the request, and they key off DIFFERENT fields
 
-| Construction | `id()` | Resulting model id |
+This is the whole reason the wrapper question is confusing, and it is the thing to understand before
+choosing a construction.
+
+| Consumer | Reads | Source |
 |---|---|---|
-| `new BasicCustomRequest("MyModel", "1", …)` — `asgard-tide` | `` `BasicCustom<${name}>:BasicCustom<${version}>` `` | `BasicCustom<MyModel>:BasicCustom<1>` |
-| `new BaseTideRequest("BasicCustom<MyModel>", "BasicCustom<1>", …)` | `name + ":" + version` | `BasicCustom<MyModel>:BasicCustom<1>` |
+| **ORK network** | `request.id()` | `BaseTideRequest.encode()` writes `"modelId": te.encode(this.id())` |
+| **Enclave approval card** | the raw `name` / `version` **fields** | `ModelRegistry.getHumanReadableModelBuilder` |
 
-Both produce the **same** id, so passing **pre-wrapped** name/version to `BaseTideRequest` is
-equivalent to passing **raw** name/version to `BasicCustomRequest`. That second form is a legitimate
-workaround when `asgard-tide` is not installed — note `BasicCustomRequest` is **not** exported from
-the `@tideorg/js` Models barrel (it lives in `dist/Models/CustomTideRequest.js`, unexported), so
-`asgard-tide` really is the only import path for it.
+VERIFIED, `@tideorg/js/dist/Models/ModelRegistry.js`:
 
-✅ **VERIFIED IN PRODUCTION**: a policy with `modelId` `BasicCustom<OriginAttestation>:BasicCustom<1>`,
-built via `BaseTideRequest` with pre-wrapped name/version, was accepted and threshold-signed by the
-ORK network, and attestations were subsequently signed under it (reference app
-`attested-provenance-registry`, 2026-08-07). The `request.id() === policy.modelIds[0]` assertion is
-the invariant that matters; which constructor you use is not.
+```javascript
+const r = BaseTideRequest.decode(data);              // a BaseTideRequest, NOT your subclass
+const nameMatch    = r.name.match(/^Custom<(.*)>$/)?.[1];
+const versionMatch = r.version.match(/^Custom<(.*)>$/)?.[1];
+if (nameMatch && versionMatch) return new CustomSignRequestBuilder(data, reqId, context);
+const c = modelBuildersMap[r.id()];                  // r.id() here is name + ":" + version
+if (!c) throw new TideError({ code: MODEL_UNKNOWN_MODEL, … });
+```
+
+Two consequences that are not obvious:
+
+- `decode` returns a **`BaseTideRequest`**, so `r.id()` is `name + ":" + version` — **not** your
+  subclass's wrapped `id()`. The card path never sees `BasicCustomRequest.id()`.
+- the regex is **anchored**, so `BasicCustom<X>` does **not** match `/^Custom<(.*)>$/` —
+  `BasicCustom<` does not start with `Custom<`.
+
+**So the raw `name` must be `Custom<...>`-wrapped for the card to render, while `id()` must be
+`BasicCustom<...>`-shaped for the ORKs to resolve the model.** Those are different fields, and one
+request can satisfy both.
+
+### ⚠️ CORRECTION: the two constructions are NOT interchangeable
+
+An earlier revision of this file called these "two equivalent constructions" because both yield the
+same `id()`. **That was wrong** — they differ in the raw `name` field, which is exactly what the card
+reads:
+
+| Construction | raw `name` encoded | `id()` | ORK | Card |
+|---|---|---|---|---|
+| `new BasicCustomRequest("MyModel", "1", …)` | `MyModel` | `BasicCustom<MyModel>:BasicCustom<1>` | ✅ | ❌ |
+| `new BaseTideRequest("BasicCustom<MyModel>", "BasicCustom<1>", …)` | `BasicCustom<MyModel>` | `BasicCustom<MyModel>:BasicCustom<1>` | ✅ | ❌ |
+| **`new BasicCustomRequest("Custom<MyModel>", "Custom<1>", …)`** | `Custom<MyModel>` | `BasicCustom<Custom<MyModel>>:BasicCustom<Custom<1>>` | ✅ | ✅ |
+
+The first two produce an identical `modelId` and **both fail the approval card** — they only look
+equivalent because the ORK path is the only one most apps exercise.
+
+### The rule
+
+> **`ApprovalType.IMPLICIT`** (no card): either of the first two forms works. This is the shape
+> VERIFIED in production — `BasicCustom<OriginAttestation>:BasicCustom<1>` was accepted and
+> threshold-signed, with attestations signed under it (reference app
+> `attested-provenance-registry`, 2026-08-07).
+>
+> **`ApprovalType.EXPLICIT`** (a card is built, and it is the **only** way `ValidateApprovers` runs —
+> i.e. the only way to have a multi-approver contract at all): construct with **`BasicCustomRequest`**
+> and pass the name/version **pre-wrapped in `Custom<...>`**. The policy then declares the
+> double-wrapped `BasicCustom<Custom<X>>:BasicCustom<Custom<1>>`.
+
+`BaseTideRequest` cannot substitute in the EXPLICIT case: it writes the already-wrapped name into the
+raw field, so `id()` loses the outer `BasicCustom<...>` and the ORKs stop resolving it.
+
+**Assert both consumers**, because each failure costs an approval and neither error names the other:
+
+```typescript
+if (!/^Custom<.+>$/.test(MODEL_NAME))                        throw new Error('card will not render');
+if (!/^BasicCustom<.+>:BasicCustom<.+>$/.test(request.id())) throw new Error('ORKs will not resolve it');
+if (request.id() !== policy.modelIds[0])                     throw new Error('model id drift');
+```
+
+### Status: what is measured vs. predicted
+
+| Claim | Status |
+|---|---|
+| `BasicCustom<X>:BasicCustom<1>` is accepted by the ORKs (IMPLICIT) | ✅ **NETWORK-VERIFIED** 2026-08-07 |
+| A bare `Custom<X>:Custom<1>` model id is **rejected** by all 20 ORKs | ✅ **NETWORK-VERIFIED** 2026-08-11 — cost one enclave approval |
+| The card requires the raw `name` to match `/^Custom<(.*)>$/` | ✅ **SOURCE-VERIFIED** (`ModelRegistry.js`) |
+| `BasicCustom<Custom<X>>:BasicCustom<Custom<1>>` is accepted by the ORKs | ⚠️ **PREDICTED, NOT YET NETWORK-VERIFIED** — it satisfies the `BasicCustom<…>` shape the ORKs are known to accept, but the double wrap itself has not been signed |
+
+So GAP-072 is **narrowed, not closed**: the dead end is now measured, the mechanism is source-verified,
+and the recommended shape is a prediction awaiting one successful EXPLICIT deployment. Treat the
+double wrap as the best-supported choice and keep the two assertions above so a wrong guess fails
+client-side.
+
+`BasicCustomRequest` is **not** exported from the `@tideorg/js` Models barrel (it lives in
+`dist/Models/CustomTideRequest.js`, unexported), so `asgard-tide` is its only import path — install it
+rather than reaching for `BaseTideRequest` when the flow is EXPLICIT.
+
+⚠️ **Do not copy keylessh's constructor arguments.** It passes `name = "BasicCustom<SSH>"` into
+`BasicCustomRequest`, yielding `BasicCustom<BasicCustom<SSH>>:BasicCustom<BasicCustom<1>>`. The
+pre-wrap is right; the **inner token is wrong** — it must be `Custom<...>`, not `BasicCustom<...>`.
+keylessh is IMPLICIT, so no card is ever built and the difference never surfaces there (AP-77).
 
 **Custom models carry a display contract too**: `CustomSignRequestBuilder` does
 `JSON.parse(draft[0])` and reads `humanReadableName` and `additionalInfo`. A custom request whose

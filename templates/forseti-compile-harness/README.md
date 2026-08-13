@@ -42,7 +42,7 @@ success and proves nothing.
 | Check | Catches |
 |---|---|
 | Compile against stubs | wrong context property (`ctx.Data` in `ValidateExecutor`), `ctx.Approvers` vs `ctx.Dokens`, `PolicyDecision.Approve()`, typos, wrong signatures, unimplemented interface members |
-| Sandbox scan (grep) | `System.IO`, `System.Net`, `System.Threading`, `System.Reflection`, `System.Diagnostics`, `System.Console`, `DateTime.Now`, `Guid.NewGuid`, `Random` |
+| Sandbox scan (comment-aware) | `System.IO`, `System.Net`, `System.Threading`, `System.Reflection`, `System.Diagnostics`, `System.Console`, `DateTime.Now/UtcNow`, `Guid.NewGuid`, `Random` — **in code**; comment mentions are reported as `WARN`, not failures |
 | Structure | missing `using Ork.Forseti.Sdk;`, nothing implementing `IAccessPolicy`, `PolicyDecision.Approve()` |
 | `contractId` | prints the SHA-512 **uppercase** hex — the ORKs compare it case-sensitively |
 
@@ -51,7 +51,15 @@ success and proves nothing.
 Be clear about the boundary; a pass here is not a pass overall.
 
 - **IL vetting.** Blocked namespaces *compile fine* and fail at upload with
-  `BadPolicy.ForbiddenCall`. The grep in `check.sh` is a crude proxy, not the real vetting pass.
+  `BadPolicy.ForbiddenCall`. `scan-sandbox.py` is a proxy for that pass, not the pass itself.
+
+  It is **not** a grep. A grep matches comments, so a contract that merely documents the sandbox
+  restrictions would fail its own pre-flight — and the obvious workaround (delete the comment)
+  removes documentation instead of fixing anything. `scan-sandbox.py` strips comments with a
+  C#-aware scanner that respects string literals, so `"http://x"` cannot hide a real call after it,
+  and it reports comment mentions as `WARN` rather than `FAIL`. VERIFIED against all three cases:
+  comment-only → pass with warnings; real violation → fail; string-literal trap → fail.
+  (LEARNINGS-deploy-gate-001 L-07)
 - **Contract logic.** Every stub returns a fixed value. A passing build says the contract compiles,
   never that it decides correctly.
 - **Gas.** The 50,000 limit is a runtime property.
@@ -59,15 +67,59 @@ Be clear about the boundary; a pass here is not a pass overall.
   transport, whether `contractId` matches what you submit, vuid-vs-subject. Those are in the
   [pre-flight checklist](../../canon/custom-contracts.md#pre-flight-checklist-all-client-side-no-network).
 
-## Stub fidelity — read this before trusting a PASS
+## Stub fidelity — self-tested, not asserted
 
-`Stubs.cs` is **ASSUMED** shapes, derived from `canon/custom-contracts.md` (itself VERIFIED against
-`Ork.Forseti.Sdk` for `IAccessPolicy`, the context property names, `DokenDto`, and the `Decision`
-builder).
+`Stubs.cs` is derived from **two working, deployed contracts** vendored in the pack, not from prose:
 
-The failure mode that matters: **a stub more permissive than the real SDK yields a false PASS.** The
-inverse — a stub narrower than reality — yields a false FAIL on correct code, which is annoying but
-safe. L-17 hit exactly this with `Cryptide.Tools.Utils.GetEpochSeconds` stubbed at the wrong shape.
+| Reference | Source |
+|---|---|
+| `reference/QuickstartContract.cs` | `sources/example-app-forseti-crypto-quickstart/.../forsetiContract.ts` |
+| `reference/ColaContract.cs` | `sources/example-app-tidecloak-test-cases/.../forsetiDecryptionContract.ts` |
+
+```bash
+./check.sh --self-test     # compiles both references + asserts the must-fail fixtures still fail
+```
+
+The failure mode that matters: **a stub more permissive than the real SDK yields a false PASS** — the
+contract compiles here and fails on the ORK after an operator approval has been spent. The inverse (a
+stub narrower than reality) yields a false FAIL, which is annoying but safe.
+
+**Positive fixtures alone cannot detect over-permissiveness**, and this is worth internalising:
+`byte[]` is *implicitly convertible* to `ReadOnlyMemory<byte>`, so when `ctx.Data` was wrongly typed
+`byte[]`, **both reference contracts still compiled**. Nor does a single must-fail file with several
+errors help — it keeps failing whichever protection you lose, so it reports nothing.
+
+So `reference/mustfail/` holds **one discriminator per file**, each asserted to fail:
+
+| Fixture | Catches a stub that wrongly allows |
+|---|---|
+| `data-is-not-enumerable.cs` | `foreach` over `ctx.Data` (the `DataItem` misconception) |
+| `data-has-no-indexer.cs` | `ctx.Data[0]` — i.e. `ctx.Data` typed as `byte[]` |
+| `executor-has-no-data.cs` | `ctx.Data` on `ExecutorContext` |
+| `decision-has-no-isallowed.cs` | inspecting a `Decision` chain |
+| `policydecision-has-no-isallowed.cs` | inspecting a `PolicyDecision` |
+| `no-policydecision-approve.cs` | `PolicyDecision.Approve()` |
+
+Verified: reverting `ctx.Data` to `byte[]`, adding `IsAllowed`, or adding `Data` to `ExecutorContext`
+each make the self-test fail with the specific fixture named.
+
+### A prior revision of these stubs was wrong
+
+It typed `ctx.Data` as `byte[]` and gave `PolicyDecision` a public `IsAllowed`. Both were invented.
+A `byte[]` stub is **worse than no stub**: contracts written against it (indexing, `.Length`,
+`foreach`) compile locally and fail on the ORK. That is precisely the false PASS this harness exists
+to prevent, and it is why the self-test now exists. Corrected 2026-08-11.
+
+## Checking the pack's own examples
+
+```bash
+./check-docs.sh          # compiles every full contract example in canon/, playbooks/, reference-apps/
+```
+
+The pack's simplified examples are where invented shapes come from. This sweep found three broken
+ones — a `ctx.Data == null` comparison (`ReadOnlyMemory<byte>` is a struct: `error CS0019`), a snippet
+missing its using block, and an example using a `.And(...)` combinator and a 4-argument
+`RequireAnyWithRole` that no reference supports. Run it after editing any contract example.
 
 So: when the real SDK contradicts a stub, **fix the stub and re-run**, and prefer copying real
 signatures over guessing. Treat `Stubs.cs` as a living mirror of the SDK, not a fixed artifact.
@@ -80,8 +132,10 @@ the other fails depending on where in the chain it appears.
 ## Verifying the harness itself
 
 ```bash
+./check.sh --self-test                    # exit 0 — stubs match the reference SDK surface
 ./check.sh examples/PassingContract.cs    # exit 0
 ./check.sh examples/FailingContract.cs    # exit 1 — three shape errors
+./check-docs.sh                           # exit 0 — every pack example compiles
 ```
 
 `examples/FailingContract.cs` reproduces the real mistakes: `ctx.Data` in `ValidateExecutor`,

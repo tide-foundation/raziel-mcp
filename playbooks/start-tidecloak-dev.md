@@ -54,10 +54,16 @@ No ORK/threshold/payer env vars are needed — the image ships with working defa
 sudo docker run -d --name tidecloak \
   -v "$(pwd)/data:/opt/keycloak/data/h2" \
   -p 8080:8080 \
-  -e KC_BOOTSTRAP_ADMIN_USERNAME=admin \
-  -e KC_BOOTSTRAP_ADMIN_PASSWORD=password \
+  -e KC_BOOTSTRAP_ADMIN_USERNAME="${KC_BOOTSTRAP_ADMIN_USERNAME:-admin}" \
+  -e KC_BOOTSTRAP_ADMIN_PASSWORD="$KC_BOOTSTRAP_ADMIN_PASSWORD" \
   tideorg/tidecloak-dev:latest
 ```
+
+> ⚠️ **The admin password comes from `.env`, never from a script or the command line.** Copy
+> `templates/shared/.env.template` → `.env` (gitignored), set `KC_BOOTSTRAP_ADMIN_PASSWORD`, and let the
+> shell expand it as above. A literal `KC_BOOTSTRAP_ADMIN_PASSWORD=password` is a hardcoded credential
+> that also lands in shell history, CI logs and `ps` output (AP-41). Bootstrap scripts must **fail
+> loudly** when it is unset — a default password is a hardcoded credential with extra steps.
 
 ### Step 4: Wait for readiness
 

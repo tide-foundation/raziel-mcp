@@ -112,18 +112,31 @@ from every ORK — **after** the enclave approval (AP-64, GAP-069).
 
 ## Signing request identity
 
-The policy's `modelId` and the request's identity must agree, and there are two equivalent ways to
-get there:
+The policy's `modelId` and the request's identity must agree. **Two consumers read the request and key
+off different fields**, so the right construction depends on `approvalType`:
 
-| Construction | `id()` returns | Model id |
-|---|---|---|
-| `new BasicCustomRequest("Name", "1", ...)` from `asgard-tide` | `BasicCustom<Name>:BasicCustom<1>` | same |
-| `new BaseTideRequest("BasicCustom<Name>", "BasicCustom<1>", ...)` | `name + ":" + version` | same |
+| Construction | raw `name` encoded | `id()` (what the ORKs read) | ORK | Approval card |
+|---|---|---|---|---|
+| `new BasicCustomRequest("Name", "1", …)` | `Name` | `BasicCustom<Name>:BasicCustom<1>` | ✅ | ❌ |
+| `new BaseTideRequest("BasicCustom<Name>", "BasicCustom<1>", …)` | `BasicCustom<Name>` | `BasicCustom<Name>:BasicCustom<1>` | ✅ | ❌ |
+| `new BasicCustomRequest("Custom<Name>", "Custom<1>", …)` | `Custom<Name>` | `BasicCustom<Custom<Name>>:BasicCustom<Custom<1>>` | ✅ | ✅ |
 
-`BaseTideRequest.id()` is `name + ":" + version`, and the wire `modelId` is `id()`. So passing
-**pre-wrapped** name/version to `BaseTideRequest` is equivalent to passing **raw** name/version to
-`BasicCustomRequest`. The reference app uses the second form because `BasicCustomRequest` is not
-exported from the `@tideorg/js` Models barrel — it lives in `asgard-tide`.
+**This scenario uses `ApprovalType.IMPLICIT`, so no card is built and the second form is correct** —
+and it is the form NETWORK-VERIFIED here (`BasicCustom<OriginAttestation>:BasicCustom<1>`, accepted and
+threshold-signed, with attestations signed under it).
 
-Whichever you choose, assert it: `request.id() === policy.modelIds[0]`. Pure client-side, and it
-settles the question before an approval is spent (GAP-072).
+⚠️ **If you adapt this scenario to `ApprovalType.EXPLICIT`** — which is the only way
+`ValidateApprovers` runs, i.e. the only way to require multiple approvers — you must switch to
+`BasicCustomRequest` with the name/version **pre-wrapped in `Custom<...>`**. The card renderer matches
+the raw `name` against `/^Custom<(.*)>$/`, and neither of the first two forms satisfies it. A bare
+`Custom<X>:Custom<1>` model id is separately known to be **rejected by all 20 ORKs**. See
+[custom-contracts.md](../../canon/custom-contracts.md) → "TWO consumers read the request".
+
+Whichever you choose, assert it client-side — each wrong guess otherwise costs an enclave approval:
+
+```typescript
+if (request.id() !== policy.modelIds[0]) throw new Error('model id drift');
+// EXPLICIT flows additionally need: /^Custom<.+>$/.test(MODEL_NAME)
+```
+
+GAP-072.

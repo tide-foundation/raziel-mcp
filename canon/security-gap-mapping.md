@@ -26,7 +26,9 @@ Detection commands below are operator guidance — **ASSUMED** unless tagged oth
 
 ## SG-01: Central password verification (stored hashes)
 
-**What it looks like**: Password hashes (bcrypt/argon2/scrypt/PBKDF2) in the application database, or a single IdP that verifies passwords against its own store.
+**What it looks like**: Password hashes (bcrypt/argon2/scrypt/PBKDF2) in the application database, or a single IdP that verifies passwords against **its own store**.
+
+⚠️ **The gap is a VERIFIER, not a directory — and delegation alone does not create one.** "Login is delegated to a provider" is only SG-01 when that provider *owns the verification record*: a store it can dump to crack every account, or a key it can use to mint identity. A **Tide-enabled realm is not that**, and marking it SG-01 is factually wrong: PRISM stores **no password hash anywhere** and the tokens are threshold-signed across the ORK network, *not* by the TideCloak server (I-02, I-09). Such a realm still keeps a Keycloak **directory** (usernames, emails, attributes, role mappings) — real PII exposure, worth its own finding, but its compromise authenticates nobody. Verdict on a verified Tide-enabled realm: **not SG-01**. Conditions to check first (an unlicensed realm, a live local password flow, or federation to an external IdP each put SG-01 back in scope) are in `skills/tide-red-team/SKILL.md` → surface 1.
 
 **Detect**:
 ```bash

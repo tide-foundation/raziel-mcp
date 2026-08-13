@@ -1460,8 +1460,8 @@ For deployment without a file: use `CLIENT_ADAPTER` env var containing the full 
 # ❌ WRONG: Appending start-dev command
 docker run -d --name tidecloak \
   -p 8080:8080 \
-  -e KC_BOOTSTRAP_ADMIN_USERNAME=admin \
-  -e KC_BOOTSTRAP_ADMIN_PASSWORD=password \
+  -e KC_BOOTSTRAP_ADMIN_USERNAME="${KC_BOOTSTRAP_ADMIN_USERNAME:-admin}" \
+  -e KC_BOOTSTRAP_ADMIN_PASSWORD="$KC_BOOTSTRAP_ADMIN_PASSWORD" \
   tideorg/tidecloak-dev:latest start-dev
 ```
 
@@ -1478,8 +1478,8 @@ docker run -d --name tidecloak \
 sudo docker run -d --name tidecloak \
   -v ./data:/opt/keycloak/data/h2 \
   -p 8080:8080 \
-  -e KC_BOOTSTRAP_ADMIN_USERNAME=admin \
-  -e KC_BOOTSTRAP_ADMIN_PASSWORD=password \
+  -e KC_BOOTSTRAP_ADMIN_USERNAME="${KC_BOOTSTRAP_ADMIN_USERNAME:-admin}" \
+  -e KC_BOOTSTRAP_ADMIN_PASSWORD="$KC_BOOTSTRAP_ADMIN_PASSWORD" \
   tideorg/tidecloak-dev:latest
 ```
 
@@ -1559,6 +1559,10 @@ The org is `tideorg`, not `tidecloak`. And `tidecloak-dev` — despite the suffi
 - [ ] CSP is exactly `frame-src 'self' *` — no `frame-ancestors` added (AP-71)
 - [ ] Relay path serves its own CSP **and** `Allow-CSP-From: *`, verified with `curl -D -` (AP-70/71)
 - [ ] No admin mutation trusts a `2xx` — drain, then read back (AP-72)
+- [ ] Role checks require `{client, role}` pairs, not bare role names (AP-75)
+- [ ] `modelId` is not a bare `Custom<X>:Custom<1>`; EXPLICIT flows pre-wrap with `Custom<…>` (AP-76/77)
+- [ ] No `as any` + `!` in the deployment path; `Models` and `Tools` destructured separately (AP-78)
+- [ ] No realm template declares a `tide-*` protocolMapper — no such provider exists (AP-80)
 
 ### Deployment Check
 - [ ] CSP includes Tide domains (AP-07)
@@ -1637,6 +1641,14 @@ The org is `tideorg`, not `tidecloak`. And `tidecloak-dev` — despite the suffi
 | AP-70 | Low | **CRITICAL** | **Hard** — the error blames the relay file, not the URL |
 | AP-71 | Low | **CRITICAL** | **Hard** — reads as a Tide bug, is self-inflicted |
 | AP-72 | Medium | **CRITICAL** | **Hard** — 2xx + green log + empty realm |
+| AP-73 | Medium | **HIGH** | Medium — 401s appear only once DPoP is on |
+| AP-74 | Low | **HIGH** | **Hard** — error names nothing in your code |
+| AP-75 | **HIGH** | **HIGH** | **Hard** — UI and API gates agree, wrongly |
+| AP-76 | Low | **CRITICAL** | **Hard** — fails after the approval, with a misleading type name |
+| AP-77 | Low | **CRITICAL** | **Hard** — the exemplar it copies works, for a reason that does not transfer |
+| AP-78 | Low | **CRITICAL** | **Hard** — throws AFTER the network signed |
+| AP-79 | Low | **CRITICAL** | Easy once known — irreversible when not |
+| AP-80 | Medium | **HIGH** | **Hard** — 201 Created, mapper silently dropped, roles vanish with no error |
 
 > AP-38 through AP-59 predate this table and are not classified here. Treat the omission as a known
 > gap in this section, not as an assessment of low severity.
@@ -1712,6 +1724,44 @@ The org is `tideorg`, not `tidecloak`. And `tidecloak-dev` — despite the suffi
 ---
 
 ## AP-41: Using Master Admin Credentials in Generated App Code
+
+> ### ⚠️ Corollary: the password itself belongs in `.env`, and a DEFAULT is still hardcoded
+>
+> AP-41 is usually read as "don't call the master token endpoint from app code". It also covers the
+> credential's *storage*, and the most common violation in bootstrap tooling is subtler than a literal
+> secret:
+>
+> ```bash
+> # ❌ all three are hardcoded credentials
+> -d "username=admin&password=password&grant_type=password&client_id=admin-cli"
+> -e KC_BOOTSTRAP_ADMIN_PASSWORD=password
+> KC_ADMIN_PASSWORD="${KC_ADMIN_PASSWORD:-password}"      # a DEFAULT is the same thing
+> ```
+>
+> A default password is a hardcoded credential with extra steps: it ships to whoever runs the script
+> next, and it silently becomes the real password on every machine where nobody set the variable.
+>
+> ```bash
+> # ✅ read from the environment (loading .env if present), and FAIL when unset
+> if [ -f ".env" ]; then set -a; . "./.env"; set +a; fi
+> if [ -z "${KC_BOOTSTRAP_ADMIN_PASSWORD:-}" ]; then
+>   echo "ERROR: KC_BOOTSTRAP_ADMIN_PASSWORD is not set. cp .env.template .env and set it." >&2
+>   exit 1
+> fi
+> curl ... --data-urlencode "password=$KC_BOOTSTRAP_ADMIN_PASSWORD"   # survives & = + in the value
+> ```
+>
+> **Confirm `.env` is gitignored BEFORE telling anyone to put a secret in it.** Start from
+> `templates/shared/.env.template`. Beyond local Docker, inject from a secret manager rather than a
+> file. And remember the token minted from this credential lives **~60 seconds** — mint on demand
+> server-side; never export one and assume it lasts.
+>
+> A literal on a command line also lands in shell history, CI logs and `ps` output, so the exposure is
+> wider than the file you put it in.
+>
+> **Regression gates** (`mcp-server` content tests): a literal assignment in any active script/config
+> fails; a copyable `-e KC_BOOTSTRAP_ADMIN_PASSWORD=<literal>` in docs fails; and any template shipping
+> a `.env.example`/`.env.template` must gitignore `.env`. All three verified to fail on reintroduction.
 
 **What it looks like**:
 ```typescript
@@ -2566,8 +2616,23 @@ only once the realm is DPoP-enabled. VERIFIED (LEARNINGS-tidewater-001 L-03).
 ## AP-74: Passing a Relative URL to `secureFetch`
 
 `secureFetch` is named and documented as a drop-in for `fetch`, and is one **in every respect except
-this**. It needs the DPoP proof's `htu`, and derives it with a bare `new URL()` and **no base**
-(`@tidecloak/js/dist/esm/lib/tidecloak.js:626-627`):
+this**. There are **two** throw sites, both a bare `new URL()` with **no base**:
+
+- `@tidecloak/js/dist/esm/lib/tidecloak.js:626-627` — deriving the origin for the resource-server nonce
+- `@tidecloak/js/dist/esm/lib/tidecloak-dpop.js:390-393` — deriving the proof's `htu` claim:
+  ```javascript
+  htu: (() => {
+      const urlObj = new URL(url);              // no base argument
+      return urlObj.origin + urlObj.pathname;   // note: NO query, NO fragment
+  })(),
+  ```
+
+⚠️ **Sibling fact for server-side DPoP verification**: `htu` is `origin + pathname` **only**. A
+server-side comparison against the full request URL fails on any request carrying a query string. The
+pack's verification guidance already says this (`framework-matrix.md`, `concepts.md`, `invariants.md`,
+`feature-mapping.md` all specify "ignore query string") — keep it that way.
+
+The relevant code:
 
 ```javascript
 const urlString = url instanceof URL ? url.href : url.toString();
@@ -2612,6 +2677,267 @@ sees an existing Bearer token.
 
 VERIFIED against the shipped SDK source and reproduced in Node (LEARNINGS-tidewater-001 L-04;
 previously recorded as a sub-pitfall of AP-45, promoted here because it was not findable where it bites).
+
+---
+
+## AP-75: A Role-Check Helper That Takes a Bare Role Name
+
+**A role name is not an identity — `{client, role}` is.** A helper whose signature is
+`hasRole(role: string)` invites the caller to check the right role against the wrong client, and both
+the UI gate and the API gate will then agree, wrongly.
+
+The canonical instance: **`tide-realm-admin` lives on the `realm-management` client**, so a check
+scoped to your app's own client can never see it, no matter what the user holds.
+
+**Wrong** — scoped to the app client:
+```typescript
+const ra = claims.resource_access as Record<string, { roles?: string[] }>;
+return ra?.[config.resource]?.roles ?? [];        // config.resource === "my-app"
+// ...then hasClientRole('release-engineer', 'my-app') on a page that deploys a policy
+```
+
+Against a real admin token:
+```
+resource_access:
+  realm-management: [ …, "tide-realm-admin", "realm-admin", "manage-realm", … ]
+  account:          [ "manage-account", … ]
+# my-app: ABSENT — the admin holds no app-client role at all
+```
+
+**Correct** — require pairs, and echo what the token actually carries on refusal:
+```typescript
+export const REALM_ADMIN = { client: 'realm-management', role: 'tide-realm-admin' };
+export function withAnyClientRole(required: RoleRequirement[], handler: Handler) { /* … */ }
+// on 403, include: has: { "realm-management": [...], "account": [...] }
+```
+
+Echoing the full `resource_access` map turns *"403 but I **am** the admin"* into a one-look diagnosis.
+
+**Two compounding mistakes worth separating**, because only one is a config error:
+1. the wrong client was inspected — a code defect;
+2. the bootstrap gave the admin **no app-client role by design** (admin deploys the policy; others
+   ship and approve), so the gate could never pass for exactly the person the page was built for. **A
+   gate that cannot pass for its intended user is a design error, not a config one.**
+
+Related: AP-29 (use `hasClientRole` for `tide-realm-admin`, not `hasRealmRole`). AP-75 is the
+generalisation — the helper's *shape* is what permits the bug.
+VERIFIED (LEARNINGS-deploy-gate-001 L-02).
+
+---
+
+## AP-76: Declaring a Bare `Custom<X>:Custom<1>` Model Id
+
+**NETWORK-VERIFIED rejection.** All 20 ORKs refuse it at `executeSignRequest` — *after* the operator
+approval has been spent:
+
+```
+TideError[TIDE-TIDEJS-NET-THRESHOLD_FAILURE]: Could not reach enough VVK ORKs (0 of 20, 20 failed)
+  [TIDE-ORK-INTERNAL-UNEXPECTED] Model id
+    'System.Collections.ObjectModel.ReadOnlyCollection`1[System.String]' not found in registry
+```
+
+`Custom<...>` is the **enclave card's** wrapper, matched against the request's raw `name` field. It is
+**not** an ORK model identity. The ORKs want the `BasicCustom<...>`-shaped `id()`.
+
+⚠️ **Read past the .NET type name.** `ReadOnlyCollection\`1[System.String]` where a model id belongs is
+an **ORK-side message-formatting artifact** — it prints the whole model collection instead of the entry
+that failed to resolve. It is **not** evidence of a wire-format or policy-version skew. Anyone seeing
+it for the first time is strongly tempted to go hunting a V2/V3 layout problem, which is a documented
+dead end (see `custom-contracts.md` → Refuted Theories). **Confirmed twice now**, in independent runs.
+The message means only: *this model id is not resolvable.*
+
+**Correct**: for `ApprovalType.EXPLICIT`, use `BasicCustomRequest` with the name/version pre-wrapped in
+`Custom<...>`, so the raw name satisfies the card and `id()` satisfies the ORKs. See
+[custom-contracts.md](custom-contracts.md) → "TWO consumers read the request".
+VERIFIED (LEARNINGS-deploy-gate-001 L-03).
+
+---
+
+## AP-77: Copying keylessh's `BasicCustomRequest` Constructor Arguments
+
+keylessh passes an **already-wrapped** name into the constructor:
+
+```typescript
+const name    = "BasicCustom<SSH>";      // keylessh/client/src/lib/tideSsh.ts
+const version = "BasicCustom<1>";
+new BasicCustomRequest(name, version, …)
+```
+
+Since `BasicCustomRequest.id()` wraps again, this yields
+`BasicCustom<BasicCustom<SSH>>:BasicCustom<BasicCustom<1>>` — not what canon's table predicts from
+unwrapped arguments, and not what the raw-name card regex matches either.
+
+**The pre-wrap is not the mistake** — it is required for any EXPLICIT-approval custom model. The
+mistake is the **inner token**: it wraps with `BasicCustom<...>`, which no consumer matches, instead of
+`Custom<...>`, which the card renderer does.
+
+keylessh works because it uses `ApprovalType.IMPLICIT`, where **no card is ever built**, so the
+difference never surfaces. That makes it a working exemplar and a bad template for an
+approval-bearing app.
+
+**Correct**: derive all three identities from one constant and let assertions settle it —
+`/^Custom<.+>$/` on the name (card) and `/^BasicCustom<.+>:BasicCustom<.+>$/` on `id()` (ORKs).
+VERIFIED (LEARNINGS-deploy-gate-001 L-03/L-04).
+
+---
+
+## AP-78: Reaching Through `as any` With `!` in the Deployment Path
+
+`Models` and `Tools` are **sibling** exports, not nested:
+
+```typescript
+// @tideorg/js/dist/index.d.ts
+export * as Models from './Models';
+export * as Tools  from './Tools';
+```
+
+So `Models.Tools` is `undefined`.
+
+**Wrong** — and it compiles, because `as any` erases the type and `!` suppresses the last signal:
+```typescript
+policy.signature = new (Models as any).Tools!.TideMemory(vvk.length);
+```
+
+**Correct** — destructure both namespaces explicitly, at the top of the function:
+```typescript
+const { Models, Tools } = await import('@tidecloak/js');
+const { TideMemory } = Tools as any;
+policy.signature = new TideMemory(vvk.length);
+```
+
+**Why this one is disproportionately expensive**: the only use of `TideMemory` in the deployment path
+is **attaching the VVK signature**, which happens *after* `executeSignRequest` returns successfully. So
+the throw lands immediately after the network has threshold-signed the policy — **the approval and the
+signature are both already spent** — and the error (`Cannot read properties of undefined`) names
+neither.
+
+The general rule: in the deployment path, do not combine `as any` with `!`. A missing export should
+fail loudly and early, not after the expensive part succeeded.
+VERIFIED (LEARNINGS-deploy-gate-001 L-04a).
+
+---
+
+## AP-79: Running a Full Dev Bootstrap Script on a Container Hosting Other Realms
+
+`templates/shared/bootstrap-tidecloak.sh` Step 0 is a **destructive wipe** that runs before any
+confirmation:
+
+```bash
+docker stop tidecloak; docker rm tidecloak
+sudo rm -f ./data/keycloakdb*
+```
+
+The script is documented as a full dev bootstrap, so this is a sharp edge rather than a bug — but it
+is the obvious thing to reach for when adding **one** realm, and a TideCloak container commonly hosts
+several. Running it then destroys every realm on the box, and a realm cannot be un-flipped from
+multiAdmin, so some of them may not be cheaply rebuildable.
+
+**The script now refuses** when the running instance holds realms besides `master`, unless
+`FORCE_WIPE=1` is set explicitly. To bootstrap an additional realm on a live container, skip Step 0
+and assert the target realm does not already exist.
+
+VERIFIED (LEARNINGS-deploy-gate-001 L-06).
+
+---
+
+## AP-80: Declaring a `tide-*` Protocol Mapper in a realm.json
+
+**There is no Tide-specific protocol-mapper provider.** `tide-roles-mapper` does not exist — not on
+the production image, not on staging.
+
+MEASURED against `tideorg/tidecloak-dev:latest`, 2026-08-11:
+
+```
+GET /admin/serverinfo  ->  protocolMapperTypes["openid-connect"]
+# 24 providers registered. NONE contains "tide".
+```
+
+**The failure is silent, which is what makes it expensive:**
+
+```
+POST /admin/realms      (client.protocolMappers[].protocolMapper = "tide-roles-mapper")
+→ 201 Created                       # no error, no warning, no hint
+→ GET .../protocol-mappers/models   # the mapper is simply NOT THERE
+```
+
+The realm imports "successfully" and the mapper is **silently dropped**. If anything depended on it
+for role claims, roles are missing from every token with **nothing anywhere saying why** — and the
+natural diagnosis ("IGA isn't propagating roles", "the commit didn't land") sends you somewhere
+unrelated for hours.
+
+**Wrong**:
+```json
+{ "name": "tide-roles", "protocol": "openid-connect",
+  "protocolMapper": "tide-roles-mapper",
+  "config": { "access.token.claim": "true" } }
+```
+
+**Correct** — stock provider types, which is all Tide ever uses:
+
+| Claim(s) | Source | Mapper type |
+|---|---|---|
+| `realm_access.roles` | default **`roles`** client scope | `oidc-usermodel-realm-role-mapper` |
+| `resource_access.<client>.roles` | default **`roles`** client scope | `oidc-usermodel-client-role-mapper` |
+| `tideuserkey` | **`tide-claims`** scope (from `setUpTideRealm`) | `oidc-usermodel-attribute-mapper` |
+| `vuid` | **`tide-claims`** scope | `oidc-usermodel-attribute-mapper` |
+| `t\.uho` | **`tide-claims`** scope | `oidc-hardcoded-claim-mapper` |
+
+Roles need **no** mapper declaration at all: `roles` is a **default** client scope. Declaring the
+`tideUserKey`/`vuid` attribute mappers inline on the client (as the pack templates do) is harmless
+belt-and-braces. **What is never fine is naming a `tide-*` provider type.**
+
+⚠️ **This corrects two earlier pack claims.** LEARNINGS-batch-004 L-06 / RB-024 said the provider
+exists on the prod image and is dropped only on staging — **disproved**, it is absent on prod too.
+LEARNINGS-batch-006 prescribed *using* `tide-roles-mapper` to fix missing role claims — that
+instruction would have produced exactly the symptom it was meant to cure.
+
+**Regression gate**: `mcp-server` content tests fail if any active realm template declares a
+`"protocolMapper": "tide-*"`, or if a realm template stops mapping `tideUserKey`/`vuid` — so
+"remove the bad mapper" can never be satisfied by deleting the Tide claims wholesale. Verified to
+fail in both directions.
+
+VERIFIED by direct measurement 2026-08-11.
+
+---
+
+## AP-81: Inferring the Forseti SDK Surface From a Simplified Example
+
+The ORK's C# compiler is precise, and it runs **at request time** — so an invented API shape surfaces
+as `VmHost.CompileFailed` **after an operator approval has been spent**. The most common inventions,
+all observed in one real build:
+
+| Written | Reality |
+|---|---|
+| `foreach (DataItem d in ctx.Data)` | **No `DataItem` type.** `ctx.Data` is `ReadOnlyMemory<byte>` — a nested TideMemory, read with `GetValue(i)` / `TryGetValue(i, out …)` |
+| `ctx.Data` in `ValidateExecutor` | Only on `DataContext`. Thread state through an instance field |
+| `decision.IsAllowed` | No such member on `PolicyDecision` **or** on the `Decision` chain — you *return* a decision, never inspect it |
+| `ctx.Data == null` | `ReadOnlyMemory<byte>` is a **struct** → `error CS0019`. Probe with `TryGetValue(0, out _)` |
+| `ctx.Data[0]` | No indexer. `GetValue(0)` for a child, `.Span[0]` for a raw byte |
+| `Decision.X(…).And(Decision.Y(…))` | No `.And()` combinator — **chaining is the conjunction** |
+| `using Ork.Forseti.Sdk;` alone | **Six** usings required (add `Cryptide.Tools`, `Ork.Shared.Models.Contracts`, `System`, `System.Collections.Generic`, `System.Text`) |
+
+**Encrypt and decrypt have different payload layouts.** Tags start at index **2** for
+`PolicyEnabledEncryption:1` and index **3** for `PolicyEnabledDecryption:1`. Reading the wrong offset
+silently collects the wrong strings as "tags", so the contract then allows or denies on garbage.
+Branch on `ctx.RequestId` first and deny anything unexpected.
+
+**Do not infer the surface. Two things make it checkable:**
+
+```bash
+templates/forseti-compile-harness/check.sh --self-test    # stubs vs two DEPLOYED contracts
+templates/forseti-compile-harness/check.sh path/to/MyContract.cs
+```
+
+The harness reproduces every error above locally in about a second. Its stubs are self-tested against
+`sources/example-app-forseti-crypto-quickstart/.../forsetiContract.ts` and
+`sources/example-app-tidecloak-test-cases/.../forsetiDecryptionContract.ts` — **read those two files
+before writing a contract.** They are working, deployed, and they are the surface.
+
+⚠️ **The pack was a source of this.** Its examples showed one using directive, `ctx.Data == null`, a
+`.And(…)` combinator and a 4-argument `RequireAnyWithRole`; the harness stubs typed `ctx.Data` as
+`byte[]` and gave `PolicyDecision` an `IsAllowed`. All corrected 2026-08-11, and
+`check-docs.sh` now compiles every contract example in the pack so a simplified example cannot drift
+back into fiction. VERIFIED (LEARNINGS from a real ORK compile failure).
 
 ---
 

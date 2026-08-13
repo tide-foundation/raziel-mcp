@@ -72,42 +72,96 @@ describe('entry shape — what the ORK looks for', () => {
   });
 });
 
+/**
+ * Split C# source into (code, comments), each the same length as the input with the other part
+ * blanked to spaces so line numbers stay accurate.
+ *
+ * A naive "strip everything after //" is UNSAFE: the `//` inside a string literal such as
+ * "http://example.com" would start a fake comment and swallow the rest of the line, hiding a REAL
+ * call after it. So this tracks string state — "..." with escapes, verbatim @"..." where "" is an
+ * escaped quote, and '...' char literals — and only treats // and comment blocks as comments when
+ * they appear outside a string.
+ *
+ * With a correct stripper, comment hits can be reported as warnings instead of failures without
+ * risking a false negative. That is strictly better than failing a contract that merely documents
+ * the sandbox restrictions, which teaches people to ignore the checker.
+ */
+function splitCodeAndComments(src) {
+  let code = '', comments = '', state = null;
+  const push = (ch, toCode) => {
+    if (ch === '\n') { code += '\n'; comments += '\n'; return; }
+    code += toCode ? ch : ' ';
+    comments += toCode ? ' ' : ch;
+  };
+  for (let i = 0; i < src.length; i++) {
+    const c = src[i], n = src[i + 1] ?? '';
+    if (state === null) {
+      if (c === '/' && n === '/') { state = 'line'; push(c, false); push(n, false); i++; continue; }
+      if (c === '/' && n === '*') { state = 'block'; push(c, false); push(n, false); i++; continue; }
+      if (c === '@' && n === '"') { state = 'verbatim'; push(c, true); push(n, true); i++; continue; }
+      if (c === '"') { state = 'str'; push(c, true); continue; }
+      if (c === "'") { state = 'char'; push(c, true); continue; }
+      push(c, true); continue;
+    }
+    if (state === 'line') { if (c === '\n') state = null; push(c, false); continue; }
+    if (state === 'block') {
+      if (c === '*' && n === '/') { state = null; push(c, false); push(n, false); i++; continue; }
+      push(c, false); continue;
+    }
+    if (state === 'str') {
+      if (c === '\\' && n) { push(c, true); push(n, true); i++; continue; }
+      if (c === '"') state = null;
+      push(c, true); continue;
+    }
+    if (state === 'verbatim') {
+      if (c === '"' && n === '"') { push(c, true); push(n, true); i++; continue; }
+      if (c === '"') state = null;
+      push(c, true); continue;
+    }
+    if (state === 'char') {
+      if (c === '\\' && n) { push(c, true); push(n, true); i++; continue; }
+      if (c === "'") state = null;
+      push(c, true); continue;
+    }
+  }
+  return { code, comments };
+}
+
+function findBlocked(haystack, srcLines) {
+  const hits = [];
+  for (const pattern of BLOCKED) {
+    const re = new RegExp(pattern, 'g');
+    let m;
+    while ((m = re.exec(haystack)) !== null) {
+      const line = haystack.slice(0, m.index).split('\n').length;
+      hits.push({ line, pattern: pattern.replace(/\\/g, ''), text: (srcLines[line - 1] ?? '').trim().slice(0, 100) });
+    }
+  }
+  return hits;
+}
+
 describe('sandbox constraints', () => {
-  test('references no namespace or call the Forseti sandbox blocks', () => {
-    // This scans the WHOLE file, COMMENTS INCLUDED, deliberately.
-    //
-    // Stripping comments first would be more convenient and is the wrong trade: a naive
-    // stripper treats the `//` inside a string literal as a comment start and can swallow the
-    // rest of the line, hiding a REAL call. A false positive costs you one reworded comment;
-    // a false negative costs an operator approval and a BadPolicy.ForbiddenCall at upload.
-    //
-    // So if a hit is in a doc comment: REWORD THE COMMENT. Do not weaken the scan.
+  test('no blocked namespace or non-deterministic call in CODE', () => {
     const lines = CONTRACT.split('\n');
-    const hits = [];
-    for (const pattern of BLOCKED) {
-      const re = new RegExp(pattern);
-      lines.forEach((line, i) => {
-        if (re.test(line)) {
-          hits.push({
-            pattern: pattern.replace(/\\/g, ''),
-            line: i + 1,
-            text: line.trim().slice(0, 100),
-            looksLikeComment: /^\s*(\/\/|\*|\/\*)/.test(line),
-          });
-        }
-      });
+    const { code, comments } = splitCodeAndComments(CONTRACT);
+
+    const codeHits = findBlocked(code, lines);
+    const commentHits = findBlocked(comments, lines);
+
+    // Comment mentions are reported and tolerated. A contract documenting its own restrictions is
+    // correct, and failing it would only teach people to ignore this check.
+    for (const h of commentHits) {
+      console.log(`    note: '${h.pattern}' appears in a COMMENT at line ${h.line} — harmless`);
     }
 
-    if (hits.length === 0) return;
+    if (codeHits.length === 0) return;
 
-    const report = hits
-      .map((h) => `  line ${h.line}: ${h.pattern}${h.looksLikeComment ? '  [in a COMMENT — reword it]' : '  <-- REAL CALL SITE'}\n      ${h.text}`)
+    const report = codeHits
+      .map((h) => `  line ${h.line}: ${h.pattern}\n      ${h.text}`)
       .join('\n');
-    const real = hits.filter((h) => !h.looksLikeComment).length;
-
     assert.fail(
-      `${hits.length} blocked reference(s) found — these compile fine and fail IL vetting at ` +
-      `upload with BadPolicy.ForbiddenCall (${real} outside comments):\n${report}\n` +
+      `${codeHits.length} blocked reference(s) in CODE — these compile fine and fail IL vetting at ` +
+      `upload with BadPolicy.ForbiddenCall:\n${report}\n` +
       `  Time must come from Cryptide.Tools.Utils.GetEpochSeconds(), never DateTime.UtcNow.`,
     );
   });

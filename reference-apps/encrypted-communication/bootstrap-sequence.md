@@ -51,7 +51,7 @@
 5. Enable IGA — **form-encoded `isIGAEnabled=true`**, then ASSERT. The endpoint reads the form
    parameter; a JSON body is parsed by nothing and the missing parameter **fails open to `true`**,
    so `{"enabled":false}` ENABLES IGA. Also assert `iga.attestor=tide` rather than stamping it
-   blindly — `setUpTideRealm` sets it on current builds (GAP-065; see
+   blindly — `setUpTideRealm` sets it on SOME builds and not others, so assert → stamp if absent → re-assert (GAP-065; see
    `canon/tidecloak-bootstrap.md` → toggle-iga):
    ```bash
    REALM_REP=$(curl -s "http://localhost:8080/admin/realms/$REALM" -H "Authorization: Bearer $TOKEN")
