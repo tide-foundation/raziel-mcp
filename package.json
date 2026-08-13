@@ -1,7 +1,7 @@
 {
   "name": "@tideorg/mcp",
   "mcpName": "io.github.tide-foundation/raziel",
-  "version": "1.9.10",
+  "version": "1.9.11",
   "description": "MCP server exposing Tide operational guidance — canon, playbooks, skills, prompts, adapters, and scenarios for AI coding agents",
   "type": "module",
   "bin": {

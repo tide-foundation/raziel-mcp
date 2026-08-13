@@ -246,11 +246,58 @@ GET             /admin/realms/{realm}/tide-admin/user-context/{userId}/{clientId
 
 ## Branding Endpoints
 
+The enclave displays a realm **logo** and **background image**. Uploading is only half of it — the
+realm must then be pointed at the image and the settings **re-signed**, because the enclave verifies
+the signed settings blob.
+
 ```
 POST   /admin/realms/{realm}/tide-idp-admin-resources/images/upload
-  Multipart: fileData, fileName, fileType
+  Multipart: fileData, fileName, fileType      # fileType = LOGO | BACKGROUND_IMAGE
+  Returns:  {"hash":"<sha256 hex>","name":"<stored name>"}
 
+POST   /admin/realms/{realm}/vendorResources/set-branding
+  Body: {"backgroundUrl":"...","logoUrl":"..."}   # save AND re-sign, atomically
+
+GET    /admin/realms/{realm}/vendorResources/get-branding
 DELETE /admin/realms/{realm}/tide-idp-admin-resources/images/{type}/delete
 GET    /admin/realms/{realm}/tide-idp-admin-resources/images/{type}/name
-GET    /realms/{realm}/tide-idp-resources/images/{type}
+GET    /realms/{realm}/tide-idp-resources/images/{type}      # PUBLIC, no auth
 ```
+
+**Upload constraints — VERIFIED** against `TideIdpAdminRealmResource.java` (2026-08-11):
+
+| | |
+|---|---|
+| `fileType` | `LOGO` or `BACKGROUND_IMAGE` |
+| Formats | `png`, `jpg`, `jpeg`, `gif`, `webp` — an **allowlist keyed off the FILENAME extension**. **SVG is rejected** (`400`) |
+| Max size | **5 MB** → `413` beyond it |
+| Dimensions | **not validated at all** — sizing is purely a rendering concern |
+| Storage | one file per `fileType`; a new upload **deletes and replaces** the previous |
+| Auth | `manage-realm` |
+
+Because the allowlist keys off the *filename*, a mislabelled file (`logo.png` holding JPEG bytes) can
+upload and then fail to render. Validate the actual bytes.
+
+**Build a versioned serve URL** from the returned hash, or a replaced image is served from cache:
+
+```
+{auth-server-url}/realms/{realm}/tide-idp-resources/images/{LOGO|BACKGROUND_IMAGE}?v=<hash>
+```
+
+**`set-branding` is save AND sign in one call.** It writes IdP config `ImageURL` (background) and
+`LogoURL` (logo), then **re-signs the settings blob from the updated config**. An absent field is left
+unchanged; a field present as a string (even `""`) overwrites. A failed ORK signing returns `500`
+rather than silently leaving stale/unsigned branding. Do **not** write `ImageURL`/`LogoURL` via the
+generic IdP-update endpoint and skip the signature — the enclave verifies the blob.
+
+> **Branding is IGA-EXEMPT.** The config write is flagged `IGA_VENDOR_PROVISIONING`, exactly like
+> `sign-idp-settings`, so it is **not** captured as a change request. It is one of the few admin
+> writes needing no authorize/commit drain — even on a multiAdmin realm, so branding can be fixed
+> after the one-way flip without an enclave ceremony.
+
+**Producing the assets**: `templates/enclave-branding/` ships a dependency-free generator
+(`make-branding.py` — no image model, no Pillow) plus a validator (`check-branding.py`) and
+image-model prompts. Recommended geometry (ASSUMED — nothing enforces it): logo **512×512 PNG with
+alpha and ~12% transparent padding per side** (it is scaled to fit a box, so padding is the safe
+area); background **1920×1080 16:9** with a **quiet, low-contrast centre**, because the login card and
+white text sit on top of the middle.

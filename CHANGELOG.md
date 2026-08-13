@@ -2,6 +2,26 @@
 
 All notable changes to `@tideorg/mcp` (the Tide Agent Pack) are documented here.
 
+## 1.9.11 — 2026-08-10
+
+- **New `tide_branding` tool + `enclave-branding` template** — how to produce and
+  upload the login/approval enclave's **logo** and **background image**. Returns the
+  **verified upload contract** (endpoint, multipart parts, the png/jpg/jpeg/gif/webp
+  allowlist with **SVG rejected server-side**, the **5 MB** cap, and the crucial
+  **save-AND-sign** step — the enclave verifies the branding, so an upload that
+  isn't re-signed via `set-branding` doesn't take). Ships a **dependency-free
+  generator** (`make-branding.py`, stdlib only — no Pillow, no image model, no
+  network) for the many agents that can't create images, a **validator**
+  (`check-branding.py`) to catch a bad asset *before* wasting an upload, and
+  image-model prompts for agents that can. The generator's `--name` deterministically
+  varies the mark's geometry so two realms don't look alike, while staying stable
+  across runs (the serve URL is content-hashed).
+- Failure modes made explicit: a mislabelled file (JPEG bytes in `logo.png`) passes
+  the filename-keyed allowlist but breaks; an **unpadded logo isn't rejected — it
+  just ships looking clipped**. Documents the `vendorResources` upload/set/get
+  surface in `canon/tidecloak-endpoints.md`, VERIFIED against the server source.
+- **`release-verify.mjs` expects 18 tools** (was 17) now that `tide_branding` ships.
+
 ## 1.9.10 — 2026-08-10
 
 Correctness and security fixes surfaced by real ORK/TideCloak runs after 1.9.9.
