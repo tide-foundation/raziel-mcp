@@ -462,6 +462,11 @@ VERIFIED.
 
 ### IDP Settings Signing
 
+> **Branding uses the same signing ceremony.** Uploading a logo/background is `images/upload`, then
+> `vendorResources/set-branding` — which writes `LogoURL`/`ImageURL` **and re-signs in one call**, so you do
+> not call `sign-idp-settings` separately for branding. It is also IGA-exempt (no change-request drain).
+> Generator + validator + prompts: `templates/enclave-branding/`; contract: `canon/tidecloak-endpoints.md`.
+
 After setting `CustomAdminUIDomain` on the Tide IDP, you MUST call:
 ```
 POST /admin/realms/{realm}/vendorResources/sign-idp-settings

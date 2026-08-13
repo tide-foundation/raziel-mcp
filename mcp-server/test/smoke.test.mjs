@@ -7,6 +7,7 @@ const EXPECTED_TOOLS = [
   "tide_adapter", "tide_list_scenarios", "tide_scenario", "tide_scenario_manifest",
   "tide_scenario_roles", "tide_scenario_bootstrap", "tide_choose_scenario",
   "tide_choose_playbook", "tide_security_analysis", "tide_hosting", "tide_gaps", "tide_blast_radius",
+  "tide_branding",
 ];
 const EXPECTED_PROMPTS = [
   "tide-build-app", "tide-secure-existing", "tide-build-from-scenario",
