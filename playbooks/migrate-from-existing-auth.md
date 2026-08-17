@@ -2,6 +2,37 @@
 
 Replace your current identity provider with TideCloak while keeping standard OIDC flows intact.
 
+> ## ⚠️ Run the compatibility gate FIRST — "it uses Keycloak" does not mean it can be tidified
+>
+> **Tidifying a realm changes the token signature algorithm from RS256 to EdDSA.** MEASURED: a
+> Tide-enabled realm reports `defaultSignatureAlgorithm: EdDSA` and carries an Ed25519 (OKP) signing
+> key; non-Tide realms report `RS256` and have no Ed25519 key at all. Clients inherit the realm
+> default, so **every token the app receives becomes `alg: EdDSA`**.
+>
+> This is not a switch to flip back. Tide's signing *is* threshold Ed25519 — forcing RS256 would put
+> a whole signing key back on the TideCloak server, which is the property you migrated to remove
+> (I-02, I-09). **If the verifier cannot do EdDSA, the verifier changes; the realm cannot.**
+>
+> ```bash
+> templates/tidify-preflight/check-tidify.sh /path/to/app
+> ```
+>
+> Known blockers, VERIFIED: Node **`jsonwebtoken`** has no EdDSA support at all (its allowlist is
+> `HS*/RS*/ES*/PS*`); **`jwks-rsa`** pairs remote-JWKS fetching with RS256; stock .NET
+> **`Microsoft.IdentityModel.Tokens`** ships no EdDSA (T-23 — `Tide.Asgard.Core` exists to supply it).
+> An `algorithms: ['RS256']` pin also rejects a perfectly good token — **repin to EdDSA, never unpin**
+> (SG-13).
+>
+> And the blocker most migrations die on is **not in the repo**: a gateway, managed authorizer, proxy
+> or SaaS consumer that validates the JWT must also do EdDSA. The pack asserts nothing about specific
+> products — test the real deployment with a real EdDSA token.
+>
+> Full gate, including the non-EdDSA constraints (no headless/service-account identity, browser-only
+> signing, DPoP wiring, adapter JWKS, the `/auth/redirect` handler, asgard+IGA):
+> **[canon/tidify-compatibility.md](../canon/tidify-compatibility.md)**. Classify the app **FULLY /
+> PARTIALLY / NOT TIDIFIABLE** and say why. A partial migration is a fine outcome; presenting it as
+> complete is not.
+
 ---
 
 ## When to Use
@@ -18,8 +49,13 @@ Replace your current identity provider with TideCloak while keeping standard OID
 
 Keycloak to TideCloak is the simplest path. TideCloak uses the same admin console, same OIDC endpoints, and same SDK surface.
 
+Keycloak to TideCloak is the **shortest** path — not a free one. The admin console and OIDC endpoints
+are familiar, but the **token algorithm changes**, the **JWKS source changes**, and the SDK surface is
+`@tidecloak/*`, which only partially overlaps `keycloak-js` (`tokenParsed` does not exist — AP-69).
+
 ### Steps
 
+0. **Run the compatibility gate** (above). Do not start until you know the verifier does EdDSA.
 1. **Deploy TideCloak** in place of (or alongside) your Keycloak instance.
 2. **Download the new adapter config** (`tidecloak.json`) from the TideCloak admin console:
    - Clients -> {your-client} -> Installation -> Keycloak OIDC JSON
@@ -32,7 +68,19 @@ Keycloak to TideCloak is the simplest path. TideCloak uses the same admin consol
    cp tidecloak.json data/keycloak.json
    # Or rename to tidecloak.json and update your config loader path
    ```
-4. **No code changes needed.** Same SDK, same OIDC protocol. The application does not need to know it is talking to TideCloak instead of Keycloak.
+4. **Expect code changes. The claim that none are needed was wrong** and is corrected here:
+
+   | Change | Why | Reference |
+   |---|---|---|
+   | JWT verification must accept **EdDSA** | Realm default becomes EdDSA; RS256-only verifiers fail on every request | measured; T-23 |
+   | Repin any algorithm allowlist to **EdDSA** | An `RS256` pin rejects valid tokens. Repin — do not unpin | SG-13 |
+   | Keys from the **embedded adapter `jwk`**, not a remote JWKS | `createLocalJWKSet(config.jwk)`. The realm's OIDC JWKS also serves an RSA key, so a remote fetch can return the WRONG key with a 200 | I-04, AP-01, GAP-071 |
+   | Wire **DPoP** (four pieces) | Relay page, wildcard rewrite, per-path CSP + `Allow-CSP-From`, `secureFetch` with absolute URLs | I-12, AP-62/70/71/73/74 |
+   | Add the handler at **`/auth/redirect`** | Not `/auth/callback`; omitting it 404s **silently** | I-16, AP-REDIR-01 |
+   | Machine-to-machine paths **cannot** move | No headless/service-account Tide identity; ORK signing is browser-only | GAP-063/064 |
+
+   What *is* true: the OIDC **protocol** shape is unchanged — same flows, same endpoints, same
+   redirect dance. That is why this is the shortest path. It is not the same as "no code changes".
 
 ### What to verify after swap
 
@@ -40,15 +88,30 @@ Keycloak to TideCloak is the simplest path. TideCloak uses the same admin consol
 # Confirm discovery endpoint responds
 curl -s http://localhost:8080/realms/{realm}/.well-known/openid-configuration | jq .issuer
 
-# Confirm JWKS endpoint responds
-curl -s http://localhost:8080/realms/{realm}/protocol/openid-connect/certs | jq .keys[0].kty
+# Confirm the realm now signs with EdDSA (this is the migration's real fault line)
+curl -s http://localhost:8080/admin/realms/{realm} -H "Authorization: Bearer $TOKEN" \
+  | jq -r .defaultSignatureAlgorithm            # expect: EdDSA
+
+# Confirm an Ed25519 (OKP) signing key exists
+curl -s http://localhost:8080/realms/{realm}/protocol/openid-connect/certs \
+  | jq -r '.keys[] | select(.use=="sig") | "\(.kty) \(.alg) \(.crv // "-")"'
+# expect a line: OKP EdDSA Ed25519   (an RSA line may ALSO be present — do not verify against it)
+
+# Then the only test that counts: run a REAL token through the app's own verification path.
+# Reading library docs is not evidence; a silently-accepted unverified token is worse than a rejection.
 ```
 
 ---
 
 ## From Other OIDC Providers (Auth0, Okta, etc.)
 
-Any application using standard OIDC can point to TideCloak by updating configuration values. No TideCloak-specific SDK is required for basic authentication.
+Any application using standard OIDC can point to TideCloak by updating configuration values — **provided
+its JWT verifier supports EdDSA.** Run the gate first; the algorithm change applies here exactly as it
+does coming from Keycloak.
+
+"No TideCloak-specific SDK is required for basic authentication" is true only of the **protocol**. In
+practice you still need an EdDSA-capable verifier, the embedded adapter JWKS rather than a remote one,
+and — for Tide's actual security properties rather than plain OIDC login — DPoP and the Tide SDK.
 
 ### Steps
 
@@ -80,7 +143,7 @@ These are standard OIDC behaviors. TideCloak does not change them:
 
 - **OIDC/OAuth 2.0 flows** -- Authorization Code, PKCE, Client Credentials all work identically.
 - **JWT format and claims structure** -- Access tokens are standard JWTs. No proprietary wrapper.
-- **JWKS verification endpoint** -- `GET /realms/{realm}/protocol/openid-connect/certs` returns standard JWK set. Existing JWT verification code works without modification.
+- **JWKS verification endpoint** -- `GET /realms/{realm}/protocol/openid-connect/certs` returns a standard JWK set. ⚠️ **But existing verification code does NOT work without modification**: the set contains an **Ed25519 (OKP)** signing key alongside an RSA one, and tokens are signed with the **Ed25519** one. An RS256-only verifier fails, and a verifier that picks the RSA key gets a 200 and the **wrong key**. Tide also requires the **embedded adapter `jwk`** rather than this remote endpoint (I-04, AP-01, GAP-071).
 - **Role claim paths** -- `realm_access.roles` for realm roles, `resource_access.{client}.roles` for client roles. Same as Keycloak.
 - **Redirect URI patterns** -- Same configuration, same behavior.
 
@@ -88,7 +151,11 @@ These are standard OIDC behaviors. TideCloak does not change them:
 
 ## What You Gain
 
-These improvements are invisible to the application. No code changes required to benefit:
+⚠️ **These are not invisible to the application, and the first row is why.** "VVK threshold signing"
+means the token is signed by a distributed Ed25519 key — which is precisely what makes the algorithm
+**EdDSA** instead of RS256. The headline benefit *is* the thing that requires the verifier change. An
+earlier revision of this playbook claimed no code changes were required to benefit; that was wrong in
+both halves (AP-82).
 
 | Feature | What it means |
 |---------|--------------|

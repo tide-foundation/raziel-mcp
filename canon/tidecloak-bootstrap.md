@@ -465,7 +465,10 @@ VERIFIED.
 > **Branding uses the same signing ceremony.** Uploading a logo/background is `images/upload`, then
 > `vendorResources/set-branding` — which writes `LogoURL`/`ImageURL` **and re-signs in one call**, so you do
 > not call `sign-idp-settings` separately for branding. It is also IGA-exempt (no change-request drain).
-> Generator + validator + prompts: `templates/enclave-branding/`; contract: `canon/tidecloak-endpoints.md`.
+> One command does it: `templates/enclave-branding/brand-tidecloak.sh --realm <realm>` (generate,
+> validate, upload, save+sign, verify). The generated-app init scripts run it automatically during
+> bootstrap — set `BRAND_SKIP=1` to opt out, `BRAND_ACCENT=<hex>` to recolour. Contract:
+> `canon/tidecloak-endpoints.md`.
 
 After setting `CustomAdminUIDomain` on the Tide IDP, you MUST call:
 ```

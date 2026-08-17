@@ -2,6 +2,29 @@
 
 All notable changes to `@tideorg/mcp` (the Tide Agent Pack) are documented here.
 
+## 1.9.12 — 2026-08-17
+
+- **Corrected a false migration claim — tidifying is not free (EdDSA gate).** The
+  pack previously told operators *"No code changes needed — same SDK, same OIDC, the
+  app doesn't need to know it's talking to TideCloak instead of Keycloak."* That is
+  **false**. Tidifying a realm changes token signing from **RS256 to EdDSA
+  (Ed25519)** (MEASURED on `tideorg/tidecloak-dev:latest`), so **every token the app
+  receives becomes `alg: EdDSA`** — and a verifier that can't do EdDSA rejects all of
+  them. Known blockers, VERIFIED: Node **`jsonwebtoken`** has no EdDSA support at
+  all; .NET **`Microsoft.IdentityModel.Tokens`** ships none (that's why
+  `Tide.Asgard.Core` exists); and an `algorithms: ['RS256']` pin rejects a perfectly
+  valid token — **repin to EdDSA, never unpin.**
+- **New `canon/tidify-compatibility.md` + `tidify-preflight` template.** Establish
+  compatibility *before* promising a migration: `check-tidify.sh` scans a project for
+  EdDSA blockers and reports **evidence, not a verdict** (it can't see your gateway,
+  managed authorizer, or a downstream SaaS that validates the JWT — the most common
+  blockers). The `migrate-from-existing-auth` playbook is rewritten around this.
+- **Turnkey enclave branding — one command, and automatic during bootstrap.** New
+  `brand-tidecloak.sh` runs the whole flow end-to-end (**generate → validate → upload
+  → save+sign → verify**), safe to re-run, and `init-tidecloak.sh` now brands the
+  realm during bootstrap. Credentials come from the environment / `.env`, never the
+  script (AP-41); a fresh ~60-second master-admin token is minted per call.
+
 ## 1.9.11 — 2026-08-10
 
 - **New `tide_branding` tool + `enclave-branding` template** — how to produce and

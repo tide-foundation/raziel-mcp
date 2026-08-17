@@ -103,6 +103,27 @@ export async function run() {
     envUnignored.join("  "),
   );
 
+  // 1f. No claim that migrating to TideCloak needs no code changes, and no promise that a
+  //     Keycloak/OIDC app is automatically tidifiable. Tidifying flips the token algorithm to EdDSA
+  //     (measured), so RS256-only verifiers 401 on every request — AP-82. canon/anti-patterns.md and
+  //     canon/tidify-compatibility.md are exempt: their job is quoting the wrong claim to forbid it.
+  const overclaimRe = /no code changes (are )?(needed|required)|drop-in (migration|replacement) (from|for) keycloak|works with any keycloak/i;
+  const overclaims = [];
+  for (const d of ["canon", "playbooks", "reference-apps", "prompts", "adapters", "skills"]) {
+    for (const f of walkFiles(join(PACK_ROOT, d), [".md"])) {
+      const r = rel(f);
+      if (r === "canon/anti-patterns.md" || r === "canon/tidify-compatibility.md") continue;
+      readFileSync(f, "utf8").split("\n").forEach((ln, i) => {
+        if (overclaimRe.test(ln)) overclaims.push(`${r}:${i + 1}`);
+      });
+    }
+  }
+  c.ok(
+    "no 'no code changes needed' / drop-in-tidification claim (AP-82 — EdDSA changes the verifier)",
+    overclaims.length === 0,
+    overclaims.join("  "),
+  );
+
   // 1c. Every shipped realm template must still carry the tideUserKey + vuid attribute mappers,
   //     so "remove tide-roles-mapper" can never be satisfied by deleting the Tide claims wholesale.
   const realmTemplates = [];

@@ -295,6 +295,8 @@ generic IdP-update endpoint and skip the signature — the enclave verifies the 
 > writes needing no authorize/commit drain — even on a multiAdmin realm, so branding can be fixed
 > after the one-way flip without an enclave ceremony.
 
+**Doing all of this in one command**: `templates/enclave-branding/brand-tidecloak.sh --realm <realm>` generates, validates, uploads both, saves+signs and verifies. VERIFIED end to end on a live Tide realm (served bytes byte-identical to the uploaded files). It pre-flights the **`tide-vendor-key` component** — what `set-branding` actually requires — and refuses before uploading on an unlicensed realm; note an unlicensed realm still returns 200 for `identity-provider/instances/tide`, so that is the wrong check.
+
 **Producing the assets**: `templates/enclave-branding/` ships a dependency-free generator
 (`make-branding.py` — no image model, no Pillow) plus a validator (`check-branding.py`) and
 image-model prompts. Recommended geometry (ASSUMED — nothing enforces it): logo **512×512 PNG with
