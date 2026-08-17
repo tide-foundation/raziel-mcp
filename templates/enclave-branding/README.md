@@ -3,12 +3,38 @@
 The Tide login enclave displays your realm's **logo** and **background image**. This template gets you
 a correct default in one command, and validates any asset before you spend an upload on it.
 
+## One command brands the realm
+
+```bash
+./brand-tidecloak.sh --realm myapp --accent 1f6feb --name "My App"
+```
+
+generate → validate → upload both → **save + re-sign** → verify. No image model, no Pillow, no
+network for the assets; needs `jq`, `python3`, and `KC_BOOTSTRAP_ADMIN_PASSWORD` in the environment or
+`./.env` (AP-41 — never inline it). Bring your own artwork instead with
+`--logo path/to/logo.png --background path/to/bg.jpg`.
+
+**VERIFIED end to end on a live Tide realm**: uploads returned SHA-256 hashes, `set-branding`
+answered *"Tide branding updated and settings re-signed successfully"*, `get-branding` came back with
+versioned URLs, and the public `images/{LOGO,BACKGROUND_IMAGE}` endpoints served back
+**byte-identical** PNGs (hash in the URL == hash of the served bytes).
+
+It is safe to re-run: each upload replaces the previous file of that `fileType`, generation is
+deterministic for a given `--name`/`--accent`, and every save re-signs. Branding is **IGA-exempt**, so
+it works even after the one-way multiAdmin flip and needs no change-request drain.
+
+**It fails fast on a realm it cannot brand.** The pre-flight checks for the `tide-vendor-key`
+component — precisely what `set-branding` requires — and refuses before uploading anything. Do *not*
+substitute a check for the Tide IdP: measured, an unlicensed realm returns **200** for
+`identity-provider/instances/tide` while having **no** vendor key, so that check passes and the save
+then fails after two wasted uploads that stay on disk as orphans.
+
+### Or the pieces separately
+
 ```bash
 python3 make-branding.py --accent 1f6feb        # -> branding/logo.png, branding/background.png
 python3 check-branding.py branding/             # validate BEFORE uploading
 ```
-
-No dependencies — Python stdlib only, no Pillow, no image model, no network.
 
 ## What it generates — and what it does not
 

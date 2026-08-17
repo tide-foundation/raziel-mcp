@@ -339,6 +339,35 @@ sleep 2
 approve_and_commit roles
 
 # --- Step 12: Export adapter JSON ---
+# --- Default enclave branding (logo + background) -------------------------------------------
+# Generated locally — no image model needed — then uploaded and SIGNED. Branding is IGA-exempt
+# (IGA_VENDOR_PROVISIONING), so this works even after the firstAdmin -> multiAdmin flip and needs
+# no change-request drain. Skip with BRAND_SKIP=1; override colour with BRAND_ACCENT=<hex>.
+BRAND_SCRIPT=""
+for cand in "$SCRIPT_DIR/../../templates/enclave-branding/brand-tidecloak.sh" \
+            "$SCRIPT_DIR/../templates/enclave-branding/brand-tidecloak.sh" \
+            "$SCRIPT_DIR/enclave-branding/brand-tidecloak.sh"; do
+  [ -f "$cand" ] && { BRAND_SCRIPT="$cand"; break; }
+done
+if [ "${BRAND_SKIP:-0}" = "1" ]; then
+  echo "==> Skipping enclave branding (BRAND_SKIP=1)"
+elif [ -z "$BRAND_SCRIPT" ]; then
+  echo "==> Skipping enclave branding (templates/enclave-branding not found next to this script)"
+elif ! command -v python3 >/dev/null 2>&1; then
+  echo "==> Skipping enclave branding (python3 not available)"
+else
+  echo "==> Branding the login enclave (default logo + background)..."
+  # Non-fatal: a cosmetic step must never fail a bootstrap that otherwise succeeded.
+  if TIDECLOAK_URL="$TIDECLOAK_URL" bash "$BRAND_SCRIPT" \
+       --realm "$REALM_NAME" --name "$_APP_NAME" \
+       --accent "${BRAND_ACCENT:-1f6feb}" --out "$PROJECT_DIR/branding" 2>&1 | sed 's/^/    /'; then
+    :
+  else
+    echo "    (branding failed — cosmetic only, bootstrap continues. Re-run:"
+    echo "     bash $BRAND_SCRIPT --realm $REALM_NAME)"
+  fi
+fi
+
 echo "==> Exporting adapter config..."
 TOKEN="$(get_token)"
 CLIENT_UUID=$(curl -s "$TIDECLOAK_URL/admin/realms/$REALM_NAME/clients?clientId=$CLIENT_NAME" \

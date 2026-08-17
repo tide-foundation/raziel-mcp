@@ -1555,6 +1555,7 @@ The org is `tideorg`, not `tidecloak`. And `tidecloak-dev` — despite the suffi
 - [ ] Identity fields **fail closed** — no `?? '—'` on a confirmation screen (AP-69)
 - [ ] No error path discards the server's response body (see troubleshooting Diagnostic Principle)
 - [ ] No issuer-hosted `/verify` returning a bare verdict (AP-68)
+- [ ] Migration compatibility gated on **EdDSA** support before being promised (AP-82)
 - [ ] `/tide_dpop/:path*` rewrite is a **wildcard**, static (not a route handler) (AP-70)
 - [ ] CSP is exactly `frame-src 'self' *` — no `frame-ancestors` added (AP-71)
 - [ ] Relay path serves its own CSP **and** `Allow-CSP-From: *`, verified with `curl -D -` (AP-70/71)
@@ -1649,6 +1650,7 @@ The org is `tideorg`, not `tidecloak`. And `tidecloak-dev` — despite the suffi
 | AP-78 | Low | **CRITICAL** | **Hard** — throws AFTER the network signed |
 | AP-79 | Low | **CRITICAL** | Easy once known — irreversible when not |
 | AP-80 | Medium | **HIGH** | **Hard** — 201 Created, mapper silently dropped, roles vanish with no error |
+| AP-82 | Low | **CRITICAL** | Easy to check, easy to promise wrongly — every request 401s after the swap |
 
 > AP-38 through AP-59 predate this table and are not classified here. Treat the omission as a known
 > gap in this section, not as an assessment of low severity.
@@ -2938,6 +2940,72 @@ before writing a contract.** They are working, deployed, and they are the surfac
 `byte[]` and gave `PolicyDecision` an `IsAllowed`. All corrected 2026-08-11, and
 `check-docs.sh` now compiles every contract example in the pack so a simplified example cannot drift
 back into fiction. VERIFIED (LEARNINGS from a real ORK compile failure).
+
+---
+
+## AP-82: Assuming a Keycloak-Compatible App Can Be Tidified
+
+**"It uses Keycloak, so it will work" is false.** Tidifying a realm **changes the token signature
+algorithm from RS256 to EdDSA**, and a large amount of otherwise Keycloak-compatible software cannot
+verify an Ed25519 signature.
+
+MEASURED on `tideorg/tidecloak-dev:latest`:
+
+| Realm | `defaultSignatureAlgorithm` | Ed25519 (OKP) key |
+|---|---|---|
+| non-Tide (`master`, `myrealm`) | `RS256` | absent |
+| **Tide-enabled** (`iga.attestor=tide`) | **`EdDSA`** | **present** |
+
+Clients carry no explicit signature attribute, so they **inherit the realm default** — every token the
+app receives becomes `alg: EdDSA`.
+
+**This is not a setting to revert.** Tide's signing *is* threshold Ed25519 across the ORK network.
+Forcing the realm back to RS256 would mean the TideCloak server holding a whole signing key and
+signing tokens by itself — the exact property the migration exists to remove (I-02, I-09). **The
+verifier changes; the realm cannot.**
+
+**VERIFIED blockers:**
+
+| Verifier | EdDSA | Evidence |
+|---|---|---|
+| Node `jsonwebtoken` | **NO** | allowlist is `HS*/RS*/ES*/PS*`; zero occurrences of `EdDSA`/`ed25519` in the shipped bundle |
+| Node `jwks-rsa` | n/a — **remote** JWKS + RS256 | violates I-04/AP-01 as well |
+| .NET `Microsoft.IdentityModel.Tokens` | **NO** | T-23; `Tide.Asgard.Core` ships an EdDSA `SignatureProvider` precisely because the stock stack lacks one |
+| Node `jose` | yes | the path the pack prescribes |
+
+Two failure modes, and the second is sneakier: **no Ed25519 implementation** (everything 401s), or a
+correct implementation **pinned to RS256** (`algorithms: ['RS256']`). Pinning is good hygiene (SG-13),
+so **repin to EdDSA — never unpin**, or the verifier will accept whatever the token claims.
+
+⚠️ **The blocker most migrations die on is not in the repo.** Anything else validating the JWT — an API
+gateway, a managed serverless authorizer, a proxy terminating auth, a SaaS consuming your tokens — must
+also do EdDSA, and is usually outside the app team's control. **The pack asserts nothing about specific
+products**: support is version- and edition-dependent, and a wrong claim is worse than none. Test the
+real deployment with a real EdDSA token.
+
+**Wrong**: "Same SDK, same OIDC protocol, no code changes needed." (This was in the pack's own
+migration playbook, and it is the reason this entry exists.) At minimum the JWKS source changes;
+usually DPoP and the `/auth/redirect` handler; often the JWT library itself. And the SDK surface is
+`@tidecloak/*`, which only partially overlaps `keycloak-js` (AP-69).
+
+**Correct**: run the gate, then classify and say why.
+
+```bash
+templates/tidify-preflight/check-tidify.sh /path/to/app
+```
+
+| Verdict | Meaning |
+|---|---|
+| **FULLY TIDIFIABLE** | EdDSA-capable verifier under your control, adapter JWKS, DPoP wired, browser-based |
+| **PARTIALLY TIDIFIABLE** | Interactive paths move; some surface cannot (usually machine-to-machine, or a gateway you do not control). **Name the excluded surface** |
+| **NOT TIDIFIABLE (as built)** | A verifier you cannot change, a headless-only auth model, or a fixed third-party JWT consumer. Say what would have to change |
+
+A partial migration is a legitimate outcome. **Presenting it as complete is the failure** — the excluded
+surface keeps its original exposure, and a security write-up implying otherwise is wrong in the
+direction that matters.
+
+Full gate incl. non-EdDSA constraints: [tidify-compatibility.md](tidify-compatibility.md).
+VERIFIED by measurement 2026-08-13.
 
 ---
 
