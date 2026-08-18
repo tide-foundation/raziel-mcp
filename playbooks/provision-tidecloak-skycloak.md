@@ -137,11 +137,71 @@ H=(-H "API-Key: $SKYCLOAK_API_KEY" -H "API-Version: $VER")
 
 ## Step 1: Create the cluster
 
+**Discover the version — do not hardcode one.** There is no versions endpoint, so read the real tag
+list and take the newest at or above the verified floor:
+
 ```bash
-curl -s -X POST "$API/clusters" "${H[@]}" -H "Content-Type: application/json" \
-  -d '{"type":"tidecloak","name":"myapp-auth","size":"small","location":"us","version":"0.14.17"}' \
-  | tee cluster-create.json | jq '{id,name,type,version,status}'
-CLUSTER_ID=$(jq -r '.id' cluster-create.json)
+# newest eligible, e.g. 0.14.20
+VERSION="$(templates/shared/skycloak-latest-version.sh)"
+```
+
+No pack checkout? Inline equivalent. **Two sort traps here, not one:** plain `sort` picks `0.9.8`
+over `0.14.20`, and a *global* `-r` is silently ignored when per-key flags are present — so the
+reverse must be written per key as `nr`, or you get the oldest eligible version instead of the
+newest:
+
+```bash
+skycloak_versions() {   # newest-first, semver only, floor 0.14.17
+  for p in 1 2; do
+    curl -sf "https://hub.docker.com/v2/repositories/tideorg/tidecloak/tags?page_size=100&page=$p"
+  done | jq -r '.results[].name' \
+    | grep -Ex '[0-9]+\.[0-9]+\.[0-9]+' \
+    | sort -t. -k1,1nr -k2,2nr -k3,3nr \
+    | awk -F. '($1*1000000+$2*1000+$3) >= (0*1000000+14*1000+17)'
+}
+```
+
+`latest` is deliberately excluded: Skycloak validates the field against `^[0-9]+\.[0-9]+(\.[0-9]+)?$`
+and rejects it.
+
+Then create, walking DOWN the list if Skycloak's catalogue lags Docker Hub. Skycloak answers
+`400 invalid cluster version` for a tag it cannot offer — that is a normal, recoverable condition,
+not a reason to fall back to a stale pin:
+
+```bash
+CLUSTER_ID=""
+for VERSION in $(templates/shared/skycloak-latest-version.sh --list); do
+  echo "==> trying TideCloak $VERSION"
+  BODY="$(jq -n --arg v "$VERSION" \
+    '{type:"tidecloak", name:"myapp-auth", size:"small", location:"us", version:$v}')"
+  RESP="$(curl -s -w '\n%{http_code}' -X POST "$API/clusters" "${H[@]}" \
+            -H "Content-Type: application/json" -d "$BODY")"
+  CODE="$(printf '%s' "$RESP" | tail -1)"
+  JSON="$(printf '%s' "$RESP" | sed '$d')"
+
+  if [ "$CODE" = "201" ] || [ "$CODE" = "200" ]; then
+    printf '%s' "$JSON" > cluster-create.json
+    CLUSTER_ID="$(jq -r '.id' cluster-create.json)"
+    echo "    created on $VERSION"
+    break
+  fi
+  # Only a version-catalogue miss is retryable. A 402 (plan limit) or 500 is not — stop and read it.
+  if printf '%s' "$JSON" | grep -qi "invalid cluster version"; then
+    echo "    Skycloak cannot offer $VERSION yet — trying the next"
+    continue
+  fi
+  echo "ERROR: create failed ($CODE): $JSON" >&2; break
+done
+[ -z "$CLUSTER_ID" ] && { echo "ERROR: no offerable version at or above the floor." >&2; exit 1; }
+jq '{id,name,type,version,status}' cluster-create.json
+```
+
+⚠️ **Verify the version you actually got.** Ask for one and be given another and every later step is
+against a build you did not choose:
+
+```bash
+jq -r '.version' cluster-create.json   # must equal the $VERSION that succeeded
+jq -r '.type'    cluster-create.json   # must be "tidecloak" — see Trap 1
 ```
 
 **Request body — corrected from live 422s:**
@@ -160,17 +220,35 @@ CLUSTER_ID=$(jq -r '.id' cluster-create.json)
 jq -r '.type' cluster-create.json    # MUST be "tidecloak"
 ```
 
-**Trap 2 — the version namespace follows the type.** TideCloak clusters take TideCloak versions (`0.14.x`); Keycloak clusters take Keycloak versions (`26.x`). Crossing them → `400 invalid cluster version`. There is no versions endpoint; read tags from Docker Hub (`tideorg/tidecloak`) or ask Skycloak.
+**Trap 2 — the version namespace follows the type.** TideCloak clusters take TideCloak versions (`0.14.x`); Keycloak clusters take Keycloak versions (`26.x`). Crossing them → `400 invalid cluster version`. There is no versions endpoint; read tags from Docker Hub (`tideorg/tidecloak`) — which is exactly what `templates/shared/skycloak-latest-version.sh` does.
 
-**Version matrix — VERIFIED. Use `0.14.17` or later:**
+**Use the LATEST available version. `0.14.17` is the verified FLOOR, not the target.**
+
+`templates/shared/skycloak-latest-version.sh` reads Docker Hub tags for `tideorg/tidecloak`, keeps
+strict semver only, sorts **numerically**, and drops anything below the floor.
 
 | Version | Provisions | Automation client | `setUpTideRealm` |
 |---|---|---|---|
 | `0.13.13` | yes | **500 — unusable** | untestable |
 | `0.14.11` | yes | works | **500 KEYGEN_FAILED** |
-| `0.14.17` | yes | works | **works** |
+| `0.14.17` | yes | works | **works** ← floor |
+| newest (`0.14.20` at time of writing) | — | — | **use this** |
 
 A broken automation client also breaks Skycloak's own `/clusters/{id}/realms` API, which proxies through it.
+
+**Two traps the script exists to avoid:**
+
+- **`latest` is not a valid value.** Skycloak validates `^[0-9]+\.[0-9]+(\.[0-9]+)?$`, so the Docker
+  tag `latest` is rejected outright. It must be resolved to a concrete semver — verified that `latest`
+  and `0.14.20` are the same digest.
+- **Tags must be sorted NUMERICALLY.** Lexically `"0.9.8" > "0.14.20"`, so a naive `sort` picks
+  `0.9.8` — below the floor, and it fails at `setUpTideRealm` with `KEYGEN_FAILED`, an error that
+  looks like key generation and is actually licensing.
+
+**Honest status of "newest":** the floor is VERIFIED by testing; a newly released version above it is
+**ASSUMED good** — nobody has run this matrix against it. That is the right default (a months-old pin
+goes stale silently, and Tide ships often), but if provisioning succeeds and `setUpTideRealm` then
+fails on a brand-new tag, drop one version with `--floor` and report it.
 
 ---
 

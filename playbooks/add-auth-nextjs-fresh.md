@@ -189,28 +189,61 @@ All **four** pieces are required together. Missing any one breaks login, usually
 | 3 | rewrite `/tide_dpop/:path*` → `/tide_dpop_auth.html` | `next.config.ts` |
 | 4 | CSP + `Allow-CSP-From` on `/tide_dpop/:path*` | `next.config.ts` |
 
-**Installing `tide_dpop_auth.html` — copy verbatim, then verify**
+**Installing `tide_dpop_auth.html` — get the RIGHT copy, then verify**
 
-The Tide enclave loads this page during login to prove DPoP key possession to the ORKs, and **integrity-checks its content**. Copy it byte-for-byte. Do not restyle it, do not "improve" it, do not add popup/`window.opener` handling — any edit makes login fail with an unexplained **500** at the token exchange, with nothing in the response body to tell you why. VERIFIED (learning-batch-004 L-07; drift reproduced 2026-08-06).
+> ### ⚠️ This section previously told you to install the BROKEN file
+>
+> It named `sources/example-app-keylessh/public/` as canonical, instructed *"do not add
+> popup/`window.opener` handling"*, and its verification asserted `window.opener` was **absent**.
+> All of that is wrong, and following it produces **`TIDE-SWE-UNHANDLED`** at login. Two copies exist
+> in the wild and the keylessh repo contains **both** — the one at its repo root is the stale one.
+> Corrected 2026-08-17 from a real user report. AP-62 / GAP-068.
+
+The enclave loads this page during login to prove DPoP key possession. **Get it from the MCP** — that
+hands you the verified content directly, and is the only source that cannot give you the stale copy:
+
+```
+tide_dpop_asset      # MCP tool: returns the file, the hash, and the next.config wiring
+```
+
+Or copy it from a pack template (all four ship the known-good file):
 
 ```bash
 mkdir -p public
-
-# Canonical source, in priority order. The exemplar is a real working app and is
-# the reference the pack's own tests assert against.
-cp <pack>/sources/example-app-keylessh/public/tide_dpop_auth.html public/ \
-  || cp <pack>/templates/nextjs-e2ee-vault/public/tide_dpop_auth.html public/
-
-# Verify you copied it intact — these three must all hold:
-test -s public/tide_dpop_auth.html && echo "present"
-! grep -q "window.opener" public/tide_dpop_auth.html && echo "no window.opener (correct — the enclave frames it)"
-diff -q public/tide_dpop_auth.html <pack>/sources/example-app-keylessh/public/tide_dpop_auth.html \
-  && echo "byte-identical to the exemplar"
+cp <pack>/templates/nextjs-customer-portal/public/tide_dpop_auth.html public/
 ```
 
-If `diff` reports a difference, **you have the wrong copy** — do not proceed and do not try to reconcile it by hand. Re-copy from the exemplar, or ask the Tide team for the build matching your SDK version.
+**Verify — the checks below are the corrected ones:**
 
-What the correct page does, so you can recognise a wrong one: it reads `version` and `openerOrigin` from the query string, derives an IndexedDB name from the hex-encoded `iss`/`aud` path segments, reads the `dpopState` key, signs an enclave-supplied challenge prefixed with `dpop-auth-challenge:` (a deliberate anti-blind-signing measure), and posts every message to **`window.parent`** — never `window.opener`. It carries no styling.
+```bash
+# 1. Present, and the KNOWN-GOOD copy. This hash is the whole check.
+sha256sum public/tide_dpop_auth.html
+# expect: 9d7844b938f0a2565fa910d3d30e9b8797cbfd6e0b73d59d804169a089aea757   (9120 bytes)
+
+# 2. It MUST contain window.opener. Its absence means you have the stale 7183-byte copy,
+#    which posts to window.parent and breaks the popup fallback.
+grep -q "window.opener" public/tide_dpop_auth.html \
+  && echo "OK - handles both popup and iframe" \
+  || echo "STALE COPY - this will fail with TIDE-SWE-UNHANDLED"
+
+# 3. Or just run the pack's checker over your project:
+<pack>/scripts/check-dpop-asset.sh .
+```
+
+Do not restyle it, do not "improve" it — the enclave integrity-checks its content. But **do** make
+sure it is the copy that handles both window shapes.
+
+What the correct page does: it reads `version` and `openerOrigin` from the query string, derives an
+IndexedDB name from the hex-encoded `iss`/`aud` path segments, reads the `dpopState` key, signs an
+enclave-supplied challenge prefixed with `dpop-auth-challenge:` (a deliberate anti-blind-signing
+measure), and posts messages to **`window.opener || window.parent`** — the popup has an opener, the
+iframe has a parent. It carries no styling.
+
+**Why the popup case matters**: the relay runs in an **iframe** first and needs unpartitioned IndexedDB
+via `document.requestStorageAccess({ indexedDB: true })`. When that fails, the SDK falls back to a
+**popup** opened with `window.open()` — and in a popup `window.parent === window`, so a
+`window.parent.postMessage` page talks to itself. The enclave never receives `pageLoaded`, and you get
+`TIDE-SWE-UNHANDLED` or `Popup DPoP verification failed to load`.
 
 **It is version-bound and NOT shipped in the `@tidecloak/*` npm packages**, so upgrading the SDK does not update it. Re-copy it whenever you change SDK version. If the enclave rejects it (`Popup DPoP verification failed to load`) or the token exchange 500s after a bump, suspect this file first. VERIFIED (LEARNINGS-batch-005 L-05, LEARNINGS-batch-007 L-03).
 

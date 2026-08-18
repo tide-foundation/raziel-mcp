@@ -2,6 +2,24 @@
 
 All notable changes to `@tideorg/mcp` (the Tide Agent Pack) are documented here.
 
+## 1.9.13 — 2026-08-18
+
+- **New `tide_dpop_asset` tool — serve `tide_dpop_auth.html` from the MCP.** The Tide
+  enclave integrity-checks this page, so any local drift breaks login with an
+  unexplained 500. Rather than have every template ship a copy that can rot, the MCP
+  now serves the canonical **popup-safe** page (`window.opener || window.parent` +
+  self-post guard) directly. **Reverses the previously inverted `window.opener`
+  guidance** and reteaches the root cause. (19th tool.)
+- **`sources/` is not authoritative for an artifact's VERSION.** New anti-pattern:
+  a vendored copy under `sources/` is a point-in-time snapshot, not the version of
+  record — trusting its version (or its content) as current is how drift ships.
+  Documented in `canon/anti-patterns.md` and `CLAUDE.md`.
+- **Skycloak: discover the latest TideCloak image instead of pinning `0.14.17`.**
+  New `templates/shared/skycloak-latest-version.sh` resolves the current image at
+  provision time; `provision-tidecloak-skycloak` and `canon/hosting-options.md`
+  updated so a hardcoded tag stops silently going stale.
+- **`release-verify.mjs` expects 19 tools** (was 18) now that `tide_dpop_asset` ships.
+
 ## 1.9.12 — 2026-08-17
 
 - **Corrected a false migration claim — tidifying is not free (EdDSA gate).** The

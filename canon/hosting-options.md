@@ -90,9 +90,25 @@ Three traps, each of which cost real debugging time:
 |---|---|---|---|
 | `0.13.13` | yes | **500 — unusable** | untestable |
 | `0.14.11` | yes | works | **500 KEYGEN_FAILED** |
-| `0.14.17` | yes | works | **works** |
+| `0.14.17` | yes | works | **works** ← verified FLOOR |
 
 A broken automation client also breaks Skycloak's own `/clusters/{id}/realms` API, since that proxies through it. Match the `@tidecloak/*` npm SDK version to the cluster version.
+
+**`0.14.17` is the floor, not the version to use. Discover the newest and use that** — run
+`templates/shared/skycloak-latest-version.sh`, which reads Docker Hub tags for `tideorg/tidecloak`.
+Hardcoding a pin is the failure mode this replaces: a pin keeps provisioning successfully long after
+it is stale, so nothing ever signals that it aged out. Two traps the script handles:
+
+- **`latest` is not an accepted value.** Skycloak validates the version against
+  `^[0-9]+\.[0-9]+(\.[0-9]+)?$`, so the Docker tag `latest` is rejected. Resolve it to a concrete
+  semver (verified: `latest` and `0.14.20` are the same digest).
+- **Sort numerically, never lexically.** As strings `"0.9.8" > "0.14.20"`, so a naive sort selects a
+  version *below* the floor, which then fails at `setUpTideRealm` with `KEYGEN_FAILED` — an error
+  that reads as key generation and is actually licensing.
+
+Skycloak's catalogue can lag Docker Hub. `400 invalid cluster version` on the newest tag is normal
+and recoverable — walk down `--list`, do not fall back to a stale pin. The floor is VERIFIED by
+testing; anything newer is **ASSUMED good** until someone runs the matrix on it.
 
 **Lifecycle** **VERIFIED**: creation is asynchronous, `provisioning`/`updating` → `available` or `failed` (45s–4min). Poll before bootstrapping.
 
@@ -148,12 +164,12 @@ A hosting-choice step is done when:
 1. The self-host vs hosted branch was resolved **before** bootstrap (I-17).
 2. If hosted: the cluster reports `available`, is reachable at `https://<id>.<location>.skycloak.io`, and **`type` is `tidecloak`** (not silently Keycloak).
 3. The trust-model caveats (availability, metadata, admin-path, Tideless-IGA) were stated to the operator, not just the benefits.
-4. The adapter JSON exported from the hosted instance contains `jwk`, `vendorId`, `homeOrkUrl` (I-05, I-13) — same requirement as self-hosted. If it doesn't, licensing did not complete: check the cluster version is `0.14.17+`.
+4. The adapter JSON exported from the hosted instance contains `jwk`, `vendorId`, `homeOrkUrl` (I-05, I-13) — same requirement as self-hosted. If it doesn't, licensing did not complete: check the cluster version is at or above the `0.14.17` floor.
 
 ## Anti-patterns
 
 - **AP-HOST-1** — Presenting partner-hosting as a security *downgrade* ("now a third party holds your auth"). It isn't, because of the threshold model — but state the real caveats (availability, metadata, Tideless-IGA), don't overcorrect into either fear or false comfort.
-- **AP-HOST-2** — Claiming the hosted Tide path works without checking `type`, the vendor surface, and the adapter's `jwk`. GAP-066 is resolved *for `0.14.17`*; older versions provision happily and then fail at licensing.
+- **AP-HOST-2** — Claiming the hosted Tide path works without checking `type`, the vendor surface, and the adapter's `jwk`. GAP-066 is resolved *from `0.14.17`*; older versions provision happily and then fail at licensing. Do not hardcode `0.14.17` either — it is the floor; discover the newest with `templates/shared/skycloak-latest-version.sh`.
 - **AP-HOST-5** — Granting `tide-realm-admin` before finishing every governed write. It flips the realm to multiAdmin, after which no change request can be approved from a script (`409 MULTIADMIN_REQUIRES_APPROVAL_ENCLAVE`) and every later config change needs a human enclave approval. Register all redirect URIs and web origins during bootstrap.
 
   ⚠️ **But Forseti policy deployment needs that grant.** `GET /iga/role-policies` returns `200 []` until `tide-realm-admin` is granted to the first admin — the `tide-realm-admin` policy is created *as part of* that grant, and policy deployment requires it. So "grant it last" and "you cannot deploy a policy without it" are both true: sequence every other governed write before the grant, then expect **policy deployment itself to be a post-flip, enclave-approved operation**. An empty `role-policies` array is not a broken endpoint. VERIFIED (LEARNINGS-agent-quorum-001 L-09); see `playbooks/deploy-forseti-policy.md` Step 8.

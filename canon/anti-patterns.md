@@ -1556,6 +1556,7 @@ The org is `tideorg`, not `tidecloak`. And `tidecloak-dev` — despite the suffi
 - [ ] No error path discards the server's response body (see troubleshooting Diagnostic Principle)
 - [ ] No issuer-hosted `/verify` returning a bare verdict (AP-68)
 - [ ] Migration compatibility gated on **EdDSA** support before being promised (AP-82)
+- [ ] No install step sources a runtime artifact from `sources/`; correctness decided by behaviour (AP-83)
 - [ ] `/tide_dpop/:path*` rewrite is a **wildcard**, static (not a route handler) (AP-70)
 - [ ] CSP is exactly `frame-src 'self' *` — no `frame-ancestors` added (AP-71)
 - [ ] Relay path serves its own CSP **and** `Allow-CSP-From: *`, verified with `curl -D -` (AP-70/71)
@@ -1651,6 +1652,8 @@ The org is `tideorg`, not `tidecloak`. And `tidecloak-dev` — despite the suffi
 | AP-79 | Low | **CRITICAL** | Easy once known — irreversible when not |
 | AP-80 | Medium | **HIGH** | **Hard** — 201 Created, mapper silently dropped, roles vanish with no error |
 | AP-82 | Low | **CRITICAL** | Easy to check, easy to promise wrongly — every request 401s after the swap |
+| AP-83 | Medium | **CRITICAL** | **Very hard** — the wrong conclusion looks rigorous and gets recorded as VERIFIED |
+| AP-84 | High | Medium | **Very hard** — a stale pin keeps working, so nothing ever signals it aged out |
 
 > AP-38 through AP-59 predate this table and are not classified here. Treat the omission as a known
 > gap in this section, not as an assessment of low severity.
@@ -2293,7 +2296,7 @@ with a full body.
 app can be arbitrarily stale (GAP-068) — and two dev servers competing for port 3000 will serve
 each other's `public/`, which produces this symptom from an unrelated project's copy.
 
-VERIFIED (LEARNINGS-music-license-001 L-03/L-04/L-08).
+VERIFIED (LEARNINGS-music-license-001 L-03/L-04/L-08). ⚠️ **Do not source this file from `sources/`** — `example-app-keylessh` holds BOTH copies and its repo-root one is the stale version. Take it from the MCP (`tide_dpop_asset`) or a pack template. The reasoning error that made the stale copy look canonical is **AP-83**.
 
 ---
 
@@ -3009,8 +3012,120 @@ VERIFIED by measurement 2026-08-13.
 
 ---
 
+## AP-83: Treating a `sources/` Exemplar as Authoritative for a Shipped Artifact's VERSION
+
+The pack's own rule says *"treat `sources/` as the main authority"* — and that is right for **how Tide
+works**: the API surface, the protocol, the security model. It is **wrong for the version of a runtime
+artifact**, and following it there has already broken a real login.
+
+**A vendored repo is a snapshot.** It can be stale, and it can hold **several copies of the same file
+at different versions**. `sources/example-app-keylessh` contains **two** `tide_dpop_auth.html` files —
+the one at its repo root is the broken 7183-byte copy; the good one is under `client/public/`.
+
+### What went wrong, concretely
+
+Someone compared the shipped templates against that exemplar, found a difference, and concluded:
+
+> *"both pack templates had silently drifted to a modified 9121-byte variant while the exemplar held
+> the canonical 7183-byte file"*
+
+Every step of that is a reasonable-looking inference and the conclusion is **exactly backwards**. The
+templates were then **reverted to the broken file**, the conclusion was recorded as **VERIFIED**, and
+four documents began telling users to install it — including a verification step that **passed the
+broken file and failed the correct one**. A user's login failed with `TIDE-SWE-UNHANDLED`.
+
+### The rule
+
+| Wrong | Right |
+|---|---|
+| "It differs from the exemplar, so it drifted" | Differing is **equally** evidence the exemplar is old |
+| Deciding by file size, age, or provenance | Deciding by **behaviour against the current runtime** |
+| Restoring a working file to match `sources/` | Keeping what **works**, and hash-gating it |
+| One exemplar = the canonical copy | A repo may hold several versions — check which one the app actually serves |
+
+**Ask what the artifact must DO, then check which copy does it.** Here: the relay must work when the
+SDK falls back to a popup, where `window.parent === window`. Only the copy using
+`window.opener || window.parent` can. That question settles it in one step; provenance never does.
+
+### Detecting it
+
+- Hash-gate the artifact the pack **ships**, in both directions (a gate that only detects "changed"
+  will happily accept a revert **to** the bad version).
+- **Also gate the prose.** `scripts/check-dpop-asset.sh` hashes files and reported all four templates
+  green while **four documents** told readers to fetch the broken copy from `sources/`. A
+  file-integrity check cannot catch guidance pointing elsewhere.
+- Treat a `sources/` path in *install* instructions as a smell: ship from `templates/`, or serve the
+  bytes from the MCP (`tide_dpop_asset`) where there is only one copy to get.
+
+VERIFIED by a user report, 2026-08-17. Related: AP-62 (the symptom), GAP-068, `CLAUDE.md` → "Use only
+bounded sources".
+
+---
+
 ## Status Legend
 
 - **VERIFIED** - Directly sourced from documentation or keylessh exemplar
 - **INFERRED** - Strongly implied by source material
 - **REQUIRES_RUNTIME_VALIDATION** - Single-app evidence; needs confirmation
+
+---
+
+## AP-84: Hardcoding the Hosted TideCloak Cluster Version
+
+**Severity: Medium. Blast radius: you silently run a months-old build.**
+
+The pack shipped `-d '{"type":"tidecloak",...,"version":"0.14.17"}'` in the Skycloak provisioning
+playbook. `0.14.17` was correct on 2026-08-06 — it was the first version where `setUpTideRealm`
+worked. By 2026-08-18 the newest was `0.14.20`.
+
+**Why a version pin is a bad failure, not a safe default.** A pin does not break. It provisions a
+cluster, licensing succeeds, the app works — so nothing ever tells you the number aged out. Every
+user of the playbook keeps getting a build several releases behind, and the fixes in between are
+invisible. Compare a wrong URL, which fails immediately and gets fixed. A stale pin is worse
+precisely because it keeps working.
+
+**Do this instead** — discover the version, then create:
+
+```bash
+for VERSION in $(templates/shared/skycloak-latest-version.sh --list); do
+  # POST /clusters with $VERSION; break on 201; continue on `400 invalid cluster version`
+done
+```
+
+**Three traps the discovery script exists to handle:**
+
+1. **`latest` is not an accepted value.** Skycloak validates the version against
+   `^[0-9]+\.[0-9]+(\.[0-9]+)?$`. The Docker tag `latest` is rejected, so it must be resolved to a
+   concrete semver first. (VERIFIED: `latest` and `0.14.20` are the same digest today — resolve it
+   anyway, because that is an accident of timing, not a guarantee.)
+2. **Sort numerically, never lexically — and check that your reverse actually applied.**
+   `tideorg/tidecloak` has 207 tags including a `0.9.x` series. As strings `"0.9.8" > "0.14.20"`, so
+   `sort | tail -1` picks `0.9.8` — below the licensing floor. It then fails at `setUpTideRealm`
+   with `TIDE-IDPEXT-VENDOR-KEYGEN_FAILED`, which reads as a key-generation bug and is actually the
+   version being too old.
+
+   The second half bit while writing this entry. In `sort`, a **global `-r` is ignored once per-key
+   flags are present** — key-specific options override it:
+
+   ```
+   sort -t. -k1,1n  -k2,2n  -k3,3n  -r   → 0.9.8, 0.14.17, 0.14.19, 0.14.20   # WRONG, both ways
+   sort -t. -k1,1nr -k2,2nr -k3,3nr      → 0.14.20, 0.14.19, 0.14.17, 0.9.8   # right
+   ```
+
+   The wrong form looks reversed and is not, so `head -1` returns the **oldest** eligible version —
+   a silent downgrade. Either write the reverse per key as `nr`, use `sort -Vr`, or sort in a real
+   language (the pack's script uses Python `sorted(..., key=..., reverse=True)`). Whichever you
+   pick, print the list once and read it.
+3. **A floor is still required.** `0.13.13` ships a broken automation client and `0.14.11` fails
+   licensing. Newest-above-`0.14.17` is the rule, not newest-overall.
+
+**Do not "fix" a version failure by falling back to a pin.** Skycloak's catalogue can lag Docker Hub,
+so `400 invalid cluster version` on the newest tag is expected and recoverable: walk *down* the
+eligible list. Falling back to `0.14.17` reintroduces exactly the staleness the discovery removed.
+
+**Honesty rule:** the floor is VERIFIED by testing the matrix. A version above it is **ASSUMED
+good** — nobody has re-run that matrix on it. Say so. If a brand-new tag provisions and then fails
+at licensing, drop one version with `--floor` and report it; do not silently re-pin.
+
+**Related:** AP-HOST-2 (claiming the hosted path works without checking the version).
+The same shape as **AP-83**: treating a snapshot as if it were the current truth.

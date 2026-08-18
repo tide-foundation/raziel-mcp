@@ -1799,27 +1799,59 @@ curl -s "$TIDECLOAK_URL/admin/realms/$REALM/clients?clientId=$CLIENT" \
 
 **Fix:**
 1. Add `useDPoP: { mode: 'strict', alg: 'ES256' }` **inside** the `config` object (not as a JSX prop).
-2. Install `tide_dpop_auth.html` **verbatim** into `public/`:
+2. Install the **known-good** `tide_dpop_auth.html` into `public/`:
    ```bash
-   cp <pack>/sources/example-app-keylessh/public/tide_dpop_auth.html public/
-   diff -q public/tide_dpop_auth.html <pack>/sources/example-app-keylessh/public/tide_dpop_auth.html
-   ! grep -q "window.opener" public/tide_dpop_auth.html && echo "correct copy"
+   # From the MCP (cannot hand you the stale copy):  tide_dpop_asset
+   # Or from any pack template:
+   cp <pack>/templates/nextjs-customer-portal/public/tide_dpop_auth.html public/
+
+   sha256sum public/tide_dpop_auth.html
+   # expect 9d7844b938f0a2565fa910d3d30e9b8797cbfd6e0b73d59d804169a089aea757  (9120 bytes)
+   grep -q "window.opener" public/tide_dpop_auth.html && echo "correct copy"
    ```
-   The enclave integrity-checks this file. A restyled or "improved" copy — notably one
-   adding `window.opener` popup handling — fails with exactly this unexplained 500. The
-   canonical page posts only to `window.parent` and has no styling.
+   The enclave integrity-checks this file, so do not restyle it — but the correct copy **does**
+   contain `window.opener`. See the reversal note below.
 3. Add the `/tide_dpop/:path*` → `/tide_dpop_auth.html` rewrite.
 4. Add the DPoP CSP **after** any generic CSP rule — the last matching rule wins for a header key, so a generic `/:path*` rule placed later silently overrides it.
 5. Switch API calls to `secureFetch` (absolute URLs only). A plain `fetch` with a Bearer header carries no proof and will be rejected.
 
-**If all four are correct and it still 500s:** the `tide_dpop_auth.html` copy is wrong — either **modified** or **version-mismatched**. Check both:
+### ⚠️ REVERSED 2026-08-17 — this entry previously had it exactly backwards
+
+It said the canonical file was the **7183-byte** copy that posts only to `window.parent`, that a copy
+containing `window.opener` was "drift", and it told you to assert `grep -c "window.opener" # want 0`.
+
+**That is inverted.** The 2026-08-06 note concluded that the pack templates "had silently drifted to a
+modified 9121-byte variant while the exemplar held the canonical 7183-byte file" — and on that basis
+the templates were reverted **to the broken file**. The 9120-byte copy with
+`targetWindow = window.opener || window.parent` is the **correct, current** one.
+
+**Why the stale copy fails**: the relay runs in an **iframe** first and needs unpartitioned IndexedDB
+via `document.requestStorageAccess({ indexedDB: true })`. When that fails, the SDK falls back to a
+**popup** opened with `window.open()`. In a popup `window.parent === window`, so a
+`window.parent.postMessage` page **messages itself** — the opener never receives `pageLoaded`, and you
+get `TIDE-SWE-UNHANDLED` or `Popup DPoP verification failed to load`.
+
+Confirmed by an independent user report (2026-08-17) who hit `TIDE-SWE-UNHANDLED` in Chrome, traced it
+to `window.parent` in a popup, and fixed it with `window.opener || window.parent` — arriving
+independently at the pack's known-good file.
+
+**If all four pieces are correct and it still fails**, check the copy:
 
 ```bash
-diff -q public/tide_dpop_auth.html <pack>/sources/example-app-keylessh/public/tide_dpop_auth.html
-grep -c "window.opener" public/tide_dpop_auth.html    # want 0
+sha256sum public/tide_dpop_auth.html
+# 9d7844b938f0a2565fa910d3d30e9b8797cbfd6e0b73d59d804169a089aea757  = known-good (9120 bytes)
+# e725df1231f0050117de1a95948c3da3aca2757282ffdf65821940e668d95756  = STALE (7183) -> this bug
+grep -q "window.opener" public/tide_dpop_auth.html || echo "STALE COPY — replace it"
+
+<pack>/scripts/check-dpop-asset.sh .        # checks every copy under a tree
 ```
 
-A difference means you have a drifted copy — re-copy from the exemplar. If it matches the exemplar and still fails, the exemplar itself may predate your SDK version: the file is not shipped in the `@tidecloak/*` packages, so ask the Tide team for the build matching your SDK. VERIFIED 2026-08-06: both pack *templates* had silently drifted to a modified 9121-byte variant while the exemplar held the canonical 7183-byte file.
+⚠️ **Do not source this file from `sources/example-app-keylessh/public/`** — the keylessh repo contains
+**both** copies and the one at its repo root is the stale one. Its `client/public/` copy is the good
+one. Take it from the MCP (`tide_dpop_asset`) or a pack template instead.
+
+The file is not shipped in the `@tidecloak/*` packages, so if you have the known-good copy and it
+still fails after an SDK bump, ask the Tide team for the build matching your SDK version.
 
 **Do not "fix" this by removing `useDPoP` alone.** The server still demands proofs and login stays broken. Disabling DPoP requires flipping the client attribute to `false` as well, which on an IGA realm is a change request — and after the realm goes multiAdmin, a human enclave approval.
 

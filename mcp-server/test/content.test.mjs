@@ -2,6 +2,7 @@
 // These are the regression gate for reconciliations like the IGA API migration.
 import { PACK_ROOT, packRead, packExists, listDir, walkFiles, Checks } from "./harness.mjs";
 import { readFileSync } from "node:fs";
+import { createHash } from "node:crypto";
 import { join } from "node:path";
 
 const existsSyncSafe = (p) => { try { return readFileSync(p, "utf8") !== null; } catch { return false; } };
@@ -124,6 +125,70 @@ export async function run() {
     overclaims.join("  "),
   );
 
+  // 1g. Nothing may tell you to SOURCE tide_dpop_auth.html from the stale copy, or assert that
+  //     window.opener must be ABSENT. The keylessh repo carries BOTH copies and the one at its repo
+  //     ROOT is the stale 7183-byte version that posts to window.parent — which fails in a popup with
+  //     TIDE-SWE-UNHANDLED. A hash check over FILES cannot catch prose telling you to fetch the wrong
+  //     file, which is how this survived: the templates were correct and the playbook still pointed
+  //     at the broken copy. Reported by a user 2026-08-17. AP-62/GAP-068.
+  //     canon/troubleshooting.md is exempt: its reversal note quotes the wrong instruction to correct it.
+  const dpopBad = [];
+  for (const d of ["canon", "playbooks", "reference-apps", "skills", "prompts", "adapters", "templates"]) {
+    for (const f of walkFiles(join(PACK_ROOT, d), [".md", ".sh"])) {
+      const r = rel(f);
+      if (r === "canon/troubleshooting.md") continue;
+      readFileSync(f, "utf8").split("\n").forEach((ln, i) => {
+        // sourcing from the keylessh REPO ROOT public/ (its client/public/ copy is the good one)
+        if (/example-app-keylessh\/public\/tide_dpop_auth\.html/.test(ln)) {
+          dpopBad.push(`${r}:${i + 1} (stale source path)`);
+        }
+        // asserting window.opener is absent / must not be added
+        if (/(!\s*grep[^\n]*window\.opener|window\.opener[^\n]{0,40}#\s*want 0|do not add[^\n]{0,30}window\.opener|never\s+`?window\.opener)/i.test(ln)) {
+          dpopBad.push(`${r}:${i + 1} (asserts window.opener absent — inverted)`);
+        }
+      });
+    }
+  }
+  c.ok(
+    "nothing sources tide_dpop_auth.html from the stale copy or asserts window.opener is absent (AP-62)",
+    dpopBad.length === 0,
+    dpopBad.join("  "),
+  );
+
+  // 1h. No hardcoded TideCloak cluster version in a Skycloak create body, and never the tag
+  //     `latest`. A pin does not fail — it keeps provisioning an old build forever, so nothing
+  //     signals it went stale; and Skycloak validates the version against
+  //     ^[0-9]+\.[0-9]+(\.[0-9]+)?$, so `latest` is rejected outright. The version must be
+  //     DISCOVERED (templates/shared/skycloak-latest-version.sh). AP-84.
+  //     Exempt: the discovery script itself (it defines the floor), the anti-pattern entry, and
+  //     canon/hosting-options.md — the last two must quote the wrong form in order to forbid it.
+  const pinned = [];
+  const versionExempt = new Set([
+    "templates/shared/skycloak-latest-version.sh",
+    "canon/anti-patterns.md",
+    "canon/hosting-options.md",
+  ]);
+  for (const d of ["canon", "playbooks", "skills", "prompts", "adapters", "templates", "reference-apps"]) {
+    for (const f of walkFiles(join(PACK_ROOT, d), [".md", ".sh"])) {
+      const r = rel(f);
+      if (versionExempt.has(r)) continue;
+      readFileSync(f, "utf8").split("\n").forEach((ln, i) => {
+        // a create body naming the cluster type AND a literal version
+        if (/"type"\s*:\s*"tidecloak"/.test(ln) && /"version"\s*:\s*"[0-9]/.test(ln)) {
+          pinned.push(`${r}:${i + 1} (hardcoded cluster version — discover it)`);
+        }
+        if (/"version"\s*:\s*"latest"/.test(ln)) {
+          pinned.push(`${r}:${i + 1} ("latest" is not a valid Skycloak version)`);
+        }
+      });
+    }
+  }
+  c.ok(
+    "no hardcoded/`latest` TideCloak cluster version in a Skycloak create body (AP-84 — discover it)",
+    pinned.length === 0,
+    pinned.join("  "),
+  );
+
   // 1c. Every shipped realm template must still carry the tideUserKey + vuid attribute mappers,
   //     so "remove tide-roles-mapper" can never be satisfied by deleting the Tide claims wholesale.
   const realmTemplates = [];
@@ -227,10 +292,23 @@ export async function run() {
   if (dpopCanonical) {
     c.ok("DPoP page is the popup-safe variant (window.opener || window.parent)",
       dpopCanonical.includes("window.opener"),
-      "canonical DPoP page must post to window.opener || window.parent — see AP-62 / check-dpop-asset.sh");
+      "The reference DPoP page does NOT contain window.opener, so it is the stale 7183-byte copy. " +
+      "In a popup window.parent === window, so that page messages itself and login fails with " +
+      "TIDE-SWE-UNHANDLED. Do not 'restore' templates to match it — see AP-62 and AP-83.");
+    // Anchor to the known-good hash as well, so 'all copies agree' can never mean 'all copies are
+    // equally wrong'. Bidirectional: catches a revert TO the bad version, not just drift away.
+    const dpopHash = createHash("sha256").update(dpopCanonical, "utf8").digest("hex");
+    c.ok("canonical DPoP page matches the known-good sha256",
+      dpopHash === "9d7844b938f0a2565fa910d3d30e9b8797cbfd6e0b73d59d804169a089aea757",
+      `got ${dpopHash} (9120-byte popup-safe copy expected). A matching hash is the only check that ` +
+      `survives every copy being swapped at once.`);
     for (const { p, body } of dpopTemplates) {
       if (body) c.ok(`${p} matches the canonical DPoP page`, body === dpopCanonical,
-        "DPoP page has drifted — the enclave integrity-checks it; copy the exemplar verbatim");
+        "DPoP page differs from the reference. Do NOT assume the template is the wrong one — decide by " +
+        "BEHAVIOUR: the correct page uses `window.opener || window.parent` so it works in the popup " +
+        "fallback (AP-83). Get the right bytes from the MCP (`tide_dpop_asset`) or " +
+        "sources/example-app-tidecloak-test-cases/.../tide_dpop_auth.html. NEVER from " +
+        "sources/example-app-keylessh/public/ — that repo holds BOTH copies and its root one is stale (AP-62).");
     }
   }
 
