@@ -3,3 +3,9 @@
 # `$'\r': command not found` (bit us on deploy.sh and would break the
 # user-facing init-tidecloak.sh / bootstrap-tidecloak.sh on Linux/Mac).
 *.sh text eol=lf
+
+# The Tide login enclave integrity-checks tide_dpop_auth.html byte-for-byte. The
+# canonical page is LF (9120 bytes); a Windows autocrlf checkout would rewrite it to
+# CRLF, changing every byte, so an integrity check (and the gate's known-good sha256)
+# fails. Pin it to LF everywhere so it can never ship platform-mangled.
+tide_dpop_auth.html text eol=lf

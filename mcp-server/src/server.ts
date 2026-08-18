@@ -2,6 +2,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { readFileSync, readdirSync, existsSync } from "fs";
 import { join, resolve } from "path";
+import { createHash } from "crypto";
 
 // Resolve pack root.
 // - TIDE_PACK_ROOT env var takes priority (custom deployments)
@@ -194,7 +195,7 @@ export function createServer(): McpServer {
   const server = new McpServer(
     {
       name: "@tideorg/mcp",
-      version: "1.9.12",
+      version: "1.9.13",
     },
     {
       instructions: [
@@ -721,6 +722,129 @@ export function createServer(): McpServer {
         ].join("\n")
       );
     }
+  );
+
+  // 15a. The DPoP relay asset — serve the FILE, not instructions to go find it.
+  server.registerTool(
+    "tide_dpop_asset",
+    {
+      description:
+        "Returns the CONTENTS of `public/tide_dpop_auth.html` — the DPoP relay page the Tide enclave loads during login — plus its sha256, the required next.config.ts rewrite/CSP wiring, and how to verify. The file is NOT shipped in the @tidecloak/* npm packages and is NOT in the TideCloak container, so there is nowhere else to get it: without this tool people search GitHub and find a STALE copy that posts to window.parent, which breaks the popup fallback and fails login with TIDE-SWE-UNHANDLED. CALL THIS whenever DPoP is enabled (it is on by default), whenever a login fails with TIDE-SWE-UNHANDLED or 'Popup DPoP verification failed to load', and before copying this file from anywhere else.",
+      annotations: {
+        readOnlyHint: true,
+        destructiveHint: false,
+      },
+    },
+    async () => {
+      // Any pack template carries the known-good copy; they are asserted identical by the
+      // content tests, so the first that exists is authoritative.
+      const candidates = [
+        "templates/nextjs-customer-portal/public/tide_dpop_auth.html",
+        "templates/nextjs-e2ee-vault/public/tide_dpop_auth.html",
+        "templates/react-vite-internal-dashboard/public/tide_dpop_auth.html",
+        "templates/vanilla-js-secure-form/public/tide_dpop_auth.html",
+      ];
+      let content: string | null = null;
+      for (const rel of candidates) {
+        const full = join(PACK_ROOT, rel);
+        if (existsSync(full)) {
+          content = readFileSync(full, "utf-8");
+          break;
+        }
+      }
+      if (!content) {
+        return errorResponse(
+          "tide_dpop_auth.html not found in any pack template. Expected e.g. templates/nextjs-customer-portal/public/tide_dpop_auth.html.",
+        );
+      }
+      const hash = createHash("sha256").update(content, "utf8").digest("hex");
+      const KNOWN_GOOD = "9d7844b938f0a2565fa910d3d30e9b8797cbfd6e0b73d59d804169a089aea757";
+
+      return textResponse(
+        [
+          "# `public/tide_dpop_auth.html` — the file itself",
+          "",
+          "Write this verbatim to **`public/tide_dpop_auth.html`**. Do not restyle or \"improve\" it — the",
+          "enclave integrity-checks its content.",
+          "",
+          `- sha256: \`${hash}\`${hash === KNOWN_GOOD ? "  ✅ known-good" : "  ⚠️ DOES NOT MATCH the known-good hash — report this"}`,
+          `- bytes: ${Buffer.byteLength(content, "utf8")}`,
+          `- ends with a newline: ${content.endsWith("\n") ? "yes" : "**NO**"}`,
+          "",
+          content.endsWith("\n")
+            ? ""
+            : "⚠️ **This file does NOT end with a trailing newline.** Editors and copy-paste routinely add one, "
+              + "which changes the bytes and the hash — and the enclave integrity-checks this content. After "
+              + "writing it, confirm the size and hash below match exactly; if you are one byte over, strip the "
+              + "trailing newline (`printf '%s' \"$(cat f)\" > f` or `truncate -s -1 f`).",
+          "",
+          "⚠️ **Do not fetch this from GitHub.** Two copies exist in the wild, and the obvious paths give",
+          "you the stale one — the `keylessh` repo contains **both**, and the copy at its repo root posts to",
+          "`window.parent`. In a popup `window.parent === window`, so the page messages itself, the enclave",
+          "never receives `pageLoaded`, and login fails with **`TIDE-SWE-UNHANDLED`**. The correct file below",
+          "uses `window.opener || window.parent` and handles both popup and iframe.",
+          "",
+          "```html",
+          content,
+          "```",
+          "",
+          "---",
+          "",
+          "## The other three pieces — the file alone is not enough",
+          "",
+          "```ts",
+          "// next.config.ts",
+          "async headers() {",
+          "  return [",
+          "    { source: \"/:path*\", headers: [",
+          "        { key: \"Content-Security-Policy\", value: \"frame-src 'self' *\" } ]},",
+          "    // MUST come AFTER the catch-all: for one header key the later matching rule wins.",
+          "    { source: \"/tide_dpop/:path*\", headers: [",
+          "        { key: \"Content-Security-Policy\", value: \"default-src 'self'; script-src 'unsafe-inline'\" },",
+          "        { key: \"Allow-CSP-From\", value: \"*\" } ]},",
+          "  ];",
+          "},",
+          "async rewrites() {",
+          "  // WILDCARD :path* — the relay parses iss/aud out of its own URL path, so an exact",
+          "  // `/tide_dpop` source 404s. A static rewrite, NOT a route handler.",
+          "  return [{ source: \"/tide_dpop/:path*\", destination: \"/tide_dpop_auth.html\" }];",
+          "},",
+          "```",
+          "",
+          "Do **not** add `frame-ancestors` — the enclave frames your own origin for silent SSO and the",
+          "approval popup, and a same-origin ancestor policy refuses it (AP-71).",
+          "",
+          "## Verify on the wire, not by reading config",
+          "",
+          "```bash",
+          "sha256sum public/tide_dpop_auth.html    # expect the hash above",
+          "",
+          "curl -sS -D - -o /dev/null \\",
+          "  \"http://localhost:3000/tide_dpop/iss/6161/aud/6262/tide_dpop_auth.html\" \\",
+          "  | grep -iE '^(HTTP|content-security-policy|allow-csp-from)'",
+          "# expect 200 + default-src 'self'; script-src 'unsafe-inline' + Allow-CSP-From: *",
+          "",
+          "curl -sS \"http://localhost:3000/tide_dpop/iss/6161/aud/6262/tide_dpop_auth.html\" \\",
+          "  | grep -c window.opener      # expect 3 — 0 means you have the stale copy",
+          "```",
+          "",
+          "Reading the served headers is the only reliable check: rule ordering and header merging are not",
+          "predictable from the config alone.",
+          "",
+          "## If login still fails",
+          "",
+          "`TIDE-SWE-UNHANDLED` / `Popup DPoP verification failed to load` has three causes, in this order:",
+          "",
+          "1. the rewrite is `/tide_dpop` instead of `/tide_dpop/:path*` — the URL 404s",
+          "2. the relay path is missing its CSP or `Allow-CSP-From: *`",
+          "3. the file is the stale copy",
+          "",
+          "⚠️ If the CSP error quotes a `sha256-...` that **matches** your file, the file is **correct** —",
+          "that is the hash the embedder expects. You have the right file at the wrong address; fix the",
+          "rewrite. See `canon/framework-matrix.md` → Browser Prerequisites, AP-62/AP-70/AP-71.",
+        ].join("\n"),
+      );
+    },
   );
 
   // 15b. Enclave branding assets (default logo + background)
