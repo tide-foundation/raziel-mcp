@@ -1653,7 +1653,7 @@ The org is `tideorg`, not `tidecloak`. And `tidecloak-dev` — despite the suffi
 | AP-80 | Medium | **HIGH** | **Hard** — 201 Created, mapper silently dropped, roles vanish with no error |
 | AP-82 | Low | **CRITICAL** | Easy to check, easy to promise wrongly — every request 401s after the swap |
 | AP-83 | Medium | **CRITICAL** | **Very hard** — the wrong conclusion looks rigorous and gets recorded as VERIFIED |
-| AP-84 | High | Medium | **Very hard** — a stale pin keeps working, so nothing ever signals it aged out |
+| AP-84 | High | Medium | **Very hard** — a pin never fails, and the obvious fix (Docker Hub) preserves the bug as a silent downgrade |
 
 > AP-38 through AP-59 predate this table and are not classified here. Treat the omission as a known
 > gap in this section, not as an assessment of low severity.
@@ -3070,62 +3070,87 @@ bounded sources".
 
 ---
 
-## AP-84: Hardcoding the Hosted TideCloak Cluster Version
+## AP-84: Sourcing the Hosted TideCloak Cluster Version From Anywhere But Skycloak
 
-**Severity: Medium. Blast radius: you silently run a months-old build.**
+**Severity: High. Blast radius: you silently provision an old build, and the "fix" can preserve the bug.**
 
-The pack shipped `-d '{"type":"tidecloak",...,"version":"0.14.17"}'` in the Skycloak provisioning
-playbook. `0.14.17` was correct on 2026-08-06 — it was the first version where `setUpTideRealm`
-worked. By 2026-08-18 the newest was `0.14.20`.
+Two mistakes, one after the other. The second is the instructive one.
 
-**Why a version pin is a bad failure, not a safe default.** A pin does not break. It provisions a
-cluster, licensing succeeds, the app works — so nothing ever tells you the number aged out. Every
-user of the playbook keeps getting a build several releases behind, and the fixes in between are
-invisible. Compare a wrong URL, which fails immediately and gets fixed. A stale pin is worse
-precisely because it keeps working.
+**Mistake 1 — hardcoding the version.** The provisioning playbook posted
+`{"type":"tidecloak", ..., "version":"0.14.17"}`. Correct on 2026-08-06; three releases stale by
+2026-08-18. A pin is a bad failure precisely because it *never fails*: the cluster provisions,
+licensing succeeds, the app works, so nothing signals the number aged out. Compare a wrong URL,
+which breaks immediately and gets fixed.
 
-**Do this instead** — discover the version, then create:
+**Mistake 2 — replacing the pin with the wrong source.** The fix read Docker Hub tags for
+`tideorg/tidecloak` and took the newest. Clusters still came up old, and the reason is that
+**Skycloak does not consult Docker Hub at all**:
 
-```bash
-for VERSION in $(templates/shared/skycloak-latest-version.sh --list); do
-  # POST /clusters with $VERSION; break on 201; continue on `400 invalid cluster version`
-done
+```go
+// internal/clusters/service.go
+supportedVersions := s.GetSupportedVersionsByType(cluster.Type)   // → SupportedTideCloak
+for _, v := range supportedVersions { if v == cluster.Version { versionSupported = true } }
+if !versionSupported { return nil, ErrInvalidClusterVersion }     // → 400 invalid cluster version
 ```
 
-**Three traps the discovery script exists to handle:**
+Exact match against a **server-side allowlist**. A tag can be the newest thing Tide published and be
+un-provisionable because Skycloak has not added it. The walk-down loop then did its job perfectly and
+made things worse: newest 400s → try next → land on something old, silently. **A retry loop over the
+wrong list converts a loud failure into a quiet downgrade.**
 
-1. **`latest` is not an accepted value.** Skycloak validates the version against
-   `^[0-9]+\.[0-9]+(\.[0-9]+)?$`. The Docker tag `latest` is rejected, so it must be resolved to a
-   concrete semver first. (VERIFIED: `latest` and `0.14.20` are the same digest today — resolve it
-   anyway, because that is an accident of timing, not a guarantee.)
-2. **Sort numerically, never lexically — and check that your reverse actually applied.**
-   `tideorg/tidecloak` has 207 tags including a `0.9.x` series. As strings `"0.9.8" > "0.14.20"`, so
-   `sort | tail -1` picks `0.9.8` — below the licensing floor. It then fails at `setUpTideRealm`
-   with `TIDE-IDPEXT-VENDOR-KEYGEN_FAILED`, which reads as a key-generation bug and is actually the
-   version being too old.
+**Mistake 3 — keeping the walk-down after fixing the source.** Once the list comes from Skycloak,
+every entry is a version Skycloak said it supports, so a `400 invalid cluster version` means
+something is inconsistent — not that you should settle for an older build. Retrying downward is only
+ever a downgrade. **Take the newest and fail if it fails.** A fallback is only correct when the
+thing you fell back from was never authoritative.
 
-   The second half bit while writing this entry. In `sort`, a **global `-r` is ignored once per-key
-   flags are present** — key-specific options override it:
+**The list has an endpoint. Earlier pack revisions claimed it didn't, and that claim caused the bug:**
+
+```
+GET /clusters/supported-versions?type=tidecloak    → ["0.14.20", ...]
+GET /clusters/versions                             → {"keycloak":[...],"tidecloak":[...]}
+```
+
+Both require the API key. "There is no versions endpoint" was never verified — it was inferred from
+the endpoint not being in the public docs, and it sent the next author looking for a substitute.
+**An unverified negative is how a wrong source gets adopted.**
+
+**Do this:** ask Skycloak, sort numerically, take the newest, and create once —
+`templates/shared/skycloak-latest-version.sh`. The `0.14.17` floor never *selects* an older version;
+it only refuses to return one, so that a catalogue topping out at a known-broken build is reported
+rather than provisioned. The newest eligible version is the newest version whenever the newest is at
+or above the floor. Docker Hub keeps exactly one legitimate use: `--check`
+reports whether Skycloak's catalogue is behind what Tide published, which is actionable (ask Skycloak
+to add it). It never picks a version.
+
+**Remaining traps:**
+
+1. **`latest` is not an accepted value.** Skycloak validates `^[0-9]+\.[0-9]+(\.[0-9]+)?$` and
+   rejects the tag outright.
+2. **Sort numerically, and check your reverse applied.** As strings `"0.9.8" > "0.14.20"`, so a
+   naive sort picks a sub-floor version, which fails as `TIDE-IDPEXT-VENDOR-KEYGEN_FAILED` — an
+   error that reads as key generation and is really licensing. In `sort`, a **global `-r` is
+   silently overridden by per-key flags**:
 
    ```
    sort -t. -k1,1n  -k2,2n  -k3,3n  -r   → 0.9.8, 0.14.17, 0.14.19, 0.14.20   # WRONG, both ways
    sort -t. -k1,1nr -k2,2nr -k3,3nr      → 0.14.20, 0.14.19, 0.14.17, 0.9.8   # right
    ```
 
-   The wrong form looks reversed and is not, so `head -1` returns the **oldest** eligible version —
-   a silent downgrade. Either write the reverse per key as `nr`, use `sort -Vr`, or sort in a real
-   language (the pack's script uses Python `sorted(..., key=..., reverse=True)`). Whichever you
-   pick, print the list once and read it.
-3. **A floor is still required.** `0.13.13` ships a broken automation client and `0.14.11` fails
-   licensing. Newest-above-`0.14.17` is the rule, not newest-overall.
+   The wrong form looks reversed and isn't, so `head -1` returns the *oldest* eligible version. Do
+   not trust the endpoint's documented "newest to oldest" ordering either — sort what you receive.
+3. **Never read the allowlist from a Skycloak source checkout.** The checkout on this machine lists
+   `SupportedTideCloak = ["0.11.7"]` while production provisions `0.14.17`. A checkout is a
+   snapshot — use it to learn the *mechanism*, never the *values*. This is **AP-83** again, and it
+   is the third time that rule has bitten in this repo.
 
-**Do not "fix" a version failure by falling back to a pin.** Skycloak's catalogue can lag Docker Hub,
-so `400 invalid cluster version` on the newest tag is expected and recoverable: walk *down* the
-eligible list. Falling back to `0.14.17` reintroduces exactly the staleness the discovery removed.
+**When Skycloak's newest is genuinely old, say so.** The allowlist is server-side; no client change
+moves it. Do not lower the floor to compensate — `0.13.13` ships a broken automation client and
+`0.14.11` fails licensing. Report the gap and ask Skycloak to add the version.
 
-**Honesty rule:** the floor is VERIFIED by testing the matrix. A version above it is **ASSUMED
-good** — nobody has re-run that matrix on it. Say so. If a brand-new tag provisions and then fails
-at licensing, drop one version with `--floor` and report it; do not silently re-pin.
+**Honesty rule:** the floor is VERIFIED by testing the matrix. Anything above it is **ASSUMED good**
+until re-tested. If a new version provisions and then fails licensing, drop one and report it; do
+not re-pin.
 
-**Related:** AP-HOST-2 (claiming the hosted path works without checking the version).
-The same shape as **AP-83**: treating a snapshot as if it were the current truth.
+**Related:** AP-HOST-2, AP-83.
+

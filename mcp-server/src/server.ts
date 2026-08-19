@@ -195,7 +195,7 @@ export function createServer(): McpServer {
   const server = new McpServer(
     {
       name: "@tideorg/mcp",
-      version: "1.9.13",
+      version: "1.9.14",
     },
     {
       instructions: [

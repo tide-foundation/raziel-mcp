@@ -95,20 +95,44 @@ Three traps, each of which cost real debugging time:
 A broken automation client also breaks Skycloak's own `/clusters/{id}/realms` API, since that proxies through it. Match the `@tidecloak/*` npm SDK version to the cluster version.
 
 **`0.14.17` is the floor, not the version to use. Discover the newest and use that** — run
-`templates/shared/skycloak-latest-version.sh`, which reads Docker Hub tags for `tideorg/tidecloak`.
-Hardcoding a pin is the failure mode this replaces: a pin keeps provisioning successfully long after
-it is stale, so nothing ever signals that it aged out. Two traps the script handles:
+`templates/shared/skycloak-latest-version.sh`. Hardcoding a pin is the failure mode this replaces: a
+pin keeps provisioning successfully long after it is stale, so nothing ever signals it aged out.
 
-- **`latest` is not an accepted value.** Skycloak validates the version against
-  `^[0-9]+\.[0-9]+(\.[0-9]+)?$`, so the Docker tag `latest` is rejected. Resolve it to a concrete
-  semver (verified: `latest` and `0.14.20` are the same digest).
+**The version list comes from Skycloak, not Docker Hub.** Skycloak validates the version by exact
+match against a server-side allowlist (`SupportedTideCloak` → `ErrInvalidClusterVersion`,
+`internal/clusters/service.go`), so a tag can be the newest thing Tide published and still be
+rejected. There **is** a versions endpoint — earlier pack revisions said there wasn't, and that error
+is what sent the script to Docker Hub:
+
+```
+GET /clusters/supported-versions?type=tidecloak    → ["0.14.20", ...]
+GET /clusters/versions                             → {"keycloak":[...],"tidecloak":[...]}
+```
+
+Both need the API key. Docker Hub is useful only as a **lag diagnostic** (`--check`): "Skycloak is N
+releases behind what Tide published" is actionable — ask Skycloak to add the version. It is never a
+source for picking one.
+
+Three traps:
+
+- **`latest` is not an accepted value.** Skycloak validates against `^[0-9]+\.[0-9]+(\.[0-9]+)?$`.
 - **Sort numerically, never lexically.** As strings `"0.9.8" > "0.14.20"`, so a naive sort selects a
   version *below* the floor, which then fails at `setUpTideRealm` with `KEYGEN_FAILED` — an error
-  that reads as key generation and is actually licensing.
+  that reads as key generation and is actually licensing. Do not trust the endpoint's documented
+  "newest to oldest" ordering either; sort what you receive.
+- **Never read the allowlist from a Skycloak source checkout.** A checkout is a snapshot — the one
+  on this machine says `0.11.7` while production takes `0.14.17` (AP-83).
 
-Skycloak's catalogue can lag Docker Hub. `400 invalid cluster version` on the newest tag is normal
-and recoverable — walk down `--list`, do not fall back to a stale pin. The floor is VERIFIED by
-testing; anything newer is **ASSUMED good** until someone runs the matrix on it.
+**Use the newest Skycloak offers, and create once.** Do not retry downward on
+`400 invalid cluster version`: the list came from Skycloak, so a rejection is an inconsistency to
+report, not a reason to settle for an older build. Retrying downward is only ever a downgrade, and it
+is what kept clusters coming up old with no error. The `0.14.17` floor never selects an older
+version — it only refuses to return one when the whole catalogue is below it.
+
+If Skycloak's newest is older than you want, **no client-side change fixes it** — the allowlist is
+server-side. Do not lower the floor to compensate: sub-floor versions provision happily and then
+fail at licensing or on the automation client. The floor is VERIFIED by testing; anything newer is
+**ASSUMED good** until someone re-runs the matrix.
 
 **Lifecycle** **VERIFIED**: creation is asynchronous, `provisioning`/`updating` → `available` or `failed` (45s–4min). Poll before bootstrapping.
 
