@@ -33,7 +33,10 @@ Usage:
 Verified constraints this script satisfies (see README.md for sources):
   - format PNG (allowlist is png/jpg/jpeg/gif/webp; SVG is REJECTED server-side)
   - each file well under the 5 MB cap
-  - logo is square with transparent padding (a safe area), so `object-contain` never crops it
+  - logo is SQUARE, which is mandatory: the enclave paints it with `background-size: cover`, so a
+    non-square canvas is cropped on its long axis
+  - logo artwork stays inside the circle inscribed in the canvas (measured at 0.94x the crop
+    radius), because the enclave masks it with `border-radius: 50%` and cuts the corners off
   - background is 16:9 and deliberately low-detail in the middle, where the enclave puts its content
 """
 
@@ -159,54 +162,137 @@ def render(width, height, sample, ss=1, edge=None):
 # Logo: square canvas, transparent padding, rounded-square mark with a wave.
 # ---------------------------------------------------------------------------
 
-def make_logo(size, accent, pad_frac, seed=0):
-    pad = size * pad_frac
-    x0, y0, x1, y1 = pad, pad, size - pad, size - pad
-    # Geometry varies with the seed, within a deliberately narrow range so every output still reads
-    # as the same visual language rather than a random doodle.
-    radius = (x1 - x0) * (0.18 + (seed % 7) * 0.017)          # 0.18 .. 0.28
-    n_bands = 2 + ((seed >> 3) % 2)                            # 2 or 3
-    light = shade(accent, 1.28)
-    dark = shade(accent, 0.72)
+# App-kind motifs. Each entry is (default_accent, glyph). The glyph is a function of normalised
+# coordinates u, v in [-1, 1] measured from the centre of the disc, returning True inside the mark.
+#
+# Why a DISC and not a rounded square: the enclave clips the logo with `border-radius: 50%`, so a
+# square mark either gets its corners cut or has to be inset to 70.7% and looks small inside the
+# circle. A disc that fills the canvas matches the crop exactly — it reads as intentional, and it
+# uses the whole area the enclave gives you. See evidence/README.md.
 
-    bands = []
-    for k in range(n_bands):
-        h = (seed >> (5 + k * 7)) or (k + 1)
-        bands.append((
-            (h % 360) / 360.0 * 2.0 * math.pi,                 # phase
-            0.035 + (h % 5) * 0.008,                           # amplitude
-            0.44 + k * (0.34 / max(1, n_bands - 1)) if n_bands > 1 else 0.60,   # y offset
-            0.92 - k * 0.22,                                   # alpha
-            1.6 + ((h >> 3) % 4) * 0.35,                        # frequency
-        ))
+def _rounded_bar(u, v, cx, cy, hw, hh, r=0.04):
+    du, dv = abs(u - cx) - (hw - r), abs(v - cy) - (hh - r)
+    du, dv = max(du, 0.0), max(dv, 0.0)
+    return (du * du + dv * dv) <= r * r or (abs(u - cx) <= hw and abs(v - cy) <= hh - r) \
+        or (abs(u - cx) <= hw - r and abs(v - cy) <= hh)
+
+
+def _glyph_shield(u, v):
+    # Flat shoulders down to v=0, then taper to a point at the bottom. The taper must go to ZERO at
+    # the point, not at the shoulder — getting that backwards yields a blob, not a shield.
+    if v < -0.62 or v > 0.52:
+        return False
+    if v >= 0.0:
+        half = 0.44
+    else:
+        t = (v + 0.62) / 0.62          # 0 at the point, 1 at the shoulder
+        half = 0.44 * (max(0.0, t) ** 0.62)
+    return abs(u) <= half
+
+
+def _glyph_key(u, v):
+    if (u * u + (v - 0.26) ** 2) <= 0.25 ** 2:
+        return True
+    return abs(u) <= 0.11 * (1.0 - 0.45 * (0.30 - v) / 0.80) and -0.58 <= v <= 0.26
+
+
+def _glyph_lines(u, v):
+    for i, w in enumerate((0.46, 0.46, 0.30)):
+        if _rounded_bar(u, v, 0.0, 0.34 - i * 0.34, w, 0.085):
+            return True
+    return False
+
+
+def _glyph_bubble(u, v):
+    if (u * u + (v - 0.12) ** 2) <= 0.50 ** 2:
+        return True
+    return (-0.34 <= u <= -0.02) and (-0.62 <= v <= -0.30) and (v >= -0.62 + (u + 0.34) * 1.0)
+
+
+def _glyph_bars(u, v):
+    for i, (cx, h) in enumerate(((-0.34, 0.24), (0.0, 0.40), (0.34, 0.56))):
+        if _rounded_bar(u, v, cx, -0.52 + h, 0.115, h):
+            return True
+    return False
+
+
+def _glyph_pulse(u, v):
+    pts = ((-0.58, 0.0), (-0.24, 0.0), (-0.08, 0.36), (0.08, -0.40), (0.24, 0.0), (0.58, 0.0))
+    for (x1, y1), (x2, y2) in zip(pts, pts[1:]):
+        dx, dy = x2 - x1, y2 - y1
+        L2 = dx * dx + dy * dy
+        t = 0.0 if L2 == 0 else max(0.0, min(1.0, ((u - x1) * dx + (v - y1) * dy) / L2))
+        if (u - (x1 + t * dx)) ** 2 + (v - (y1 + t * dy)) ** 2 <= 0.085 ** 2:
+            return True
+    return False
+
+
+def _glyph_play(u, v):
+    return u >= -0.30 and (u - 0.44) <= 0 and abs(v) <= (0.44 - u) * 0.62
+
+
+def _glyph_bag(u, v):
+    if _rounded_bar(u, v, 0.0, -0.14, 0.44, 0.34, 0.10):
+        return True
+    d = (u * u + (v - 0.26) ** 2) ** 0.5
+    return 0.19 <= d <= 0.28 and v >= 0.24
+
+
+def _glyph_waves(u, v):
+    for k, (yoff, freq, amp) in enumerate(((0.24, 1.7, 0.16), (-0.10, 1.7, 0.16), (-0.44, 1.7, 0.16))):
+        cy = yoff + math.sin(u * freq * math.pi) * amp
+        if abs(v - cy) <= 0.075:
+            return True
+    return False
+
+
+KINDS = {
+    "vault":     ("1f4fd8", _glyph_shield),   # security, secrets, password managers
+    "identity":  ("5b3fd8", _glyph_key),      # auth, access, SSO
+    "notes":     ("2f6f4e", _glyph_lines),    # documents, notes, wikis, CMS
+    "chat":      ("0f7f8f", _glyph_bubble),   # messaging, social, support
+    "data":      ("1f6feb", _glyph_bars),     # analytics, dashboards, reporting
+    "finance":   ("0f6f3f", _glyph_bars),     # payments, invoicing, banking
+    "health":    ("c2384f", _glyph_pulse),    # clinical, fitness, patient records
+    "media":     ("8f2f6f", _glyph_play),     # video, audio, streaming
+    "commerce":  ("b4541f", _glyph_bag),      # shops, orders, inventory
+    "generic":   ("1f6feb", _glyph_waves),    # anything else
+}
+
+
+def make_logo(size, accent, pad_frac, seed=0, kind="generic"):
+    """A filled disc that exactly matches the enclave's circular crop, with a motif knocked out.
+
+    pad_frac is honoured but defaults to 0: the disc is meant to fill the circle. Pass a non-zero
+    padding only if you want the mark to float inside the circle with white around it.
+    """
+    _, glyph = KINDS.get(kind, KINDS["generic"])
+    cx = cy = (size - 1) / 2.0
+    # Inset by half a pixel so the outermost ring is antialiased rather than hard-clipped.
+    radius = (size / 2.0) * (1.0 - pad_frac) - 0.5
+    light, dark = shade(accent, 1.30), shade(accent, 0.70)
+    # Rotate the motif slightly per app so two apps of the same kind are not identical.
+    ang = ((seed % 24) - 12) * (math.pi / 180.0) * 0.5
+    ca, sa = math.cos(ang), math.sin(ang)
 
     def sample(x, y):
-        if not inside_rrect(x, y, x0, y0, x1, y1, radius):
+        dx, dy = x - cx, y - cy
+        if dx * dx + dy * dy > radius * radius:
             return (0, 0, 0, 0.0)
-        t = (y - y0) / (y1 - y0)
+        t = (dy + radius) / (2.0 * radius)
         base = tuple(int(lerp(light[k], dark[k], t)) for k in range(3))
-
-        # Two wave bands, knocked out in white at low alpha. Purely geometric —
-        # no font dependency, so this renders identically everywhere.
-        span = x1 - x0
-        wave = 0.0
-        for phase, amp, yoff, alpha, freq in bands:
-            cy = y0 + (y1 - y0) * yoff + math.sin((x - x0) / span * freq * math.pi + phase) * span * amp
-            d = abs(y - cy)
-            th = span * 0.052
-            if d < th:
-                wave = max(wave, alpha * (1.0 - (d / th) ** 2))
-        if wave > 0:
-            base = tuple(int(lerp(base[k], 255, wave)) for k in range(3))
+        u, v = dx / radius, -dy / radius
+        u, v = u * ca - v * sa, u * sa + v * ca
+        if glyph(u, v):
+            base = tuple(int(lerp(base[k], 255, 0.92)) for k in range(3))
         return (base[0], base[1], base[2], 1.0)
 
-    # Only the rounded-rect boundary needs supersampling. Agreement at all four pixel corners
-    # means the pixel is wholly in or wholly out, so one sample is exact there.
     def edge(i, j):
-        c = (inside_rrect(i, j, x0, y0, x1, y1, radius),
-             inside_rrect(i + 1, j, x0, y0, x1, y1, radius),
-             inside_rrect(i, j + 1, x0, y0, x1, y1, radius),
-             inside_rrect(i + 1, j + 1, x0, y0, x1, y1, radius))
+        r2 = radius * radius
+        c = ((i - cx) ** 2 + (j - cy) ** 2 <= r2,
+             (i + 1 - cx) ** 2 + (j - cy) ** 2 <= r2,
+             (i - cx) ** 2 + (j + 1 - cy) ** 2 <= r2,
+             (i + 1 - cx) ** 2 + (j + 1 - cy) ** 2 <= r2)
         return not (c[0] == c[1] == c[2] == c[3])
 
     return render(size, size, sample, ss=SS, edge=edge)
@@ -260,20 +346,30 @@ def parse_dim(s):
 
 
 def main():
-    ap = argparse.ArgumentParser(description="Generate default enclave branding assets.")
+    ap = argparse.ArgumentParser(
+        description="Generate enclave branding assets (logo + background). No image model needed.",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="app kinds: " + ", ".join(sorted(KINDS)))
     ap.add_argument("--out", default="branding", help="output directory (default: ./branding)")
-    ap.add_argument("--accent", type=hex_rgb, default="1f6feb", help="hex accent colour (default 1f6feb)")
-    ap.add_argument("--logo-size", type=int, default=512, help="logo edge in px, square (default 512)")
-    ap.add_argument("--logo-padding", type=float, default=0.12,
-                    help="transparent safe-area padding as a fraction per side (default 0.12)")
+    ap.add_argument("--kind", default="generic", choices=sorted(KINDS),
+                    help="what the app IS. Picks the motif and a default accent colour "
+                         "(default: generic)")
+    ap.add_argument("--accent", type=hex_rgb, default=None,
+                    help="hex accent colour; overrides the colour implied by --kind")
+    ap.add_argument("--logo-size", type=int, default=1024, help="logo edge in px, square (default 1024; Tide ships 838)")
+    ap.add_argument("--logo-padding", type=float, default=0.0,
+                    help="transparent margin as a fraction per side (default 0: the disc fills the "
+                         "enclave's circular crop exactly, which is the intended look)")
     ap.add_argument("--bg", type=parse_dim, default="1920x1080", help="background WxH (default 1920x1080)")
     ap.add_argument("--name", default="",
-                    help="app name; deterministically varies the mark GEOMETRY so different apps get "
-                         "different-but-stable marks. Does NOT infer anything from the app's purpose.")
+                    help="app name; deterministically varies the mark so two apps of the same kind "
+                         "differ. Same name always gives the same mark.")
     args = ap.parse_args()
 
     if not 0.0 <= args.logo_padding < 0.45:
         raise SystemExit("--logo-padding must be in [0, 0.45)")
+
+    accent = args.accent if args.accent is not None else hex_rgb(KINDS[args.kind][0])
 
     os.makedirs(args.out, exist_ok=True)
     logo = os.path.join(args.out, "logo.png")
@@ -281,10 +377,13 @@ def main():
 
     seed = seed_from(args.name)
     write_png(logo, args.logo_size, args.logo_size,
-              make_logo(args.logo_size, args.accent, args.logo_padding, seed))
+              make_logo(args.logo_size, accent, args.logo_padding, seed, args.kind))
     w, h = args.bg
-    write_png(bg, w, h, make_background(w, h, args.accent, seed))
+    write_png(bg, w, h, make_background(w, h, accent, seed))
 
+    hexa = "%02x%02x%02x" % accent
+    print(f"  kind             {args.kind}   accent #{hexa}"
+          + (f"   name {args.name!r}" if args.name else ""))
     for path, label in ((logo, "LOGO"), (bg, "BACKGROUND_IMAGE")):
         kb = os.path.getsize(path) / 1024.0
         print(f"  {label:16} {path}  ({kb:.0f} KB)")

@@ -195,7 +195,7 @@ export function createServer(): McpServer {
   const server = new McpServer(
     {
       name: "@tideorg/mcp",
-      version: "1.9.14",
+      version: "1.9.15",
     },
     {
       instructions: [
@@ -209,7 +209,7 @@ export function createServer(): McpServer {
         "",
         "NEVER promise that an existing app can be \"tidified\" because it already uses Keycloak or OIDC. Tidifying a realm changes the token signature algorithm to **EdDSA** (measured: non-Tide realms are RS256 with no Ed25519 key), and clients inherit it — so any verifier without Ed25519, or pinned to RS256, 401s on every request. Node `jsonwebtoken` has NO EdDSA support; stock .NET `Microsoft.IdentityModel.Tokens` has none either. Run `templates/tidify-preflight/check-tidify.sh` and read canon/tidify-compatibility.md, then classify the app FULLY / PARTIALLY / NOT TIDIFIABLE and name any excluded surface. A gateway or SaaS consuming the tokens must also do EdDSA and is usually outside the repo. Never claim \"no code changes needed\".",
         "",
-        "When branding/theming the login enclave (logo, background, 'skinning'), call tide_branding BEFORE creating or uploading any image. Most agents cannot produce image files, so the pack ships a dependency-free GENERATOR (`templates/enclave-branding/make-branding.py`) plus a validator; SVG is rejected server-side, the cap is 5 MB, and an unpadded logo is not rejected at all — it just ships looking clipped.",
+        "When branding/theming the login enclave (logo, background, 'skinning'), call tide_branding BEFORE creating or uploading any image. Most agents cannot produce image files, so the pack ships a dependency-free GENERATOR (`templates/enclave-branding/make-branding.py`), a validator, and a copy-paste prompt the USER can run in an image model. MEASURED geometry: the logo is cropped to a CIRCLE (`border-radius: 50%`), scaled with `background-size: cover` (fills and crops — NOT contain), on a WHITE plate, rendering at 85-153 CSS px. So the logo must be SQUARE (a non-square canvas loses the ends of its long axis), 1024x1024 PNG with alpha, all artwork inside the inscribed circle (>=14.65% inset for a square mark), and dark enough to read on white. Background is full-bleed `cover`, 16:9, >=1920x1080, JPEG. SVG is rejected server-side and the cap is 5 MB; nothing validates dimensions, so a corner-filling logo is not rejected — it just ships with its corners cut off. Always run check-branding.py, which reports the exact ratio of artwork to crop radius.",
         "",
         "NEVER hardcode the TideCloak master-admin password into a bootstrap/init script, a docker run, a compose file, or app code. It goes in `.env` (gitignored) and the script reads it from the environment and FAILS LOUDLY when unset — a default password is a hardcoded credential with extra steps (AP-41). Copy `templates/shared/.env.template` (framework templates ship it as `.env.example`), set `KC_BOOTSTRAP_ADMIN_PASSWORD`, and confirm `.env` is in `.gitignore` before writing a secret into it. Master-admin tokens live ~60 SECONDS, so mint on demand server-side rather than exporting one.",
         "",
@@ -871,6 +871,7 @@ export function createServer(): McpServer {
       };
       const readme = readTemplate("README.md");
       const prompt = readTemplate("IMAGE-PROMPT.md");
+      const flow = readTemplate("BRANDING-FLOW.md");
       if (!readme) {
         return errorResponse("Branding assets missing. Expected templates/enclave-branding/README.md.");
       }
@@ -880,12 +881,35 @@ export function createServer(): McpServer {
       const nameArg = appName ? ` --name "${appName}"` : "";
       const cmd =
         `templates/enclave-branding/brand-tidecloak.sh \\\n` +
-        `  --realm ${r} --accent ${acc}${nameArg}` +
+        `  --realm ${r} --kind <app-kind> --accent ${acc}${nameArg}` +
         (tidecloakUrl ? ` \\\n  --url ${url}` : "");
 
+      const kindArg = ` --kind <vault|identity|notes|chat|data|finance|health|media|commerce|generic>`;
       return textResponse(
         [
-          "# Brand the enclave — RUN THIS, do not just describe it",
+          "# Brand the enclave",
+          "",
+          "## ASK THE USER FIRST — do not silently generate, and do not silently skip",
+          "",
+          "By default their users see **Tide's** logo at sign-in. Offer to change it, once:",
+          "",
+          "> Want to brand the login screen? Right now users see Tide's logo when they sign in.",
+          "> 1. **You have artwork** — drop it in `./branding/` as `logo.png` and `background.jpg`,",
+          ">    tell me, and I'll check and upload it.",
+          "> 2. **You want to make one with an image AI** — I'll write you a prompt tailored to THIS",
+          ">    app; paste it into your image tool, save the result to `./branding/`, and I'll upload.",
+          "> 3. **Just make something reasonable** — I'll generate it from the app's type and colour.",
+          ">",
+          "> Or say skip and I'll leave the Tide default.",
+          "",
+          "For option 2 you write the prompt **filled in** — you know what the app does. Handing over",
+          "the unfilled `[APP NAME] / [what it does]` template is the failure. Save it to",
+          "`branding/PROMPT.md` so they can copy it without scrolling back through the chat.",
+          "",
+          "Full script, including what to say about each validation warning: **BRANDING-FLOW.md**,",
+          "included below.",
+          "",
+          "## Then run this — do not just describe it",
           "",
           "One command: generate -> validate -> upload both -> save+sign -> verify.",
           "",
@@ -908,18 +932,28 @@ export function createServer(): McpServer {
           "answered *\"Tide branding updated and settings re-signed successfully\"*, and the public",
           "`images/{LOGO,BACKGROUND_IMAGE}` endpoints served back **byte-identical** PNGs.",
           "",
-          "If the user supplies their own artwork:",
+          "**When the user supplies their own artwork** (options 1 and 2) — check it, then upload it:",
           "",
           "```bash",
+          "python3 templates/enclave-branding/check-branding.py branding/",
           `templates/enclave-branding/brand-tidecloak.sh --realm ${r} \\`,
-          "  --logo path/to/logo.png --background path/to/bg.jpg",
+          "  --logo branding/logo.png --background branding/background.jpg",
           "```",
           "",
-          "Validate first if you produced the image with a model — SVG is rejected server-side, the cap",
-          "is 5 MB, and an unpadded logo is not rejected at all; it just ships looking clipped.",
+          "**Always check before uploading.** Nothing server-side validates dimensions, so a logo whose",
+          "corners get cut uploads perfectly happily and just looks broken. SVG is rejected and 5 MB is",
+          "the cap — those two are hard stops you should catch before the user waits on an upload.",
+          "",
+          "**Match `--kind` to what the app actually is** — that is what makes the generated mark fit",
+          "the product instead of being a generic blob:" + kindArg,
+          "",
+          "vault=shield, identity=keyhole, notes=lines, chat=bubble, data/finance=bars, health=pulse,",
+          "media=play, commerce=bag, generic=waves. `--name` varies it per app, deterministically.",
           "",
           "---",
           "",
+          flow ?? "",
+          flow ? "\n---\n\n" : "",
           readme,
           prompt ? "\n---\n\n" + prompt : "",
         ].join("\n"),

@@ -10,9 +10,25 @@ Two classes of check, kept apart on purpose:
   [HARD]  Enforced by TideCloak. Failing one means the upload is REJECTED.
           Verified against tide-IdP-keycloak/.../TideIdpAdminRealmResource.java.
 
-  [REC]   Recommendations for how the asset RENDERS in the enclave. Not enforced anywhere —
-          the server does no dimension validation at all — so these are warnings, not errors.
-          Marked ASSUMED in the pack: the enclave's exact layout is not in readable sources.
+  [REC]   How the asset RENDERS in the enclave. The server does NO dimension validation, so these
+          never block an upload — but they are MEASURED, not guessed. Taken from the live enclave
+          stylesheet (ork*.tideprotocol.com/app.*.css) and confirmed by hit-testing the rendered
+          element:
+
+              main .logo .img_container {
+                width: 85%; height: 85%;          /* of a 100-180px wrapper -> 85-153 CSS px */
+                border-radius: 50%;               /* CIRCULAR CROP — corners are cut */
+                background-size: cover;           /* FILLS and crops; it does NOT fit-inside */
+                background-position: center;
+                background-color: var(--white);   /* a WHITE plate sits behind the logo */
+              }
+
+          Two consequences most people get wrong:
+            * `cover`, not `contain`. A non-square logo is cropped on its long axis before the
+              circle is even applied. Square is not a preference; it is the only safe shape.
+            * The corners are gone. Content must sit inside the circle inscribed in the canvas.
+              For a SQUARE mark that means a >= 14.65% inset per side (a square inscribed in a
+              circle has side = diameter / sqrt(2)). A circular mark can go edge to edge.
 
 Usage:
   python3 check-branding.py branding/                 # expects logo.* and background.*
@@ -22,15 +38,16 @@ Usage:
 Exit 0 = every HARD check passed (warnings may remain). Exit 1 = at least one HARD failure.
 """
 
-import argparse, os, struct, sys, zlib
+import argparse, math, os, struct, sys, zlib
 
 MAX_BYTES = 5 * 1024 * 1024                                    # HARD: server cap
 ALLOWED_EXT = {"png", "jpg", "jpeg", "gif", "webp"}            # HARD: server allowlist (no svg)
 
-# [REC] geometry. Chosen so `object-contain` never crops and the centre stays legible.
-LOGO_MIN = 256
-LOGO_MAX_ASPECT = 1.25          # near-square
-BG_MIN_W, BG_MIN_H = 1280, 720
+# [REC] geometry — MEASURED against the live enclave, not chosen.
+LOGO_BOX_MAX = 153              # px: 85% of the 180px wrapper at >=1024px viewport
+LOGO_MIN = 460                  # LOGO_BOX_MAX * 3 for a 3x-DPR screen
+LOGO_MAX_ASPECT = 1.02          # `background-size: cover` crops the long axis — square or nothing
+BG_MIN_W, BG_MIN_H = 1920, 1080
 BG_TARGET_ASPECT = 16 / 9
 BG_ASPECT_TOL = 0.25
 
@@ -74,47 +91,56 @@ def dims(path, data):
     return None, None, "unknown"
 
 
+def _png_rgba_rows(data):
+    """(w, h, rows) of unfiltered 8-bit RGBA scanlines, or None if not that format."""
+    w, h = struct.unpack(">II", data[16:24])
+    depth, ctype = data[24], data[25]
+    if ctype != 6 or depth != 8:
+        return None
+    i, idat = 8, b""
+    while i < len(data):
+        ln = struct.unpack(">I", data[i:i + 4])[0]
+        tag = data[i + 4:i + 8]
+        if tag == b"IDAT":
+            idat += data[i + 8:i + 8 + ln]
+        i += 12 + ln
+    raw = zlib.decompress(idat)
+    stride = w * 4
+    if len(raw) < h * (stride + 1):
+        return None
+    # Undo PNG filters properly — filter 0 is not guaranteed for arbitrary encoders.
+    rows, prev = [], bytearray(stride)
+    pos = 0
+    for _ in range(h):
+        ft = raw[pos]; pos += 1
+        line = bytearray(raw[pos:pos + stride]); pos += stride
+        if ft == 1:
+            for x in range(4, stride): line[x] = (line[x] + line[x - 4]) & 0xFF
+        elif ft == 2:
+            for x in range(stride): line[x] = (line[x] + prev[x]) & 0xFF
+        elif ft == 3:
+            for x in range(stride):
+                a = line[x - 4] if x >= 4 else 0
+                line[x] = (line[x] + ((a + prev[x]) >> 1)) & 0xFF
+        elif ft == 4:
+            for x in range(stride):
+                a = line[x - 4] if x >= 4 else 0
+                b = prev[x]; c = prev[x - 4] if x >= 4 else 0
+                p = a + b - c
+                pa, pb, pc = abs(p - a), abs(p - b), abs(p - c)
+                pr = a if (pa <= pb and pa <= pc) else (b if pb <= pc else c)
+                line[x] = (line[x] + pr) & 0xFF
+        rows.append(line); prev = line
+    return (w, h, rows)
+
+
 def png_alpha_stats(data):
     """(has_alpha_channel, transparent_border, min_border_alpha) for a PNG, else None."""
     try:
-        w, h = struct.unpack(">II", data[16:24])
-        depth, ctype = data[24], data[25]
-        if ctype != 6 or depth != 8:
-            return (ctype in (4, 6), None, None)
-        i, idat = 8, b""
-        while i < len(data):
-            ln = struct.unpack(">I", data[i:i + 4])[0]
-            tag = data[i + 4:i + 8]
-            if tag == b"IDAT":
-                idat += data[i + 8:i + 8 + ln]
-            i += 12 + ln
-        raw = zlib.decompress(idat)
-        stride = w * 4
-        if len(raw) < h * (stride + 1):
-            return (True, None, None)
-        # Undo PNG filters properly — filter 0 is not guaranteed for arbitrary encoders.
-        rows, prev = [], bytearray(stride)
-        pos = 0
-        for _ in range(h):
-            ft = raw[pos]; pos += 1
-            line = bytearray(raw[pos:pos + stride]); pos += stride
-            if ft == 1:
-                for x in range(4, stride): line[x] = (line[x] + line[x - 4]) & 0xFF
-            elif ft == 2:
-                for x in range(stride): line[x] = (line[x] + prev[x]) & 0xFF
-            elif ft == 3:
-                for x in range(stride):
-                    a = line[x - 4] if x >= 4 else 0
-                    line[x] = (line[x] + ((a + prev[x]) >> 1)) & 0xFF
-            elif ft == 4:
-                for x in range(stride):
-                    a = line[x - 4] if x >= 4 else 0
-                    b = prev[x]; c = prev[x - 4] if x >= 4 else 0
-                    p = a + b - c
-                    pa, pb, pc = abs(p - a), abs(p - b), abs(p - c)
-                    pr = a if (pa <= pb and pa <= pc) else (b if pb <= pc else c)
-                    line[x] = (line[x] + pr) & 0xFF
-            rows.append(line); prev = line
+        got = _png_rgba_rows(data)
+        if got is None:
+            return (data[25] in (4, 6), None, None)
+        w, h, rows = got
         band = max(1, min(w, h) // 32)
         border = []
         for y in range(h):
@@ -124,6 +150,48 @@ def png_alpha_stats(data):
         return (True, all(a == 0 for a in border), min(border) if border else None)
     except Exception:
         return (None, None, None)
+
+
+def png_circle_fit(data, alpha_floor=8, sectors=72):
+    """How the artwork sits against the enclave's circular crop.
+
+    Returns (ratio, furthest_xy, uniformity):
+      ratio      - furthest opaque pixel as a fraction of the crop radius. > 1.0 means real content
+                   is cut off.
+      uniformity - how circular the artwork's own outline is: the minimum over angular sectors of
+                   (that sector's reach / the largest sector's reach). A filled disc is ~1.0; a
+                   square is ~0.71 (its edges sit at 1/sqrt(2) of its corners).
+
+    Both are needed. A disc that exactly fills the canvas has ratio 1.0 and is CORRECT — it matches
+    the crop. A square with ratio 1.0 has its corners exactly on the boundary and loses them. Ratio
+    alone cannot tell those apart, and reporting "scale to 100%" at a disc is nonsense advice.
+    """
+    try:
+        got = _png_rgba_rows(data)
+        if got is None:
+            return None
+        w, h, rows = got
+        cx, cy = (w - 1) / 2, (h - 1) / 2
+        radius = min(w, h) / 2
+        reach = [0.0] * sectors
+        worst, at = 0.0, None
+        for y in range(h):
+            row = rows[y]
+            dy = y - cy
+            for x in range(w):
+                if row[x * 4 + 3] > alpha_floor:
+                    dx = x - cx
+                    d = (dx * dx + dy * dy) ** 0.5
+                    if d > worst:
+                        worst, at = d, (x, y)
+                    k = int((math.atan2(dy, dx) + math.pi) / (2 * math.pi) * sectors) % sectors
+                    if d > reach[k]:
+                        reach[k] = d
+        live = [r for r in reach if r > 0]
+        uniformity = (min(live) / max(live)) if live and max(live) > 0 else 0.0
+        return (worst / radius, at, uniformity) if at else (0.0, None, 0.0)
+    except Exception:
+        return None
 
 
 def check(path, kind):
@@ -149,19 +217,45 @@ def check(path, kind):
                         f"can upload and then fail to render")
         if kind == "LOGO":
             if w < LOGO_MIN or h < LOGO_MIN:
-                warn.append(f"{w}x{h} is small for a logo; >= {LOGO_MIN}px on the short edge scales better")
+                warn.append(f"{w}x{h} is small for a logo. The container renders up to {LOGO_BOX_MAX}"
+                            f" CSS px, so a 3x-DPR screen wants >= {LOGO_BOX_MAX * 3} px "
+                            f"(Tide's own default is 838x838)")
             ar = max(w, h) / max(1, min(w, h))
             if ar > LOGO_MAX_ASPECT:
-                warn.append(f"aspect {w}:{h} ({ar:.2f}:1) is far from square; a square canvas renders "
-                            f"predictably under object-contain")
+                warn.append(f"aspect {w}:{h} ({ar:.2f}:1) is not square. The container uses "
+                            f"`background-size: cover`, so the LONG axis is cropped to a square "
+                            f"before the circular mask is applied — a wide logo loses its ends. "
+                            f"Re-export on a square canvas with the mark centred.")
             if ext == "png":
                 has_a, transparent_border, min_border = png_alpha_stats(data)
                 if has_a is False:
-                    warn.append("no alpha channel — a logo on an opaque box shows as a rectangle "
-                                "against the enclave background")
-                elif transparent_border is False:
-                    warn.append(f"artwork touches the canvas edge (min border alpha {min_border}); "
-                                f"add ~10-15% transparent padding per side so it is not visually clipped")
+                    warn.append("no alpha channel. The container is a WHITE circle, so an opaque "
+                                "rectangle shows as a square-cornered block clipped to that circle")
+                fit = png_circle_fit(data)
+                if fit:
+                    ratio, where, uniform = fit
+                    round_edged = uniform >= 0.90        # the artwork's own outline is a circle
+                    if ratio > 1.02 and not round_edged:
+                        pct = (1 - 1 / ratio) * 100
+                        warn.append(f"artwork reaches {ratio:.2f}x the circular crop radius "
+                                    f"(furthest opaque pixel at {where}) and its outline is not "
+                                    f"round (uniformity {uniform:.2f}) — the parts sticking out WILL "
+                                    f"be cut off. The enclave masks the logo with "
+                                    f"`border-radius: 50%`. Scale the mark to about "
+                                    f"{100/ratio:.0f}% of its current size, or add ~{pct:.0f}% more "
+                                    f"transparent margin.")
+                    elif ratio > 1.02 and round_edged:
+                        warn.append(f"artwork is round and slightly overflows the crop "
+                                    f"({ratio:.2f}x) — the very edge will be shaved. Inset it by "
+                                    f"a pixel or two.")
+                    elif ratio > 0.97 and not round_edged:
+                        warn.append(f"artwork reaches {ratio:.2f}x the crop radius with a "
+                                    f"non-round outline (uniformity {uniform:.2f}) — it fits, but "
+                                    f"with no margin for antialiasing. Aim for <= 0.95, or make the "
+                                    f"mark itself round so it matches the crop.")
+                    elif 0 < ratio < 0.55:
+                        warn.append(f"artwork occupies only {ratio:.2f}x the crop radius — it will "
+                                    f"look lost inside the circle. Aim for 0.80-1.00.")
             elif ext in ("jpg", "jpeg"):
                 warn.append("JPEG cannot be transparent — use PNG (or WebP) for a logo")
         else:
@@ -170,8 +264,10 @@ def check(path, kind):
                             f"it will upscale and look soft")
             ar = w / max(1, h)
             if abs(ar - BG_TARGET_ASPECT) > BG_ASPECT_TOL:
-                warn.append(f"aspect {ar:.2f}:1 is away from 16:9 ({BG_TARGET_ASPECT:.2f}:1); "
-                            f"expect cropping on one axis")
+                warn.append(f"aspect {ar:.2f}:1 is away from 16:9 ({BG_TARGET_ASPECT:.2f}:1). The "
+                            f"element is full-viewport with `background-size: cover`, so it crops "
+                            f"on whichever axis is proportionally longer — keep anything that must "
+                            f"survive well inside the centre")
 
     label = f"{name}  [{kind}]"
     print(f"\n{label}\n{'-' * len(label)}")

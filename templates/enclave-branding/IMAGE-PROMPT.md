@@ -4,7 +4,8 @@ Use these when you **can** generate images. If you cannot, run `make-branding.py
 no image model and produces assets that pass every constraint.
 
 Either way, **run `check-branding.py` on the result.** A model will happily hand you a 3000×3000 SVG
-at 8 MB, and all three of those facts break the upload.
+at 8 MB, and all three of those facts break the upload — and it will just as happily fill the canvas
+edge to edge, which the enclave's circular crop then cuts the corners off.
 
 ---
 
@@ -23,70 +24,75 @@ gate. It still matters: the enclave scales what you give it.
 
 ## 1. Logo — `fileType=LOGO`
 
-**Canvas: 512×512 PNG, transparent background, ~12% empty padding on every side.**
+**Canvas: 1024×1024 PNG, transparent, with every part of the mark inside the centred circle.**
 
-Square because the enclave scales the logo to fit a box (`object-contain`): a square canvas renders
-predictably at any box shape, and the padding is a safe area so the mark is never visually clipped
-against the box edge.
+Three measured facts drive this, all from the enclave's own stylesheet:
 
-> **Prompt:**
+- `border-radius: 50%` — **the logo is cropped to a circle.** Corners are cut off.
+- `background-size: cover` — it **fills and crops**, it does not fit-inside. A non-square canvas
+  loses the ends of its long axis before the circle is even applied.
+- `background-color: var(--white)` — your logo sits on a **white circle**, not on your background
+  image. A white or very pale mark disappears.
+
+For a square-ish mark that means **≥15% empty margin on every side** (exactly: a square inscribed in
+a circle has side = diameter ÷ √2, so 14.65%). A round emblem can go nearly edge to edge.
+
+### Copy-paste prompt
+
+> A minimalist app icon for **[APP NAME]**, a **[what it does]**.
 >
-> A minimal, flat vector-style app logo mark on a **fully transparent background**.
-> **Square 512×512** canvas. The mark occupies only the **centre ~76%** — leave roughly **12% empty
-> transparent margin on all four sides**. No text, no wordmark, no lettering. No drop shadow, no
-> outer glow, no background shape filling the canvas. Simple geometric forms, 2–3 colours maximum,
-> high contrast so it reads clearly at **32×32**. Crisp edges, centred, symmetrical balance.
-> Output **PNG with alpha**.
-
-**Then check:** square, ≥256 px, has an alpha channel, and a fully transparent border ring.
-`check-branding.py` verifies all four.
-
-**Common failures:**
-- an opaque white/coloured card behind the mark — shows as a rectangle against the enclave background
-- artwork bleeding to the canvas edge — no safe area, so it looks cropped
-- fine detail or thin strokes — invisible at small sizes
-- text in the logo — unreadable when scaled down, and usually redundant
-
-## 2. Background — `fileType=BACKGROUND_IMAGE`
-
-**Canvas: 1920×1080 (16:9), PNG or JPEG.**
-
-Full-bleed behind the login/approval UI, so it is cropped on one axis at other viewport ratios.
-
-> **Prompt:**
+> **Square 1024×1024 canvas, transparent background (PNG with alpha).**
 >
-> An abstract, **very low-contrast** background image for a login screen. **1920×1080, 16:9.**
-> Dark, muted, desaturated palette. Soft large-scale gradients and gentle organic shapes only —
-> **no sharp detail, no text, no logos, no faces, no busy texture**. The **centre third must be
-> visually quiet and near-uniform** so white UI text and a card overlay on top of it stay legible;
-> put any visual interest in the corners and outer edges. No hard horizon lines or high-contrast
-> diagonals through the middle. Subtle film-grain at most. Photorealistic or abstract, not
-> illustrative.
+> **The design must be circular-safe:** it will be cropped to a circle, so keep every element well
+> inside a centred circle and leave at least **15% empty margin on all four sides**. Nothing in the
+> corners.
+>
+> It will be displayed on a **white circular background at about 150px**, so use **mid-to-dark
+> colours with strong contrast against white** — no white, pale grey, or light pastel as the main
+> colour.
+>
+> A single bold symbol — **no text, no lettering, no wordmark**. Simple geometry, flat vector style,
+> thick strokes, high contrast, centred and symmetrical. It must stay readable when shrunk to 32×32.
+>
+> Style: [pick one — geometric / rounded-soft / sharp-technical / organic].
+> Palette: [1–2 brand colours], on transparency.
 
-**Then check:** ≥1280×720 and close to 16:9. Prefer JPEG if PNG exceeds ~2 MB — the background has no
-transparency to preserve.
+**Why "no text":** the box renders at 85–153 CSS px. Lettering is unreadable at that size, and the
+circular crop cuts the ends off a wordmark. Tide's own default logo *is* a wordmark, and it only
+survives because it is deliberately scaled to 94% of the crop radius — that is a designed exception,
+not the easy path.
 
-**Common failures:**
-- a busy or high-contrast centre — the login card becomes unreadable, and this is the one that
-  actually gets shipped
-- text or a logo baked into the background — it will be cropped, duplicated, or fight the real logo
-- a portrait or square image — cropped hard on a wide viewport
-- 4K PNG at 9 MB — over the cap
+**Then check:** `python3 check-branding.py logo.png --as LOGO`. It reports the exact ratio of your
+artwork to the crop radius and tells you what to scale to.
 
 ---
 
-## Making it reflect the app
+## 2. Background — `fileType=BACKGROUND_IMAGE`
 
-This is where a model earns its keep and the generator cannot follow: **describe the app** and let the
-model choose the imagery. Insert a clause after the first sentence of the logo prompt, e.g.
+**Canvas: 1920×1080 minimum (16:9), JPEG preferred. Tide's own is 3840×2160.**
 
-> *"...app logo mark for **a music-licensing and provenance registry** — suggest sound or waveform
-> motifs abstractly, without literal instruments."*
+Full-viewport with `background-size: cover` and `background-position: center`, so it crops on
+whichever axis is proportionally longer. The login card sits over the middle.
 
-Keep every hard constraint intact (square, transparent, padded, no text) — those are what make the
-asset usable, and a model will happily drop all four while chasing the theme. Say the domain, name a
-motif direction, and forbid literal objects and lettering; anything more specific tends to produce a
-cluttered illustration that dies at 32×32.
+### Copy-paste prompt
+
+> An abstract background image for a login screen for **[APP NAME]**, a **[what it does]**.
+>
+> **1920×1080, 16:9 landscape** (3840×2160 if available).
+>
+> **Very low contrast and visually quiet, especially through the centre** — a login card with text
+> sits on top of the middle third, so that area must stay calm and near-uniform. Detail and interest
+> belong in the outer edges and corners.
+>
+> Soft gradients, subtle geometric or organic texture, gentle depth. **No text, no logos, no faces,
+> no sharp focal point in the centre.** It should read as a surface, not as a picture.
+>
+> Mood: [calm / technical / warm / premium]. Palette: [1–2 brand colours], muted.
+>
+> Also note it will be **cropped on one axis** at other screen ratios, so keep the composition
+> forgiving toward the edges.
+
+**Then check:** ≥1920×1080 and close to 16:9.
 
 ## Palette
 

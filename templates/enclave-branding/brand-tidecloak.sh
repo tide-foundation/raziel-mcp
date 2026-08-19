@@ -6,8 +6,12 @@
 #
 # Usage:
 #   ./brand-tidecloak.sh                          # uses env / .env, realm from TIDECLOAK_REALM
-#   ./brand-tidecloak.sh --realm noted --accent 1f6feb --name "Noted"
-#   ./brand-tidecloak.sh --realm noted --logo path/to/logo.png --background path/to/bg.jpg
+#   ./brand-tidecloak.sh --realm noted --kind notes --name "Noted"
+#   ./brand-tidecloak.sh --realm noted --logo branding/logo.png --background branding/background.jpg
+#
+# --kind picks the mark and a default colour: vault identity notes chat data finance health
+# media commerce generic. Match it to what the app IS — that is what stops the art being a
+# generic blob. --accent overrides the colour; --logo/--background override the art entirely.
 #
 # Credentials come from the environment (or ./.env), never from this script (AP-41):
 #   KC_BOOTSTRAP_ADMIN_USERNAME / KC_BOOTSTRAP_ADMIN_PASSWORD
@@ -18,7 +22,8 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 URL="${TIDECLOAK_URL:-http://localhost:8080}"
 REALM="${TIDECLOAK_REALM:-}"
-ACCENT="${BRAND_ACCENT:-1f6feb}"
+ACCENT="${BRAND_ACCENT:-}"
+KIND="${BRAND_KIND:-generic}"
 APPNAME="${BRAND_NAME:-}"
 LOGO=""; BG=""; OUT="${BRAND_OUT:-./branding}"
 
@@ -26,6 +31,7 @@ while [ $# -gt 0 ]; do
   case "$1" in
     --realm) REALM="$2"; shift 2 ;;
     --url) URL="$2"; shift 2 ;;
+    --kind) KIND="$2"; shift 2 ;;
     --accent) ACCENT="$2"; shift 2 ;;
     --name) APPNAME="$2"; shift 2 ;;
     --logo) LOGO="$2"; shift 2 ;;
@@ -85,7 +91,7 @@ fi
 # --- 1. assets ---------------------------------------------------------------------------------
 if [ -z "$LOGO" ] || [ -z "$BG" ]; then
   echo "--> generating default assets (accent=$ACCENT${APPNAME:+, name=$APPNAME})"
-  python3 "$HERE/make-branding.py" --out "$OUT" --accent "$ACCENT" ${APPNAME:+--name "$APPNAME"} >/dev/null || {
+  python3 "$HERE/make-branding.py" --out "$OUT" --kind "$KIND" ${ACCENT:+--accent "$ACCENT"} ${APPNAME:+--name "$APPNAME"} >/dev/null || {
     echo "ERROR: asset generation failed." >&2; exit 1; }
   LOGO="${LOGO:-$OUT/logo.png}"
   BG="${BG:-$OUT/background.png}"
