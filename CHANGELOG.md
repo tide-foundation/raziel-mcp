@@ -2,6 +2,58 @@
 
 All notable changes to `@tideorg/mcp` (the Tide Agent Pack) are documented here.
 
+## 1.9.15 — Enclave branding: ask the user, generate art that fits the app, upload it
+
+**The flow, not just the docs.** `BRANDING-FLOW.md` is the script the agent follows: ask once, then
+(1) the user drops their own art in `./branding/`, (2) the agent writes an image-AI prompt *filled in
+for their app* and uploads what comes back, or (3) the agent generates it. `brand-tidecloak.sh` then
+does check -> upload both -> save+sign -> verify in one command. The real failure was never a broken
+upload — it is that nobody offers, so every app ships with Tide's logo on its login screen. Gate 1n
+enforces the ask.
+
+**Art that matches the app.** `make-branding.py --kind` covers vault, identity, notes, chat, data,
+finance, health, media, commerce, generic — each a distinct mark (shield, keyhole, lines, bubble,
+bars, pulse, play, bag, waves) with a sensible default colour. `--name` varies it deterministically,
+so two vault apps differ and the same app always regenerates identically. Gate 1o keeps the code and
+the docs in step. Still Python stdlib only — no image model, no Pillow.
+
+**The mark is now a disc, not a rounded square**, because the enclave crops to a circle: a disc fills
+the whole area instead of floating a small square inside a circle.
+
+### Enclave branding geometry, measured instead of guessed
+
+The pack's branding geometry was tagged ASSUMED because "the enclave's exact layout is not in
+readable sources". It is readable — the enclave is a public page. Measured it, and the guidance was
+wrong in the way that matters.
+
+- **The logo is cropped to a CIRCLE.** `main .logo .img_container { border-radius: 50% }`, confirmed
+  by hit-testing the rendered element and by screenshotting a full-bleed square injected into the
+  live enclave: all four corners are gone. `evidence/` carries the picture and the method.
+- **It is `background-size: cover`, not `object-contain`.** The pack said the logo was fitted into a
+  box. `cover` fills and crops, so a **non-square canvas loses the ends of its long axis** before the
+  circle is even applied. Square is not a preference.
+- **There is a WHITE plate behind it** (`background-color: var(--white)`), so a logo is designed
+  against white — not against the uploaded background image. A pale mark disappears.
+- **Real numbers**: the box renders at **85–153 CSS px** (85% of a 100–180px wrapper), so 512 is the
+  practical source floor at 3× DPR. Tide's own defaults are **838×838** logo and **3840×2160** JPEG
+  background. Safe area for a square mark is a **≥14.65% inset** — a square inscribed in a circle has
+  side = diameter ÷ √2.
+- `check-branding.py` now computes the **exact ratio of artwork to crop radius** and says what to
+  scale to. Validated against Tide's own logo (0.94, passes) and a full-bleed square (1.41 = √2,
+  correctly flagged).
+- `IMAGE-PROMPT.md` carries a copy-paste prompt for a user to run in an image model, with the
+  circular-safe constraint, the white-background constraint, and no-text stated up front.
+- `make-branding.py` defaults to 1024×1024; its output measures 0.94 against the crop radius.
+- Gates **1l** (nothing describes the logo as `object-contain`), **1m** (branding docs must state the
+  circular crop), **1n** (the flow exists and leads with the ask), **1o** (every `--kind` is
+  documented).
+- `check-branding.py` also gained an **angular uniformity** test, because ratio alone was not enough:
+  a disc that exactly fills the canvas is *correct*, while a square at the same ratio loses its
+  corners. Without it the checker told a disc to "scale to 100%", which is nonsense advice.
+
+Upload limits confirmed from the admin UI: PNG/JPEG/GIF/WebP, 5 MB, no SVG, and **no dimension
+validation at all** — nothing rejects a badly shaped logo, it just ships clipped.
+
 ## 1.9.14 — Ask Skycloak for the version list; Docker Hub was the wrong source
 
 Follow-up to 1.9.13, which fixed the hardcoded pin by reading Docker Hub tags. **That still

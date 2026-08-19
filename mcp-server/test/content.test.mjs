@@ -266,6 +266,70 @@ export async function run() {
     walkDown.join("  "),
   );
 
+  // 1l. Enclave branding geometry must not describe the WRONG render mechanism. Measured from the
+  //     live enclave stylesheet and confirmed by hit-testing the element: the logo container is
+  //     `border-radius: 50%` + `background-size: cover` on a white plate. An earlier revision said
+  //     the logo was fitted into a box with `object-contain`, which is the opposite behaviour --
+  //     `contain` fits and never crops, `cover` fills and crops, and neither describes the circular
+  //     mask that actually cuts the corners off. That wording told users to pad for the wrong shape.
+  const brandWrong = [];
+  for (const d of ["canon", "playbooks", "skills", "prompts", "adapters", "templates", "reference-apps"]) {
+    for (const f of walkFiles(join(PACK_ROOT, d), [".md", ".py", ".sh"])) {
+      const r = rel(f);
+      readFileSync(f, "utf8").split("\n").forEach((ln, i) => {
+        if (/object-contain/.test(ln) && /logo|enclave|brand/i.test(ln)) {
+          brandWrong.push(`${r}:${i + 1} (logo uses background-size: cover + a circular mask)`);
+        }
+      });
+    }
+  }
+  c.ok(
+    "branding docs describe the real logo render (circular crop + cover, not object-contain)",
+    brandWrong.length === 0,
+    brandWrong.join("  "),
+  );
+
+  // 1m. The branding guidance must actually mention the circular crop. It is the single fact that
+  //     changes what a user should draw, and it was missing entirely until measured.
+  const brandingDocs = ["templates/enclave-branding/README.md", "templates/enclave-branding/IMAGE-PROMPT.md"];
+  const missingCircle = brandingDocs.filter((f) => {
+    const t = packRead(f) || "";
+    return !/border-radius:\s*50%/.test(t) || !/circle|circular/i.test(t);
+  });
+  c.ok(
+    "branding docs state the circular crop (border-radius: 50%)",
+    missingCircle.length === 0,
+    missingCircle.join("  "),
+  );
+
+  // 1n. The branding flow must exist and must lead with ASKING the user. The real-world failure is
+  //     not a broken upload -- it is that nobody offers, so every app ships with Tide's logo on its
+  //     login screen. The tool description and the flow doc both have to carry the question.
+  const flowDoc = packRead("templates/enclave-branding/BRANDING-FLOW.md") || "";
+  c.ok(
+    "BRANDING-FLOW.md exists and tells the agent to ask the user first",
+    flowDoc.length > 0 && /ask/i.test(flowDoc) && /branding\/(logo|background)/i.test(flowDoc),
+    flowDoc ? "present but missing the ask or the drop path" : "missing",
+  );
+  const brandingTool = (packRead("mcp-server/src/server.ts") || "");
+  c.ok(
+    "tide_branding tells the agent to ask before generating",
+    /ASK THE USER FIRST/.test(brandingTool),
+    "server.ts tide_branding response must lead with the question",
+  );
+
+  // 1o. Every --kind the generator accepts must be documented, and vice versa. A kind that exists in
+  //     code but not in the docs never gets picked; one documented but absent is a crash.
+  const gen = packRead("templates/enclave-branding/make-branding.py") || "";
+  const kindBlock = gen.slice(gen.indexOf("KINDS = {"), gen.indexOf("}", gen.indexOf("KINDS = {")));
+  const codeKinds = [...kindBlock.matchAll(/^\s*"([a-z]+)":/gm)].map((m) => m[1]).sort();
+  const undocumented = codeKinds.filter((k) => !flowDoc.includes("`" + k + "`"));
+  c.ok(
+    "every generator --kind is documented in BRANDING-FLOW.md",
+    codeKinds.length > 0 && undocumented.length === 0,
+    codeKinds.length === 0 ? "could not parse KINDS" : `undocumented: ${undocumented.join(", ")}`,
+  );
+
   // 1c. Every shipped realm template must still carry the tideUserKey + vuid attribute mappers,
   //     so "remove tide-roles-mapper" can never be satisfied by deleting the Tide claims wholesale.
   const realmTemplates = [];

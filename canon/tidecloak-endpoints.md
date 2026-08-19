@@ -299,7 +299,12 @@ generic IdP-update endpoint and skip the signature — the enclave verifies the 
 
 **Producing the assets**: `templates/enclave-branding/` ships a dependency-free generator
 (`make-branding.py` — no image model, no Pillow) plus a validator (`check-branding.py`) and
-image-model prompts. Recommended geometry (ASSUMED — nothing enforces it): logo **512×512 PNG with
-alpha and ~12% transparent padding per side** (it is scaled to fit a box, so padding is the safe
-area); background **1920×1080 16:9** with a **quiet, low-contrast centre**, because the login card and
-white text sit on top of the middle.
+image-model prompts. Geometry is **MEASURED** from the live enclave stylesheet, not assumed: the logo
+is painted into a **circular** container (`border-radius: 50%`) using `background-size: cover` — it
+**fills and crops**, it does not fit-inside — on a **white** plate, rendering at **85–153 CSS px**.
+So: logo **square, 1024×1024 PNG with alpha**, every element **inside the inscribed circle**
+(≥14.65% inset for a square mark), and dark enough to read on white. A non-square logo loses the ends
+of its long axis. Background **16:9, ≥1920×1080, JPEG**, full-bleed `cover`, with a **quiet,
+low-contrast centre** because the login card sits on top of the middle. Tide's own defaults are
+**838×838** and **3840×2160**. Nothing server-side validates dimensions; the only enforced limits are
+format (**no SVG**) and **5 MB**.
