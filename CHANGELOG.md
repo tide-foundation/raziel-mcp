@@ -2,6 +2,38 @@
 
 All notable changes to `@tideorg/mcp` (the Tide Agent Pack) are documented here.
 
+## 1.9.14 — Ask Skycloak for the version list; Docker Hub was the wrong source
+
+Follow-up to 1.9.13, which fixed the hardcoded pin by reading Docker Hub tags. **That still
+provisioned old clusters**, and the reason matters more than the fix.
+
+- **Skycloak never consults Docker Hub.** It exact-matches the version against a server-side
+  allowlist (`SupportedTideCloak` → `ErrInvalidClusterVersion` → `400 invalid cluster version`).
+  A tag can be the newest thing Tide published and still be un-provisionable.
+- **The walk-down loop then hid it.** Newest 400s → try next → land on something old, with no
+  error. A retry loop over the wrong list converts a loud failure into a silent downgrade.
+- **The walk-down is now gone entirely.** Fixing the source made it not just unnecessary but wrong:
+  every entry comes from Skycloak, so a rejection is an inconsistency to report, not a reason to
+  settle for an older build. The playbook takes Skycloak's newest and creates **once**. Gate **1k**
+  fails the build on any create loop over `--list`, and `--list` is now labelled diagnostic-only.
+- The `0.14.17` floor never *selects* an older version — it only refuses to return one when the
+  entire catalogue is below it (known-broken builds), so it can never mask a newer release.
+- **There IS a versions endpoint** — `GET /clusters/supported-versions?type=tidecloak` and
+  `GET /clusters/versions`, both behind the API key. The pack's earlier "there is no versions
+  endpoint" was an unverified negative inferred from the public docs, and it is precisely what
+  sent the previous fix to Docker Hub for a substitute.
+- `templates/shared/skycloak-latest-version.sh` now queries Skycloak, handles all three response
+  shapes, sorts numerically, applies the `0.14.17` floor, and fails loudly. Docker Hub survives
+  only as `--check`, a lag diagnostic ("Skycloak is behind what Tide published" → ask them to add
+  it). It never picks a version.
+- **Do not read the allowlist from a Skycloak source checkout.** The checkout on this machine lists
+  `0.11.7` while production provisions `0.14.17` — a snapshot is authoritative for the *mechanism*,
+  never the *values*. AP-83, third occurrence.
+- If Skycloak's newest is genuinely old, no client-side change fixes it. Report it; do not lower the
+  floor, because `0.13.13` and `0.14.11` provision happily and then fail.
+- AP-84 rewritten around this. New gates **1i** (nothing sources the version from Docker Hub) and
+  **1j** (nothing repeats the "no versions endpoint" claim, retractions allowed).
+
 ## 1.9.13 — 2026-08-18
 
 - **New `tide_dpop_asset` tool — serve `tide_dpop_auth.html` from the MCP.** The Tide

@@ -189,6 +189,83 @@ export async function run() {
     pinned.join("  "),
   );
 
+  // 1i. Nothing may source the Skycloak cluster VERSION from Docker Hub. Skycloak exact-matches
+  //     against a server-side allowlist (SupportedTideCloak -> ErrInvalidClusterVersion), so the
+  //     newest published tag is frequently un-provisionable. Reading tags instead of asking the API
+  //     is what made clusters keep coming up old: newest 400s, the walk-down loop absorbs it, and
+  //     you land on something ancient with no error. AP-84.
+  //     Exempt: the discovery script (Docker Hub is its --check lag diagnostic only) and the
+  //     anti-pattern/canon entries, which must quote the wrong source to forbid it.
+  const hubSourced = [];
+  const hubExempt = new Set([
+    "templates/shared/skycloak-latest-version.sh",
+    "canon/anti-patterns.md",
+    "canon/hosting-options.md",
+    "playbooks/provision-tidecloak-skycloak.md",
+  ]);
+  for (const d of ["canon", "playbooks", "skills", "prompts", "adapters", "templates", "reference-apps"]) {
+    for (const f of walkFiles(join(PACK_ROOT, d), [".md", ".sh"])) {
+      const r = rel(f);
+      if (hubExempt.has(r)) continue;
+      readFileSync(f, "utf8").split("\n").forEach((ln, i) => {
+        if (/hub\.docker\.com[^\n]*tidecloak/.test(ln)) {
+          hubSourced.push(`${r}:${i + 1} (Docker Hub is not Skycloak's version list)`);
+        }
+      });
+    }
+  }
+  c.ok(
+    "no file sources the Skycloak cluster version from Docker Hub (AP-84 — ask the API)",
+    hubSourced.length === 0,
+    hubSourced.join("  "),
+  );
+
+  // 1j. The pack must not repeat the unverified negative that caused AP-84's second mistake.
+  //     `GET /clusters/supported-versions?type=tidecloak` and `GET /clusters/versions` both exist;
+  //     claiming otherwise is what sent the previous author to Docker Hub for a substitute.
+  const noEndpoint = [];
+  for (const d of ["canon", "playbooks", "skills", "prompts", "adapters", "templates"]) {
+    for (const f of walkFiles(join(PACK_ROOT, d), [".md", ".sh"])) {
+      const r = rel(f);
+      if (r === "canon/anti-patterns.md" || r === "canon/hosting-options.md") continue;
+      readFileSync(f, "utf8").split("\n").forEach((ln, i) => {
+        // Allow a line that quotes the claim in order to retract it — that is how the
+        // correction is taught. Only an unretracted assertion is a failure.
+        const retracts = /that was wrong|is wrong|was never verified|no longer true|older pack docs|incorrect/i.test(ln);
+        if (/(is|are)\s+no\s+versions?\s+endpoint/i.test(ln) && !retracts) {
+          noEndpoint.push(`${r}:${i + 1} (false — /clusters/supported-versions exists)`);
+        }
+      });
+    }
+  }
+  c.ok(
+    "nothing claims Skycloak has no versions endpoint (AP-84 — it does, behind the API key)",
+    noEndpoint.length === 0,
+    noEndpoint.join("  "),
+  );
+
+  // 1k. Nothing may loop the cluster-create over the version list, retrying downward. The list now
+  //     comes from Skycloak itself, so every entry is one it claims to support -- a
+  //     `400 invalid cluster version` means something is inconsistent, not that an older build will
+  //     do. Retrying downward is only ever a downgrade, and it is what kept clusters coming up old
+  //     with no error reaching the operator. Take the newest, create once, fail loudly. AP-84.
+  const walkDown = [];
+  for (const d of ["canon", "playbooks", "skills", "prompts", "adapters", "templates", "reference-apps"]) {
+    for (const f of walkFiles(join(PACK_ROOT, d), [".md", ".sh"])) {
+      const r = rel(f);
+      readFileSync(f, "utf8").split("\n").forEach((ln, i) => {
+        if (/for\s+\w+\s+in\s+\$\([^)]*skycloak-latest-version\.sh[^)]*--list/.test(ln)) {
+          walkDown.push(`${r}:${i + 1} (looping the create over --list downgrades silently)`);
+        }
+      });
+    }
+  }
+  c.ok(
+    "no create-cluster loop that retries down the version list (AP-84 — newest or fail)",
+    walkDown.length === 0,
+    walkDown.join("  "),
+  );
+
   // 1c. Every shipped realm template must still carry the tideUserKey + vuid attribute mappers,
   //     so "remove tide-roles-mapper" can never be satisfied by deleting the Tide claims wholesale.
   const realmTemplates = [];
