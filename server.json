@@ -7,13 +7,13 @@
     "url": "https://github.com/tide-foundation/raziel-mcp",
     "source": "github"
   },
-  "version": "1.9.15",
+  "version": "1.9.23",
   "packages": [
     {
       "registryType": "npm",
       "registryBaseUrl": "https://registry.npmjs.org",
       "identifier": "@tideorg/mcp",
-      "version": "1.9.15",
+      "version": "1.9.23",
       "runtimeHint": "npx",
       "transport": {
         "type": "stdio"

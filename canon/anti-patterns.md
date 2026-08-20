@@ -1654,6 +1654,9 @@ The org is `tideorg`, not `tidecloak`. And `tidecloak-dev` — despite the suffi
 | AP-82 | Low | **CRITICAL** | Easy to check, easy to promise wrongly — every request 401s after the swap |
 | AP-83 | Medium | **CRITICAL** | **Very hard** — the wrong conclusion looks rigorous and gets recorded as VERIFIED |
 | AP-84 | High | Medium | **Very hard** — a pin never fails, and the obvious fix (Docker Hub) preserves the bug as a silent downgrade |
+| AP-85 | Medium | Medium | Easy to check, and the fake data is indistinguishable from real data once written |
+| AP-86 | High | **HIGH** | **Very hard** — failure and discovery are far apart, and the evidence is deleted before anyone looks |
+| AP-87 | High | Low | **Hard** — the agent does the work well and reports it, so nothing looks broken |
 
 > AP-38 through AP-59 predate this table and are not classified here. Treat the omission as a known
 > gap in this section, not as an assessment of low severity.
@@ -3154,3 +3157,192 @@ not re-pin.
 
 **Related:** AP-HOST-2, AP-83.
 
+---
+
+## AP-85: Generating a Placeholder Email to Complete a Tide User's Profile
+
+**Severity: Medium. Blast radius: junk contact data you cannot distinguish from real data.**
+
+Tide's IdP asserts **only a username** — the vuid:
+
+```java
+BrokeredIdentityContext identity = new BrokeredIdentityContext(userId, providerConfig);
+identity.setUsername(userId);       // no email, no firstName, no lastName
+```
+
+So a brokered signup can hit Keycloak's Account Information form, and the tempting fix is to
+synthesise a unique address (`user-a3f9c2@example.invalid`) so validation passes.
+
+**Don't. Leave email empty and collect it in-app afterwards.**
+
+1. **It is indistinguishable from a real address downstream.** Billing, support, exports, incident
+   mail — everything treats it as a contact, and eventually something sends to it. If the domain is
+   real or becomes real, that is a leak to a stranger.
+2. **It collides.** Keycloak enforces email uniqueness unless `duplicateEmailsAllowed` is true
+   (VERIFIED `false` on a live Tide realm). Duplicates fail user creation with an error that never
+   mentions email.
+3. **It destroys the "never set" signal.** When the user supplies a real address you need to tell
+   "absent" from "junk". An empty field carries that for free.
+4. **Tide does not need email for recovery.** Password reset happens in the Secure Web Enclave, not
+   by email link — the usual reason to demand an address at signup does not apply.
+
+The username needs no generation either: the vuid is already unique and stable.
+
+**Also do not assume which page you are seeing.** Four mechanisms render a similar form —
+`idp-review-profile`, `VERIFY_PROFILE`, default required actions, and a stale action already on an
+existing user — with four different fixes, and a realm-level change never clears the fourth. Run
+`templates/skip-idp-review/diagnose-post-signup-page.sh`. A correctly provisioned Tide realm has
+**none** of them active (VERIFIED read-only on a live realm: only `link-tide-account-action` and
+`idp_link`, both non-default, and no required user-profile attributes), so if a page still appears
+it is probably the **account console** — a redirect-URI problem, not a form.
+
+**And when you do save the details, use the Account API with the user's own token**, not the Admin
+API from your backend: that needs admin credentials in app runtime (**AP-41**) and, on a governed
+realm, an admin write returns `202` and creates a change request — so the save appears to succeed and
+silently does nothing until it is approved.
+
+**Related:** AP-41. Procedure: `templates/skip-idp-review/ONBOARDING.md`.
+
+---
+
+## AP-86: Silencing a Bootstrap Write, and Restarting the App Mid-Enclave-Flow
+
+Four failures from one build (LEARNINGS-vialproof-001), all sharing a shape: **the moment of failure
+and the moment you find out are far apart, and the evidence is gone by then.**
+
+### Never `>/dev/null` a governed write during bootstrap
+
+A role grant POSTed with output discarded failed silently. The script then granted
+`tide-realm-admin` and drained — flipping the realm to **multiAdmin**. The repair is now a different
+class of problem from the miss:
+
+```
+POST /iga/change-requests/{id}/authorize
+409 {"error":"MULTIADMIN_REQUIRES_APPROVAL_ENCLAVE","message":"multiAdmin change requests must be
+     approved via the approval enclave (POST /iga/change-requests/{id}/approve); the simple
+     authorize/commit path cannot sign a multiAdmin change request."}
+POST /iga/change-requests/{id}/commit
+412 {"error":"QUORUM_NOT_MET","message":"Approve to quorum before committing — need 1 more approval"}
+```
+
+**End the grant step with a verification read** — `GET /users/{id}/role-mappings` — and assert every
+expected role is present. The multiAdmin flip is a one-way door; everything you forgot before it
+becomes a human enclave approval for the life of the realm.
+
+Good news for the repair: **only the approval is enclave-gated.** REST grant → pending `GRANT_ROLES`
+CR → human approves in the console → **REST commit works fine** once quorum is met. A
+poll-then-auto-commit watcher removes the second human step.
+
+Same rule for `setUpTideRealm`: capture the body and status, abort unless 2xx, and assert
+`GET /identity-provider/instances/tide` returns alias `tide` **before** handing anyone an invite
+link. Otherwise the first symptom is Keycloak's *"We are sorry… internal server error"* page in a
+human's browser — the least debuggable place possible.
+
+### `UID` is readonly in bash
+
+```
+/bin/bash: line 8: UID: readonly variable
+{"error":"User not found"}      # POST /users//role-mappings/... — empty id spliced in
+```
+
+Bash **refuses the assignment and continues**, so the variable keeps its old value and every later
+grant 404s against a malformed URL. Use `USER_ID`. Enforced by a content gate.
+
+### Role descriptions are capped at 255 characters
+
+`KEYCLOAK_ROLE.DESCRIPTION` is `VARCHAR(255)`. A 289-char description fails the **entire realm
+import** with an opaque HTTP 500; the cause appears only in the container log:
+
+```
+org.hibernate.exception.DataException: could not execute batch
+[Value too long for column "DESCRIPTION CHARACTER VARYING(255)": "...(289)"]
+```
+
+The pack encourages rich, self-documenting descriptions — keep them under the cap. Enforced by a
+content gate over shipped realm JSON.
+
+### Never restart the app server while an enclave flow is in progress
+
+```
+Submitting to the ORK network…
+Awaiting operator approval in the Tide enclave…
+Executing threshold signature…
+✗ Failed to fetch
+```
+
+An agent restarted the Next.js dev server while the human was mid-approval. The signing pipeline
+needs the app origin to stay up (the DPoP relay under `/tide_dpop/`, SDK round-trips), so the flow
+dies with a bare `Failed to fetch` **after the approval is spent — and approvals are not
+refundable.**
+
+Corollary for agents: `pkill -f "next dev"` **kills the agent's own shell**, because the pattern
+matches its own command line (exit 144). Kill by port instead: `fuser -k 3000/tcp`.
+
+### Do not delete a broken container
+
+On the first error page the instinct is `docker rm` and redeploy. That destroys `docker logs` — the
+only place Keycloak writes the actual cause of the two failures above. Print this next to every
+invite link:
+
+> If this link shows an error page, **leave the container running** and capture
+> `docker logs <name>`. Deleting the container destroys the diagnosis.
+
+(The surviving H2 `.trace.db` holds only benign first-boot migration noise — `Column
+"T.LAST_MODIFIED_TIMESTAMP" not found`, `MIGRATION_MODEL not found (this database is empty)`. Do not
+chase those.)
+
+---
+
+## AP-87: Deciding a User-Facing Choice and Reporting It Afterwards
+
+**Severity: Medium. Blast radius: the user's product looks and behaves how the agent guessed.**
+
+Observed three times in a row on the same two questions — branding, and what to collect from new
+users. The pack put both in the MCP `instructions` block, the bootstrap output, and the playbook.
+The agent then did both things *well* — generated a fitting mark, built a skippable in-app modal that
+asked for no email and invented none — and told the user afterwards:
+
+> **Two decisions I made — flag if you'd like them changed**
+
+That is not a failure of capability. It is an agent optimising for *"everything that can be done
+without a human is done"*, which is usually the right instinct and is exactly wrong for a choice
+about how someone else's product looks.
+
+**Why the obvious fixes did not work**
+
+- **MCP `instructions` are advisory.** They also only reach a session that connected *after* the
+  server was rebuilt — a server is a process started at connect time, so an updated build on disk
+  changes nothing for a live session (see `mcp-server/verify-live.sh`).
+- **Printing the question in bootstrap output** is skipped by an agent batching all human
+  interaction to the end.
+- **A playbook step** is read as documentation, not as a stop.
+
+**What to do instead: attach the question to a step that already blocks on a human.**
+
+In a Tide bootstrap that is the **admin invite link** — the script stops and polls until someone
+opens it in a browser. The human is present and idle by construction. Both questions are printed
+there, with an explicit instruction to the agent to ask and *wait*, because that is the only moment
+where asking costs the user nothing.
+
+**The general rule:** a question the user must answer belongs at an existing human checkpoint, not at
+the point the information is first needed. If a workflow has no such checkpoint, the question will be
+answered by whoever is present — and that is the agent.
+
+**And when there is genuinely no checkpoint**, prefer a default that is *cheap to reverse* and say so
+in one line, rather than a silent decision reported as done. Branding and profile fields both qualify:
+re-running `brand-tidecloak.sh` replaces the art, and a profile modal is a component you can change.
+
+### Why putting it in the pack's own scripts reached nobody
+
+Four builds in a row reported *"decisions I made without asking"*. The fix kept being applied to
+`templates/shared/bootstrap-tidecloak.sh` — and **agents do not run that script.** They write their
+own `init-tidecloak.sh` per app, adapted to that app's realm, roles and container. Undertow's was
+hand-written and correct; it simply never contained the banner, because the banner lived in a file
+nothing read.
+
+**The rule this generalises to:** guidance only reaches generated code if it lives where the agent
+reads *while generating* — `canon/tidecloak-bootstrap.md` and the reference-app
+`bootstrap-sequence.md` files — not in an example script it will never execute. If you find yourself
+patching a shipped script to change agent behaviour, check first whether agents run it at all.
+
+**Related:** the same "guidance existed, nothing surfaced it" shape as AP-86.

@@ -66,6 +66,12 @@ All steps must complete before users can safely use signing features. Order matt
    - Assign: `POST /admin/realms/{realm}/users/{userId}/role-mappings/clients/{realm-mgmt-client-id}`.
 
 9. **Generate account-linking invite**
+
+   > **Print the two end-user questions next to this link, before the polling loop** — branding,
+   > and what the in-app form collects. It is the only step where a human is present and idle;
+   > an agent will otherwise decide both itself and report them afterwards (**AP-87**). The
+   > exact banner is in `canon/tidecloak-bootstrap.md`.
+
    - `POST /admin/realms/{realm}/tideAdminResources/get-required-action-link?userId={userId}&lifespan=43200` with body `["link-tide-account-action"]`.
    - ⚠️ **`tideInvitable` must be set FIRST, and the change request drained.** Otherwise this
      returns `400 {"errorMessage":"This user cannot be invited: the 'tideInvitable' attribute is

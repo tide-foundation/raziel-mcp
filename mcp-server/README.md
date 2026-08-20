@@ -1,4 +1,29 @@
-# Tide Agent Pack — MCP Server
+# Tide Agent Pack MCP server
+
+## "I updated the pack but nothing changed"
+
+**An MCP server is a process started when your session connected.** Editing `src/`, or even
+rebuilding `dist/`, does not reach a session that is already connected — it keeps talking to the
+process it started. A tool you just added reads as "missing" and an instruction you just wrote reads
+as "ignored", which looks like a broken feature rather than a stale process.
+
+```bash
+bash mcp-server/verify-live.sh
+```
+
+It checks the three things that go out of date independently:
+
+1. **`dist/` older than `src/`** → run `npm run build`
+2. **the built server, spawned fresh** → reports its version and whether the tools/instructions you
+   expect are actually there
+3. **your session** → if step 2 says `HAS` but your session cannot call the tool, the build is fine
+   and the *session* is stale: reconnect with `/mcp`, or start a new session
+
+The instructions block is stamped `Tide Agent Pack vX.Y.Z`, so an agent can report which build it is
+actually talking to instead of guessing.
+
+
+---
 
 Exposes the Tide agent pack (canon, playbooks, skills, prompts, adapters) as MCP tools that any AI coding agent can call.
 

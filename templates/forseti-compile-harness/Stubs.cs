@@ -16,10 +16,16 @@
 // so drift between the stubs and the real SDK shows up as a failure here rather than as a false
 // PASS on your own contract.
 //
-// An earlier revision of this file guessed `ctx.Data` as `byte[]` and gave `PolicyDecision` a
-// public `IsAllowed`. Both were wrong, and a `byte[]` stub is WORSE than a missing one: contracts
-// written against it (indexing, `.Length`) compile locally and fail on the ORK. Corrected
-// 2026-08-11 against the references above.
+// HISTORY, because this file has now been wrong in both directions:
+//   * An early revision typed `ctx.Data` as `byte[]` and gave `PolicyDecision` a public
+//     `IsAllowed`. The `IsAllowed` part was simply wrong.
+//   * The 2026-08-11 "correction" then pinned Data to `ReadOnlyMemory<byte>` on the strength of the
+//     vendored quickstart contracts. That was an OVER-correction: those contracts compile under
+//     either typing, so they were never evidence -- while two ORK-proven contracts require a
+//     reference type. It made the harness reject a contract with real threshold signatures on
+//     record (reported independently by sashlings L-10 and vialproof L-02).
+// The typing is therefore treated as UNRESOLVED and compiled BOTH ways. Do not "simplify" this
+// back to one typing without an ORK error message that settles it.
 // ---------------------------------------------------------------------------------------------
 
 using System;
@@ -114,9 +120,29 @@ namespace Ork.Forseti.Sdk
 
     public class DataContext
     {
+        // ---------------------------------------------------------------------------------------
+        // `ctx.Data`'s REAL type is NOT settled, so this harness compiles your contract against
+        // BOTH candidates and requires it to pass under both. See README "The ctx.Data question".
+        //
+        //   FORSETI_DATA_ROM defined  -> ReadOnlyMemory<byte>   (the vendored quickstart style)
+        //   otherwise                 -> byte[]                 (the ORK-signature-backed style)
+        //
+        // Why both, rather than picking one: the asymmetry means only ONE direction is evidence.
+        // `byte[]` converts implicitly to `ReadOnlyMemory<byte>`, so a ROM-style contract compiles
+        // under EITHER typing and proves nothing. The reverse does not convert, so a contract doing
+        // `byte[] d = ctx.Data;` or `ctx.Data == null` compiles ONLY if Data is a reference type --
+        // and two such contracts are ORK-proven (music-license OriginAttestation, whose contractId
+        // matches its signed policy byte for byte, and keylessh sshPolicy). Measured with the real
+        // compiler, 2026-08-20.
+        // ---------------------------------------------------------------------------------------
         /// A nested TideMemory structure, not a flat buffer. See TideMemoryExtensions.
+#if FORSETI_DATA_ROM
         public ReadOnlyMemory<byte> Data => ReadOnlyMemory<byte>.Empty;
         public ReadOnlyMemory<byte> DynamicData => ReadOnlyMemory<byte>.Empty;
+#else
+        public byte[] Data => Array.Empty<byte>();
+        public byte[] DynamicData => Array.Empty<byte>();
+#endif
 
         /// e.g. "PolicyEnabledEncryption:1" / "PolicyEnabledDecryption:1" — how a contract tells
         /// encrypt from decrypt, which matters because their payload layouts differ.

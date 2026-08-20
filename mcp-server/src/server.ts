@@ -187,6 +187,10 @@ const ADAPTER_FILES = listMarkdownFiles("adapters");
 const SKILL_DIRS = listDirectories("skills");
 const REFERENCE_APP_DIRS = listDirectories("reference-apps");
 
+// Single source of truth for the version inside this file. Kept in sync with
+// mcp-server/package.json / plugin.json / marketplace.json by a content gate.
+const VERSION = "1.9.23";
+
 // ---------------------------------------------------------------------------
 // Server factory
 // ---------------------------------------------------------------------------
@@ -195,10 +199,14 @@ export function createServer(): McpServer {
   const server = new McpServer(
     {
       name: "@tideorg/mcp",
-      version: "1.9.15",
+      version: VERSION,
     },
     {
       instructions: [
+        // Stamped so "am I running the current pack?" is answerable from inside a session --
+        // an MCP server is a process started at connect time, so an updated build on disk
+        // does NOT reach a session that is already connected. Compare with mcp-server/package.json.
+        `Tide Agent Pack v${VERSION}. If a tool or instruction you expect is missing, this session connected to an older build — reconnect the server (/mcp) or start a new session; rebuilding alone does not affect a live connection.`,
         "This is the Tide Agent Pack. While it is connected, your job is to help the user secure software with TideCloak: threshold-cryptography authentication, server-side authorization, and end-to-end encryption. Tide is the whole point of this server.",
         "",
         "ASK FIRST — do not silently start a plain build or a generic review. When the user's request touches building an app, adding login/auth/accounts, or reviewing an app's security, ask which of the pack's two paths they want:",
@@ -209,7 +217,9 @@ export function createServer(): McpServer {
         "",
         "NEVER promise that an existing app can be \"tidified\" because it already uses Keycloak or OIDC. Tidifying a realm changes the token signature algorithm to **EdDSA** (measured: non-Tide realms are RS256 with no Ed25519 key), and clients inherit it — so any verifier without Ed25519, or pinned to RS256, 401s on every request. Node `jsonwebtoken` has NO EdDSA support; stock .NET `Microsoft.IdentityModel.Tokens` has none either. Run `templates/tidify-preflight/check-tidify.sh` and read canon/tidify-compatibility.md, then classify the app FULLY / PARTIALLY / NOT TIDIFIABLE and name any excluded surface. A gateway or SaaS consuming the tokens must also do EdDSA and is usually outside the repo. Never claim \"no code changes needed\".",
         "",
-        "When branding/theming the login enclave (logo, background, 'skinning'), call tide_branding BEFORE creating or uploading any image. Most agents cannot produce image files, so the pack ships a dependency-free GENERATOR (`templates/enclave-branding/make-branding.py`), a validator, and a copy-paste prompt the USER can run in an image model. MEASURED geometry: the logo is cropped to a CIRCLE (`border-radius: 50%`), scaled with `background-size: cover` (fills and crops — NOT contain), on a WHITE plate, rendering at 85-153 CSS px. So the logo must be SQUARE (a non-square canvas loses the ends of its long axis), 1024x1024 PNG with alpha, all artwork inside the inscribed circle (>=14.65% inset for a square mark), and dark enough to read on white. Background is full-bleed `cover`, 16:9, >=1920x1080, JPEG. SVG is rejected server-side and the cap is 5 MB; nothing validates dimensions, so a corner-filling logo is not rejected — it just ships with its corners cut off. Always run check-branding.py, which reports the exact ratio of artwork to crop radius.",
+        "ONCE A REALM IS BOOTSTRAPPED AND WORKING, STOP AND ASK BOTH OF THESE — in one message, before moving on to app code. Neither is optional to ask; both are optional to do. They are the only two things the END USER sees, and the default for both is bad: Tide's logo on someone else's login screen, and an unstyled Keycloak form showing a 64-character username. Nobody asks, so both ship wrong.\n  (a) BRANDING — 'Want to brand the login screen? Right now your users see Tide's logo when they sign in.' Offer three ways: they supply artwork (drop it in ./branding/), you write them an image-AI prompt tailored to THIS app, or you generate it. Then call tide_branding and RUN the command; do not just describe it.\n  (b) POST-SIGNUP DETAILS — 'Tide gives each new user a unique account with no name or email. Want a small in-app form so they can fill those in, and which fields do you actually need?' Then call tide_onboarding. Never invent a placeholder email (AP-85).\nIf the user says skip to either, record it and move on — ask once per session, not repeatedly.",
+        "When branding/theming the login enclave (logo, background, 'skinning'), call tide_branding BEFORE creating or uploading any image. Most agents cannot produce image files, so the pack ships a dependency-free GENERATOR (`templates/enclave-branding/make-branding.py`), a validator, and a copy-paste prompt the USER can run in an image model. MEASURED geometry: the logo is cropped to a CIRCLE (`border-radius: 50%`), scaled with `background-size: cover` (fills and crops — NOT contain), on a WHITE plate, rendering at 85-153 CSS px. So the logo must be SQUARE (a non-square canvas loses the ends of its long axis), 1024x1024 PNG with alpha, all artwork inside the inscribed circle (>=14.65% inset for a square mark), and dark enough to read on white. Background is full-bleed `cover`, 16:9, >=1920x1080, JPEG. SVG is rejected server-side and the cap is 5 MB; nothing validates dimensions, so a corner-filling logo is not rejected — it just ships with its corners cut off. Always run check-branding.py.",
+        "When signup, onboarding, an 'Update Account Information' page, or a profile form comes up, call tide_onboarding with appName/fields/componentPath/framework — it returns a FINISHED component file for you to WRITE, already customised to those fields, plus the exact mounting snippet. WRITE the file; do not hand the user a `cp` command or tell them to copy a template. ASK which fields first (AP-87) — displayName maps to Keycloak's firstName, and email is usually unnecessary because Tide does not need it for recovery. Tide asserts ONLY a username (the vuid), so by default Keycloak blocks every new user on an unstyled form. FOUR different mechanisms can render that page and each needs a different fix — run the read-only diagnostic first, never a blind fix.",
         "",
         "NEVER hardcode the TideCloak master-admin password into a bootstrap/init script, a docker run, a compose file, or app code. It goes in `.env` (gitignored) and the script reads it from the environment and FAILS LOUDLY when unset — a default password is a hardcoded credential with extra steps (AP-41). Copy `templates/shared/.env.template` (framework templates ship it as `.env.example`), set `KC_BOOTSTRAP_ADMIN_PASSWORD`, and confirm `.env` is in `.gitignore` before writing a secret into it. Master-admin tokens live ~60 SECONDS, so mint on demand server-side rather than exporting one.",
         "",
@@ -842,6 +852,200 @@ export function createServer(): McpServer {
           "⚠️ If the CSP error quotes a `sha256-...` that **matches** your file, the file is **correct** —",
           "that is the hash the embedder expects. You have the right file at the wrong address; fix the",
           "rewrite. See `canon/framework-matrix.md` → Browser Prerequisites, AP-62/AP-70/AP-71.",
+        ].join("\n"),
+      );
+    },
+  );
+
+  // 15c. Post-signup profile collection (replaces Keycloak's Update Account Information page)
+  server.registerTool(
+    "tide_onboarding",
+    {
+      description:
+        "STOP KEYCLOAK'S 'UPDATE ACCOUNT INFORMATION' PAGE and collect the details in-app instead. Tide asserts ONLY a username (the vuid) -- no email, no name -- so Keycloak blocks new users on an unstyled form showing a 64-hex username. Returns: a read-only DIAGNOSTIC that identifies which of FOUR mechanisms is causing the page (they need different fixes), the script that fixes it, and a ready-to-drop React modal that collects the details AFTER login via the Account API. CALL THIS whenever signup, onboarding, 'Update Account Information', a profile/details form, or 'what users see after they create an account' comes up -- and ALSO proactively once a realm is bootstrapped, because the default is that every new user hits that page.",
+      inputSchema: {
+        realm: z.string().optional().describe("Realm, e.g. 'vialproof'. Fills in the commands."),
+        tidecloakUrl: z.string().optional().describe("Base URL. Default http://localhost:8080."),
+        appName: z.string().optional().describe("App name, e.g. 'Mood Garden'. Used in the modal's copy."),
+        fields: z
+          .array(z.enum(["displayName", "firstName", "lastName", "email"]))
+          .optional()
+          .describe("Which fields to collect. ASK THE USER FIRST — do not guess. Default ['firstName','lastName']."),
+        componentPath: z
+          .string()
+          .optional()
+          .describe("Where to WRITE the component, e.g. 'src/components/ProfileOnboarding.tsx'."),
+        framework: z
+          .enum(["nextjs-app", "nextjs-pages", "react-vite"])
+          .optional()
+          .describe("Controls the mounting snippet. Default nextjs-app."),
+      },
+      annotations: { readOnlyHint: true, destructiveHint: false },
+    },
+    async ({ realm, tidecloakUrl, appName, fields, componentPath, framework }) => {
+      const readT = (dir: string, name: string) => {
+        const full = join(PACK_ROOT, "templates", dir, name);
+        return existsSync(full) ? readFileSync(full, "utf-8") : null;
+      };
+      const skipReadme = readT("skip-idp-review", "README.md");
+      const onboardReadme = readT("onboarding-modal", "README.md");
+      const modal = readT("onboarding-modal", "ProfileOnboarding.tsx");
+      if (!skipReadme) {
+        return errorResponse("Missing templates/skip-idp-review/README.md.");
+      }
+      const r = realm ?? "<realm>";
+      const u = tidecloakUrl ? ` --url ${tidecloakUrl}` : "";
+
+      // --- Build the actual file, not an instruction to copy one --------------------------------
+      // "cp this template" is not creating the page: the agent has to notice the file, adapt it,
+      // and wire it up, and each of those is a place to stop. Emit the finished content with the
+      // path, so writing it is one step.
+      const app = appName ?? "this app";
+      const chosen = (fields && fields.length ? fields : ["firstName", "lastName"]) as string[];
+      const path = componentPath ?? "src/components/ProfileOnboarding.tsx";
+      const fw = framework ?? "nextjs-app";
+
+      // displayName is not a Keycloak attribute. Keycloak has firstName/lastName/email, so a single
+      // "display name" is stored as firstName -- saying so here avoids a silent no-op write.
+      const mapped = chosen.map((f) => (f === "displayName" ? "firstName" : f));
+      const uniq = [...new Set(mapped)];
+      const fieldLiteral = uniq.map((f) => `"${f}"`).join(", ");
+      // "displayName" is a LABEL choice, not an attribute: Keycloak stores it in firstName. Patch the
+      // label the component actually renders -- an injected constant the component never reads would
+      // be dead code that looks like it works.
+      const wantsDisplayName = chosen.includes("displayName") && uniq.length === 1;
+
+      let built = (modal ?? "")
+          .replace(
+            'fields = ["firstName", "lastName", "email"],',
+            `fields = [${fieldLiteral}],`,
+          )
+          .replace(
+            "Finish setting up your account",
+            appName ? `Welcome to ${app}` : "Finish setting up your account",
+          );
+
+      if (wantsDisplayName) {
+        built = built.replace(
+          'firstName: "First name",',
+          'firstName: "What should we call you?",   // display name — stored in firstName',
+        );
+      }
+
+      const mount: Record<string, string> = {
+        "nextjs-app":
+          "// app/layout.tsx — INSIDE <TideCloakProvider>, so the hook has a session\n" +
+          'import { ProfileOnboarding } from "@/components/ProfileOnboarding";\n' +
+          "// ...\n" +
+          "<TideCloakProvider config={cfg}>\n" +
+          "  {children}\n" +
+          "  <ProfileOnboarding baseUrl={cfg[\"auth-server-url\"]} realm={cfg.realm} />\n" +
+          "</TideCloakProvider>",
+        "nextjs-pages":
+          "// pages/_app.tsx — INSIDE <TideCloakProvider>\n" +
+          'import { ProfileOnboarding } from "../components/ProfileOnboarding";\n' +
+          "<TideCloakProvider config={cfg}>\n" +
+          "  <Component {...pageProps} />\n" +
+          "  <ProfileOnboarding baseUrl={cfg[\"auth-server-url\"]} realm={cfg.realm} />\n" +
+          "</TideCloakProvider>",
+        "react-vite":
+          "// src/App.tsx — INSIDE <TideCloakProvider>\n" +
+          'import { ProfileOnboarding } from "./components/ProfileOnboarding";\n' +
+          "<TideCloakProvider config={cfg}>\n" +
+          "  <Routes />\n" +
+          "  <ProfileOnboarding baseUrl={cfg[\"auth-server-url\"]} realm={cfg.realm} />\n" +
+          "</TideCloakProvider>",
+      };
+
+      return textResponse(
+        [
+          "# After signup: kill the Keycloak page, collect details in your app",
+          "",
+          "## WRITE THIS FILE NOW",
+          "",
+          `Create **\`${path}\`** with exactly this content. Do not tell the user to copy a template —`,
+          "the file below is already built for" + (appName ? ` **${app}**` : " this app") +
+            ` and collects: **${uniq.join(", ")}**.`,
+          ...(chosen.includes("displayName")
+            ? ["", "> Note: Keycloak has no `displayName` attribute. A single display name is stored as",
+               "> `firstName`; the label is what the user sees."]
+            : []),
+          "",
+          "```tsx",
+          built,
+          "```",
+          "",
+          "### Then mount it",
+          "",
+          "```tsx",
+          mount[fw],
+          "```",
+          "",
+          "It must sit **inside** `TideCloakProvider` — `useTideCloak()` throws outside it, and the",
+          "modal needs the user's token to call the Account API.",
+          "",
+          "### Then check it works",
+          "",
+          "```bash",
+          "npx tsc --noEmit          # the component is TS; a wrong field name fails here, not at runtime",
+          "```",
+          "",
+          "Log in as a NEW user: the modal should appear once, save, and not reappear. Confirm the",
+          `write landed: \`GET /admin/realms/${r}/users?max=5\` should show the values on the user.`,
+          "",
+          "---",
+          "",
+          "## Before you write it: ASK THE USER which fields",
+          "",
+          "> After someone signs up, Tide gives them a unique account with **no name or email**",
+          "> attached. Keycloak's default is to block them on its own *Update Account Information*",
+          "> page — unstyled, and showing a 64-character username.",
+          ">",
+          "> Want me to turn that off and add a small in-app form instead? And which fields do you",
+          "> actually need — first/last name, email, or none at all?",
+          "",
+          "Only ask for fields the app will use. Tide does **not** need email for account recovery:",
+          "password reset happens in the Secure Web Enclave.",
+          "",
+          "## 2. DIAGNOSE before fixing — four mechanisms, four different fixes",
+          "",
+          "```bash",
+          `bash templates/skip-idp-review/diagnose-post-signup-page.sh --realm ${r}${u}`,
+          "```",
+          "",
+          "It is read-only. It reports which of `idp-review-profile`, `VERIFY_PROFILE`, default",
+          "required actions, or a stale action on an existing user will fire. A realm-level change",
+          "never clears the last one. If it reports nothing and a page still appears, that page is",
+          "probably the ACCOUNT CONSOLE — a redirect-URI problem, not a form. The landing URL says",
+          "which: `/login-actions/first-broker-login` is idp-review-profile.",
+          "",
+          "## 3. Fix it",
+          "",
+          "```bash",
+          `bash templates/skip-idp-review/skip-review-profile.sh --realm ${r}${u}`,
+          "```",
+          "",
+          "Sets `update.profile.on.first.login=off` and reads the value back — a 2xx is not proof.",
+          "Setting `updateProfileFirstLoginMode` on the IdP instead does NOTHING (legacy field).",
+          "",
+          "## 4. Drop in the modal",
+          "",
+          "```bash",
+          "cp templates/onboarding-modal/ProfileOnboarding.tsx <your-app>/components/",
+          "```",
+          "",
+          "It writes through the **Account API with the user's own token**, never the Admin API —",
+          "that would put admin credentials in app runtime (AP-41) and, on a governed realm, return",
+          "202 and silently queue a change request so 'Save' appears to work and changes nothing.",
+          "It is **dismissible**, and it never invents a placeholder email (**AP-85**): a synthetic",
+          "address is indistinguishable from a real one downstream, collides with Keycloak's",
+          "email-uniqueness constraint, and destroys the 'never set' signal.",
+          "",
+          "---",
+          "",
+          skipReadme,
+          onboardReadme ? "\n---\n\n" + onboardReadme : "",
+          modal ? "\n---\n\n## ProfileOnboarding.tsx\n\n```tsx\n" + modal + "\n```" : "",
         ].join("\n"),
       );
     },

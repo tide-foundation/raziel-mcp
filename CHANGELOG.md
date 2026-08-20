@@ -2,6 +2,186 @@
 
 All notable changes to `@tideorg/mcp` (the Tide Agent Pack) are documented here.
 
+## 1.9.23 — Put the requirement where agents WRITE scripts, not where the pack ships them
+
+Fourth *"decisions I made without asking"* report (Undertow). The previous fixes all landed in
+`templates/shared/bootstrap-tidecloak.sh` — and **agents do not run that script.** They write their
+own `init-tidecloak.sh` per app. Undertow's was hand-written, correct, and paused at the invite link
+exactly as intended; it just never contained the banner, because the banner lived in a file nothing
+read.
+
+- The requirement now lives in `canon/tidecloak-bootstrap.md` (with the verbatim banner to paste)
+  and in **all six** reference-app `bootstrap-sequence.md` files — the material an agent reads *while
+  writing* its bootstrap.
+- Gate **1z** fails the build if that canon section loses the banner or the ask-and-wait rule, or if
+  any reference-app sequence mentions an invite link without the requirement.
+- AP-87 gains the general lesson: if you are patching a shipped example script to change agent
+  behaviour, check first whether agents run it at all.
+
+## 1.9.22 — tide_onboarding writes the page, instead of telling you to copy one
+
+*"mcp should create the page for me."* Right — `cp templates/… <your-app>/components/` is not
+creating a page. The agent still had to notice the file, adapt the fields, and wire it up, and each
+of those is somewhere to stop.
+
+`tide_onboarding` now takes `appName`, `fields`, `componentPath` and `framework`, and returns a
+**finished component to write**, under a `WRITE THIS FILE NOW` heading:
+
+- the `fields` array is baked in, so the modal collects exactly what was asked for
+- the heading reads "Welcome to *&lt;app&gt;*"
+- `displayName` maps to Keycloak's `firstName` (there is no such attribute) and **patches the label
+  the component actually renders** — the first version injected a `LABELS` constant the component
+  never read, which would have been dead code that looked like it worked
+- a mounting snippet per framework (`nextjs-app`, `nextjs-pages`, `react-vite`), placed inside
+  `TideCloakProvider` because `useTideCloak()` throws outside it
+- a verification step: `npx tsc --noEmit`, then log in as a new user
+
+The bootstrap banners no longer print a `cp` command; they say the agent will write it. Gate **1y**
+fails the build if the tool stops emitting the file or if any script reverts to telling the user to
+copy it, and gate **1w** was rekeyed off the filename onto the ask itself.
+
+## 1.9.21 — Put the two questions where a human is already standing
+
+Third report of never being asked. This time the agent **did both things, and did them well** —
+a fitting generated mark, a skippable in-app modal that asked for no email and invented none — then
+reported them as *"Two decisions I made — flag if you'd like them changed."*
+
+That is not a capability failure. It is an agent optimising for *"everything that can be done without
+a human is done"*, which is the right instinct nearly everywhere and exactly wrong for a choice about
+how someone else's product looks.
+
+None of the three earlier placements could fix it:
+
+- MCP `instructions` are advisory, and only reach a session that connected *after* the rebuild.
+- Bootstrap **output** is skipped by an agent batching human interaction to the end.
+- A **playbook step** reads as documentation, not as a stop.
+
+**So the questions now sit at the one step that already blocks on a human: the admin invite link,**
+where the script polls until someone opens it in a browser. The user is present and idle by
+construction, so asking costs them nothing. The block tells the agent explicitly to ask and *wait*,
+not to choose. Applied to all three bootstrap scripts; gate **1x** fails the build if the ask drifts
+away from between the link and the poll.
+
+**AP-87** generalises it: a question the user must answer belongs at an existing human checkpoint,
+not at the point the information is first needed. Without one, the question gets answered by whoever
+is present — and that is the agent. Where no checkpoint exists, prefer a default that is cheap to
+reverse and say so in a line.
+
+## 1.9.20 — The bootstrap script asks, instead of trusting MCP instructions
+
+Reported: *"never got the prompt to ask if I wanted to collect additional information for new users,
+I didn't see a custom page created."*
+
+Correct, and the design was at fault. 1.9.18 put both questions in the MCP `instructions` block —
+which is **advisory**, reaches the agent only if the server is built from current source *and* the
+session was restarted, and can be summarised away by the client. Anyone running the MCP from a
+different checkout got the old instructions and was never asked.
+
+- **Both bootstrap scripts and both app-template init scripts now PRINT the two questions when they
+  finish.** Script stdout goes to the operator on every run, independent of agent behaviour, server
+  version drift, and session timing. Gate **1w** enforces it.
+- The printed block names the exact commands: `brand-tidecloak.sh --kind …` for branding, and
+  `cp templates/onboarding-modal/ProfileOnboarding.tsx …` for the in-app form, plus the reminder
+  that the Keycloak page is already off for that realm.
+- The MCP instructions stay as the belt; this is the braces.
+
+**Note on the modal**: `ProfileOnboarding.tsx` is a template you copy into the app — nothing
+auto-creates a page. The bootstrap output now says so explicitly with the copy command.
+
+## 1.9.19 — New realms never show the Keycloak signup page at all
+
+Turning the page off was a fix you had to remember. Now it is the default: no new realm this pack
+creates will ever render Keycloak's *Update Account Information* form.
+
+- **Step 3b/4b** in `templates/shared/bootstrap-tidecloak.sh` and both app-template
+  `init-tidecloak.sh` scripts sets `update.profile.on.first.login=off`, then **reads it back** and
+  fails the bootstrap if it did not stick — the symptom of failure is a page a human sees at signup,
+  long after the script exited successfully.
+- **It runs before `toggle-iga`, and that ordering is load-bearing.** Once IGA is on, the same write
+  is a governed admin write: `202` and a pending change request, not applied. Gate **1u** enforces
+  both the presence and the order.
+- Verified against a real Keycloak on a throwaway realm: a fresh realm already carries the config
+  object (so the update path is a `PUT`, not a `POST`), the write applies, and the read-back returns
+  `off`.
+- Gate **1v**: the shipped realm template must not mark `email`/`firstName`/`lastName` required —
+  Tide never supplies them, so a required attribute re-arms the same page even with the flow step in
+  place.
+- `templates/skip-idp-review/` is now explicitly the path for realms created **before** this, or by
+  another route.
+
+The details are collected app-side instead, by `templates/onboarding-modal/ProfileOnboarding.tsx`,
+which updates the user through the Account API with the user's own token.
+
+## 1.9.18 — Ask about branding too, at the same checkpoint
+
+1.9.17 made the MCP ask about post-signup details but left **branding reactive** — "when branding
+comes up" — so it still never got offered. Same bug, one line apart.
+
+- Both are now a **single post-bootstrap checkpoint**, asked in one message and once per session:
+  branding and post-signup details are the only two things the END USER sees, and both defaults are
+  bad (Tide's logo on someone else's login screen; an unstyled Keycloak form showing a 64-character
+  username).
+- Added to `playbooks/bootstrap-realm-from-template.md` as well, so it survives outside the MCP.
+- Gate **1t** fails the build if either question drops back to reactive-only, if they are not asked
+  together, or if the "ask once" guard disappears — nagging every turn is its own failure.
+
+## 1.9.17 — vialproof learnings: ctx.Data compiled both ways, and the MCP now ASKS about onboarding
+
+- **The compile harness no longer rejects an ORK-proven contract.** The 2026-08-11 stub
+  "correction" pinned `ctx.Data` to `ReadOnlyMemory<byte>` on the strength of vendored contracts
+  that compile under *either* typing — so they were never evidence. Two contracts that compile only
+  against a reference type are ORK-proven. `Stubs.cs` is now `#if`-split and `check.sh` builds
+  **both** typings, reporting `NOT PORTABLE` with the offending lines instead of a flat failure.
+  Two must-fail fixtures were tagged `// TYPING: rom` because indexing and `foreach` are legal C#
+  under `byte[]` and compiling there is not drift. Reported independently as sashlings L-10 and
+  vialproof L-02.
+- **New `tide_onboarding` MCP tool, and the server now instructs the agent to ASK.** Previously the
+  onboarding doc existed but nothing offered it, so every app shipped with Keycloak's unstyled
+  *Update Account Information* page showing a 64-hex username. The tool returns the ask, the
+  read-only diagnostic, the fix, and a ready-to-drop `ProfileOnboarding.tsx`.
+- **`templates/onboarding-modal/`** — a real dismissible modal that writes through the **Account API
+  with the user's own token**, handles `401/403` (usually a missing `account` audience) and `202`
+  (captured by IGA — reports "queued", never a false success), and never invents a placeholder
+  email.
+- **AP-86** — never `>/dev/null` a governed bootstrap write (a silenced grant becomes an enclave
+  repair once the realm flips to multiAdmin; only the *approval* is enclave-gated, commit still
+  works over REST); `UID` is readonly in bash and assigning to it silently keeps the old value;
+  role descriptions over **255 chars** fail the entire realm import with an opaque 500; never
+  restart the app server mid-enclave-flow (approvals are not refundable, and `pkill -f "next dev"`
+  kills the agent's own shell — use `fuser -k 3000/tcp`); never delete a broken container, it
+  destroys `docker logs`.
+- Gates **1r** (no realm-JSON description over 255 chars) and **1s** (no `UID=` in shipped shell).
+
+## 1.9.16 — Stop the Keycloak page after a Tide sign-up (diagnose first)
+
+Tide's IdP asserts **only a username** — the vuid, no email or name — so a brokered sign-up can hit
+a Keycloak form before the user ever reaches the app.
+
+- **`diagnose-post-signup-page.sh`** (read-only) reports which of FOUR mechanisms will fire:
+  `idp-review-profile`, `VERIFY_PROFILE`, default required actions, or a stale action already on a
+  user. Each needs a different fix, and a realm-level change never clears the last one. Gate 1q
+  keeps the docs leading with the diagnostic rather than a blind fix.
+- **`skip-review-profile.sh`** sets `update.profile.on.first.login = off` and **reads the value
+  back** — a 2xx is not proof. Measured: the `authenticationConfig` object usually already exists
+  (alias `"review profile config"`, value `"missing"`), so this is a `PUT` to the existing config;
+  a POST-only script fails on every real realm.
+- **Measured, read-only, on a live Tide realm**: a correctly provisioned one has *none* of the four
+  active — only `link-tide-account-action` and `idp_link`, both non-default, and no required
+  user-profile attribute. So if a page still appears it is likely the **account console**, i.e. a
+  redirect-URI problem. The landing URL tells you which.
+- Two traps recorded: setting `updateProfileFirstLoginMode` **on the IdP does nothing** (legacy
+  field; the runtime check reads the authenticator config), and `first broker login` is a
+  **built-in flow shared by every IdP** in the realm.
+- **AP-85** — do not synthesise a placeholder email. It is indistinguishable from a real address
+  downstream, collides with Keycloak's email uniqueness (measured `duplicateEmailsAllowed: false`),
+  and destroys the "never set" signal. Tide does not need email for recovery — reset happens in the
+  enclave. Gate 1p enforces it, scoped to per-user construction so a static bootstrap
+  `ADMIN_EMAIL` default is unaffected.
+- **`ONBOARDING.md`** — collect details in-app with a dismissible modal, writing via the **Account
+  API with the user's own token**, never the Admin API (AP-41, plus a governed admin write returns
+  202 and silently queues a change request). Whether a self-service profile update is itself
+  governed is flagged INFERRED with the command to check.
+
 ## 1.9.15 — Enclave branding: ask the user, generate art that fits the app, upload it
 
 **The flow, not just the docs.** `BRANDING-FLOW.md` is the script the agent follows: ask once, then

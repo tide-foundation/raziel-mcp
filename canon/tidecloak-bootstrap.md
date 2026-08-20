@@ -374,6 +374,49 @@ Without this, invite links redirect to VERIFY_PROFILE or the default login flow 
 
 ### Invite links require the `tideInvitable` user attribute
 
+## The invite link is your only human checkpoint — use it (AP-87)
+
+**Any bootstrap script you WRITE must print these two questions next to the invite link**, before the
+polling loop. This is not decoration; it is the only place in the whole flow where a human is present
+and idle by construction.
+
+Everything else a bootstrap does, an agent does unattended — and an agent optimising for "finish
+without the human" will answer both of these itself and report them afterwards as *"decisions I made
+without asking"*. That has now happened on four separate builds. Putting the questions in the pack's
+own scripts does not help, because agents **write their own** init script per app; the requirement
+has to live here, where they learn to write it.
+
+Paste this verbatim between the link and the wait:
+
+```bash
+cat <<'BANNER'
+
+--------------------------------------------
+WHILE YOU ARE HERE — two things your users will see. Both are your call.
+
+1) BRANDING. Right now they see TIDE's logo at sign-in, not yours.
+     - generate one from the app's type   (vault identity notes chat data finance health media commerce)
+     - you supply artwork                 (drop logo.png + background.jpg in ./branding/)
+     - write me a prompt for an image AI  (tailored to this app)
+     - leave it as Tide's
+
+2) NEW-USER DETAILS. Tide gives each new user an account with NO name or email, and the Keycloak
+   signup form is turned OFF for this realm. What should the in-app form collect?
+     - a display name        - first/last name        - email (Tide does NOT need it for recovery)
+     - nothing; the vuid is enough
+
+   AGENT: ask these as QUESTIONS and WAIT for the answer. Do not pick for the user and report it
+   afterwards — that is the one failure this placement exists to prevent (AP-87).
+--------------------------------------------
+
+BANNER
+```
+
+Then call `tide_onboarding` with the fields they chose: it returns a finished component to **write**,
+already wired. Do not hand the user a `cp` command.
+
+---
+
 `get-required-action-link` refuses any user who does not carry it:
 
 ```

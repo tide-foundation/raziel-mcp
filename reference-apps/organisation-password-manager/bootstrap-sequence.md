@@ -59,6 +59,12 @@ All steps must complete before users can safely use the app. Order matters.
    - Assign: `POST /admin/realms/{realm}/users/{userId}/role-mappings/clients/{realm-mgmt-client-id}`.
 
 8. **Generate account-linking invite**
+
+   > **Print the two end-user questions next to this link, before the polling loop** — branding,
+   > and what the in-app form collects. It is the only step where a human is present and idle;
+   > an agent will otherwise decide both itself and report them afterwards (**AP-87**). The
+   > exact banner is in `canon/tidecloak-bootstrap.md`.
+
    - `PUT /admin/realms/{realm}/users/{userId}/execute-actions-email` with `["link-tide-account-action"]`.
    - Or: `GET /admin/realms/{realm}/tide-admin/get-required-action-link?userId={userId}` for a direct URL.
    - ⚠️ **`tideInvitable` must be set FIRST, and the change request drained.** Otherwise this
