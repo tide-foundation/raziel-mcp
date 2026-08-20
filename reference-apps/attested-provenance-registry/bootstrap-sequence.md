@@ -71,6 +71,12 @@ that costs a human enclave approval — everything catchable before it should be
 ## Phase 4: Admin identity and adapter
 
 8. **Create the admin user and link a Tide account**
+
+   > **Print the two end-user questions next to this link, before the polling loop** — branding,
+   > and what the in-app form collects. It is the only step where a human is present and idle;
+   > an agent will otherwise decide both itself and report them afterwards (**AP-87**). The
+   > exact banner is in `canon/tidecloak-bootstrap.md`.
+
    - Create the user, generate an account-linking invite, open it, complete linking. The bootstrap
      script should wait for completion rather than racing it.
 

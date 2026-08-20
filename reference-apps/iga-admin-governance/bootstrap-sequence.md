@@ -95,6 +95,12 @@
 10. Approve/commit role assignment change request.
 
 11. Generate invite link:
+
+> **Print the two end-user questions next to this link, before the polling loop** — branding and
+> what the in-app form collects. It is the only step where a human is present and idle, and an
+> agent will otherwise decide both itself and report them afterwards (**AP-87**). The exact
+> banner is in `canon/tidecloak-bootstrap.md`.
+
     ```bash
     curl -s -X POST "http://localhost:8080/admin/realms/$REALM/tideAdminResources/get-required-action-link?userId=$USER_ID&lifespan=43200" \
       -H "Authorization: Bearer $TOKEN" \

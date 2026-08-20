@@ -219,6 +219,36 @@ Or: stop the container, delete `data/keycloakdb*`, restart. VERIFIED (LEARNINGS-
 
 ---
 
+## Before you move on: ask the two end-user questions
+
+These are the only two things the **end user** ever sees, and the default for both is wrong. Neither
+is optional to *ask*; both are optional to *do*. Ask both in one message, once:
+
+**(a) Branding** — right now their users see **Tide's** logo at sign-in.
+
+> Want to brand the login screen? Three ways: you drop artwork in `./branding/`, I write you an
+> image-AI prompt tailored to this app, or I generate it.
+
+Then `templates/enclave-branding/brand-tidecloak.sh` — generate → validate → upload → sign → verify.
+Branding is **IGA-exempt**, so it works even after the multiAdmin flip.
+
+**(b) Post-signup details** — Tide asserts only a username (the vuid), so Keycloak stops every new
+user on its own unstyled *Update Account Information* page showing a 64-character username.
+
+> Tide gives each new user a unique account with no name or email. Want a small in-app form so they
+> can fill those in — and which fields do you actually need?
+
+Then `templates/skip-idp-review/diagnose-post-signup-page.sh` (four mechanisms cause that page and
+each needs a different fix — **never a blind fix**), the matching fix, and
+`templates/onboarding-modal/ProfileOnboarding.tsx`.
+
+⚠️ **Do not invent a placeholder email** to make the profile look complete (**AP-85**). Tide does not
+need email for recovery — password reset happens in the enclave.
+
+If they skip either, record it and move on. Ask once, not every turn.
+
+---
+
 ## Next Step
 
 Proceed to playbook `initialize-admin-and-link-account`.

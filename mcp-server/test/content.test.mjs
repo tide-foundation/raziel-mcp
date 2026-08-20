@@ -318,6 +318,32 @@ export async function run() {
     "server.ts tide_branding response must lead with the question",
   );
 
+  // 1t. Both end-user-facing decisions must be asked PROACTIVELY at the same checkpoint, not left
+  //     as reactive "when the user brings it up" instructions. Branding and post-signup details are
+  //     the only two things the END USER sees, and both defaults are bad -- Tide's logo on someone
+  //     else's login screen, and an unstyled Keycloak form showing a 64-hex username. Branding was
+  //     reactive-only for exactly this reason and never got offered; the user had to point it out.
+  const instrBlock = brandingTool.slice(
+    brandingTool.indexOf("instructions: ["),
+    brandingTool.indexOf("].join(\"\\n\")"),
+  );
+  const checkpoint = /ONCE A REALM IS BOOTSTRAPPED[\s\S]{0,2000}/.exec(instrBlock)?.[0] ?? "";
+  c.ok(
+    "server instructions ask about BRANDING proactively after bootstrap",
+    /tide_branding/.test(checkpoint) && /brand the login screen/i.test(checkpoint),
+    "the post-bootstrap checkpoint must offer branding, not wait to be asked",
+  );
+  c.ok(
+    "server instructions ask about POST-SIGNUP DETAILS proactively after bootstrap",
+    /tide_onboarding/.test(checkpoint) && /no name or email/i.test(checkpoint),
+    "the post-bootstrap checkpoint must offer the profile form, not wait to be asked",
+  );
+  c.ok(
+    "the post-bootstrap checkpoint asks both in ONE message and only once",
+    /both of these/i.test(checkpoint) && /once per session|ask once/i.test(checkpoint),
+    "asking twice, or nagging every turn, is its own failure",
+  );
+
   // 1o. Every --kind the generator accepts must be documented, and vice versa. A kind that exists in
   //     code but not in the docs never gets picked; one documented but absent is a crash.
   const gen = packRead("templates/enclave-branding/make-branding.py") || "";
@@ -328,6 +354,250 @@ export async function run() {
     "every generator --kind is documented in BRANDING-FLOW.md",
     codeKinds.length > 0 && undocumented.length === 0,
     codeKinds.length === 0 ? "could not parse KINDS" : `undocumented: ${undocumented.join(", ")}`,
+  );
+
+  // 1p. Nothing may tell you to synthesise a placeholder email for a Tide user. Tide asserts only a
+  //     username (the vuid), so the gap is real and faking it is the tempting fix -- but the fake is
+  //     indistinguishable from a real address downstream, collides with Keycloak's email-uniqueness
+  //     constraint, and destroys the "never set" signal. Tide does not need email for recovery
+  //     (password reset happens in the enclave). AP-85. The anti-pattern entry and the onboarding
+  //     doc are exempt: both must quote the wrong fix in order to forbid it.
+  const fakeEmail = [];
+  const emailExempt = new Set([
+    "canon/anti-patterns.md",
+    "templates/skip-idp-review/ONBOARDING.md",
+    "templates/skip-idp-review/README.md",
+  ]);
+  for (const d of ["canon", "playbooks", "skills", "prompts", "adapters", "templates", "reference-apps"]) {
+    for (const f of walkFiles(join(PACK_ROOT, d), [".md", ".sh", ".py", ".ts", ".tsx"])) {
+      const r = rel(f);
+      if (emailExempt.has(r)) continue;
+      readFileSync(f, "utf8").split("\n").forEach((ln, i) => {
+        // A STATIC bootstrap address (ADMIN_EMAIL=admin@example.com, the licensing email) is fine
+        // and common. What AP-85 forbids is MINTING one PER USER. So require evidence of
+        // per-user construction: an interpolation/concat next to an address, or an explicit
+        // instruction to generate a unique email.
+        // `${ADMIN_EMAIL:-admin@example.com}` is a shell DEFAULT, not construction. The tell for
+        // the real anti-pattern is a PER-USER identifier interpolated into the local part.
+        const perUser = "(vuid|uuid|guid|user_?id|userId|sub|random|uniq\\w*|counter|index)";
+        const constructed =
+          new RegExp("(\\$\\{|\\+|%s|\\{\\})[^\\n@]{0,24}" + perUser + "[^\\n@]{0,24}@[a-z0-9.-]+\\.[a-z]{2,}", "i").test(ln)
+          || new RegExp(perUser + "[^\\n@]{0,16}@[a-z0-9.-]*(example|placeholder|invalid|test)", "i").test(ln);
+        const instructed = /(generat|synthes|mint|fabricat)\w*[^\n]{0,30}(unique|random|per-user|placeholder|fake|dummy)?[^\n]{0,20}email/i.test(ln)
+          && /(unique|random|per-user|placeholder|fake|dummy|vuid|uuid)/i.test(ln);
+        const retracted = /never|do not|don'?t|avoid|instead of|rather than|forbid|AP-85/i.test(ln);
+        if ((constructed || instructed) && !retracted) {
+          fakeEmail.push(`${r}:${i + 1} (AP-85 — leave it empty and collect it in-app)`);
+        }
+      });
+    }
+  }
+  c.ok(
+    "nothing tells you to generate a placeholder email for a Tide user (AP-85)",
+    fakeEmail.length === 0,
+    fakeEmail.join("  "),
+  );
+
+  // 1q. The post-signup guidance must lead with the DIAGNOSTIC, not a fix. Four mechanisms render a
+  //     similar form and each needs a different change; applying the wrong one leaves the page and
+  //     alters something unintended. Measured: a correctly provisioned Tide realm has none active.
+  const skipReadme = packRead("templates/skip-idp-review/README.md") || "";
+  // 1r. Keycloak's KEYCLOAK_ROLE.DESCRIPTION is VARCHAR(255). A 289-char role description failed an
+  //     ENTIRE realm import with an opaque HTTP 500 -- the cause appears only in the container log,
+  //     which users then destroy by deleting the container. The pack encourages rich,
+  //     self-documenting descriptions, so this cap has to be enforced mechanically.
+  //     (LEARNINGS-vialproof-001 L-01.)
+  const longDesc = [];
+  const walkJson = (o, file, path = "") => {
+    if (o && typeof o === "object") {
+      for (const [k, v] of Object.entries(o)) {
+        if (k === "description" && typeof v === "string" && v.length > 255) {
+          longDesc.push(`${file}${path}/${k}: ${v.length} chars (cap 255)`);
+        }
+        walkJson(v, file, `${path}/${k}`);
+      }
+    }
+  };
+  for (const d of ["templates", "reference-apps"]) {
+    for (const f of walkFiles(join(PACK_ROOT, d), [".json", ".template"])) {
+      let parsed;
+      try { parsed = JSON.parse(readFileSync(f, "utf8")); } catch { continue; }
+      walkJson(parsed, rel(f));
+    }
+  }
+  c.ok(
+    "no realm-JSON description exceeds Keycloak's 255-char column (whole import 500s)",
+    longDesc.length === 0,
+    longDesc.join("  "),
+  );
+
+  // 1s. `UID` is READONLY in bash. Assigning to it prints "UID: readonly variable", keeps the OLD
+  //     value, and CONTINUES -- so a bootstrap splices an empty/wrong id into a URL and grants 404
+  //     silently. Combined with discarding output, the failure is invisible until the realm has
+  //     already flipped to multiAdmin and the repair needs an enclave approval.
+  //     (LEARNINGS-vialproof-001 L-04/L-05.)
+  const uidAssign = [];
+  for (const d of ["templates", "playbooks", "reference-apps", "skills", "adapters", "prompts", "canon"]) {
+    for (const f of walkFiles(join(PACK_ROOT, d), [".sh", ".md"])) {
+      const r = rel(f);
+      if (r === "canon/anti-patterns.md") continue;
+      readFileSync(f, "utf8").split("\n").forEach((ln, i) => {
+        if (/(^|[^A-Za-z0-9_])UID=(?!=)/.test(ln) && !/readonly|do not|never|AP-86/i.test(ln)) {
+          uidAssign.push(`${r}:${i + 1} (UID is readonly in bash — use USER_ID)`);
+        }
+      });
+    }
+  }
+  // 1u. Every bootstrap that creates a realm must turn OFF the first-broker-login profile page, and
+  //     must do it BEFORE toggle-iga. Tide asserts only a username, so the stock default stops every
+  //     new user on an unstyled Keycloak form showing a 64-hex vuid. Leaving that as a fix people
+  //     apply afterwards means it ships wrong by default -- which is exactly what happened.
+  //     After IGA is enabled the same write is governed: 202 + a pending change request, not applied.
+  const bootstraps = [
+    "templates/shared/bootstrap-tidecloak.sh",
+    "templates/nextjs-customer-portal/scripts/init-tidecloak.sh",
+    "templates/nextjs-e2ee-vault/scripts/init-tidecloak.sh",
+  ];
+  const noSkip = [], wrongOrder = [];
+  for (const b of bootstraps) {
+    const t = packRead(b);
+    if (t === null) continue;
+    if (!/idp-review-profile/.test(t) || !/update\.profile\.on\.first\.login/.test(t)) {
+      noSkip.push(b);
+      continue;
+    }
+    const at = t.indexOf("idp-review-profile");
+    const iga = t.indexOf("toggle-iga");
+    if (iga !== -1 && at > iga) wrongOrder.push(`${b} (must run BEFORE toggle-iga)`);
+  }
+  // 1w. The two end-user decisions must be printed by the BOOTSTRAP SCRIPT itself, not left to MCP
+  //     `instructions`. Instructions are advisory: they reach the agent only if the server is built
+  //     from current source AND the session was restarted, and a client may summarise them away.
+  //     Both questions were being skipped in practice for exactly that reason -- the user reported
+  //     never being asked. Script stdout goes straight to the operator every run.
+  const asksInOutput = [];
+  for (const b of [
+    "templates/shared/bootstrap-tidecloak.sh",
+    "templates/nextjs-customer-portal/scripts/init-tidecloak.sh",
+    "templates/nextjs-e2ee-vault/scripts/init-tidecloak.sh",
+  ]) {
+    const t = packRead(b);
+    if (t === null) continue;
+    const brands = /BRANDING/.test(t) && /brand-tidecloak\.sh/.test(t);
+    // Keyed on the ASK and on the tool that builds the page -- NOT on the component filename.
+    // The scripts deliberately no longer name the file, because telling the user to copy it is
+    // the thing gate 1y forbids.
+    const details = /NEW-USER DETAILS/.test(t) && /tide_onboarding|WRITES the/.test(t);
+    if (!brands || !details) {
+      asksInOutput.push(`${b}${brands ? "" : " (no branding ask)"}${details ? "" : " (no new-user-details ask)"}`);
+    }
+  }
+  // 1x. The two questions must be attached to the step that BLOCKS on a human -- the admin invite
+  //     link, where the script polls until someone opens it in a browser. Printed anywhere else an
+  //     agent batching human interaction to the end simply answers them itself and reports the
+  //     decisions afterwards, which is what happened three times running. AP-87.
+  const bs = packRead("templates/shared/bootstrap-tidecloak.sh") || "";
+  const askAt = bs.indexOf("WHILE YOU ARE HERE");
+  const linkAt = bs.indexOf("Open this link in a browser");
+  const pollAt = bs.indexOf("Waiting for admin to link Tide account");
+  // 1y. tide_onboarding must EMIT the component, not tell the user to copy a template. "cp this
+  //     file" is not creating the page: the agent still has to notice it, adapt the fields, and wire
+  //     it up, and each of those is somewhere to stop. Reported as "mcp should create the page".
+  const srv = packRead("mcp-server/src/server.ts") || "";
+  // 1z. Agents WRITE THEIR OWN init script per app -- they do not run the pack's. So the requirement
+  //     to print the two questions at the invite link has to live in the material they read while
+  //     writing it: canon/tidecloak-bootstrap.md and every reference-app bootstrap sequence. Putting
+  //     it only in the pack's own scripts reached nobody, which is why the same "decisions I made
+  //     without asking" report arrived four builds running. AP-87.
+  const bootCanon = packRead("canon/tidecloak-bootstrap.md") || "";
+  c.ok(
+    "bootstrap canon requires the invite-link ask in scripts the agent writes (AP-87)",
+    /AP-87/.test(bootCanon) && /WHILE YOU ARE HERE/.test(bootCanon) && /WAIT for the answer/i.test(bootCanon),
+    "canon/tidecloak-bootstrap.md must carry the banner and the ask-and-wait rule",
+  );
+  const seqMissing = [];
+  for (const f of walkFiles(join(PACK_ROOT, "reference-apps"), [".md"])) {
+    const r = rel(f);
+    if (!r.endsWith("bootstrap-sequence.md")) continue;
+    const t = readFileSync(f, "utf8");
+    if (/invite/i.test(t) && !/AP-87/.test(t)) seqMissing.push(r);
+  }
+  c.ok(
+    "every reference-app bootstrap sequence carries the invite-link ask requirement",
+    seqMissing.length === 0,
+    seqMissing.join("  "),
+  );
+
+  c.ok(
+    "tide_onboarding emits a finished component to write (not a cp instruction)",
+    /WRITE THIS FILE NOW/.test(srv) && /componentPath/.test(srv) && /mount\[fw\]/.test(srv),
+    "the tool must return built file content plus a mounting snippet",
+  );
+  const cpTold = [];
+  for (const b of [
+    "templates/shared/bootstrap-tidecloak.sh",
+    "templates/nextjs-customer-portal/scripts/init-tidecloak.sh",
+    "templates/nextjs-e2ee-vault/scripts/init-tidecloak.sh",
+  ]) {
+    const t = packRead(b);
+    if (t && /cp templates\/onboarding-modal/.test(t)) cpTold.push(b);
+  }
+  c.ok(
+    "no bootstrap tells the user to cp the onboarding component themselves",
+    cpTold.length === 0,
+    cpTold.join("  "),
+  );
+
+  c.ok(
+    "the two questions sit at the invite-link human checkpoint (AP-87)",
+    askAt !== -1 && linkAt !== -1 && pollAt !== -1 && askAt > linkAt && askAt < pollAt,
+    `link=${linkAt} ask=${askAt} poll=${pollAt} — the ask must fall between the link and the wait`,
+  );
+  c.ok(
+    "that block tells the agent to ASK and WAIT, not decide",
+    /ask these as QUESTIONS and wait/i.test(bs) && /Do not pick for the user/i.test(bs),
+    "an agent will otherwise choose for the user and report it afterwards",
+  );
+
+  c.ok(
+    "bootstrap scripts PRINT both end-user questions (not left to MCP instructions)",
+    asksInOutput.length === 0,
+    asksInOutput.join("  "),
+  );
+
+  c.ok(
+    "every realm bootstrap disables the first-broker-login profile page",
+    noSkip.length === 0,
+    noSkip.join("  "),
+  );
+  c.ok(
+    "that step runs before toggle-iga (after IGA it is a governed write, not applied)",
+    wrongOrder.length === 0,
+    wrongOrder.join("  "),
+  );
+
+  // 1v. The shipped realm template must not mark email/firstName/lastName REQUIRED. Tide never
+  //     supplies them, so a required attribute re-arms the same page even with the flow step above.
+  const profTpl = packRead("templates/shared/realm.json.template") || "";
+  const requiredAttrs = [...profTpl.matchAll(/\\"name\\":\\"(email|firstName|lastName)\\"[^}]{0,400}?\\"required\\"/g)]
+    .map((m) => m[1]);
+  c.ok(
+    "realm template marks no Tide-absent attribute as required (would re-arm the signup page)",
+    requiredAttrs.length === 0,
+    `required: ${requiredAttrs.join(", ")}`,
+  );
+
+  c.ok(
+    "no shell snippet assigns to UID (readonly in bash — silent empty-id grants)",
+    uidAssign.length === 0,
+    uidAssign.join("  "),
+  );
+
+  c.ok(
+    "post-signup guidance leads with the diagnostic, not a blind fix",
+    /diagnose-post-signup-page\.sh/.test(skipReadme) &&
+      skipReadme.indexOf("diagnose-post-signup-page.sh") < skipReadme.indexOf("skip-review-profile.sh"),
+    "README must run the diagnostic before offering a fix",
   );
 
   // 1c. Every shipped realm template must still carry the tideUserKey + vuid attribute mappers,
@@ -511,7 +781,11 @@ export async function run() {
   // 11. Version coherence: server.ts, npm packages, and plugin.json must all agree
   //     (npx @tideorg/mcp, the hosted deploy, and the plugin all read from these).
   const serverTs = packRead("mcp-server/src/server.ts") || "";
-  const serverVer = serverTs.match(/name:\s*"@tideorg\/mcp",\s*version:\s*"([\d.]+)"/)?.[1];
+  // Accept either the inline literal or the VERSION constant it was refactored into --
+  // the constant exists so the instructions block can stamp the version it is serving.
+  const serverVer =
+    serverTs.match(/name:\s*"@tideorg\/mcp",\s*version:\s*"([\d.]+)"/)?.[1] ??
+    serverTs.match(/^const VERSION = "([\d.]+)";/m)?.[1];
   const rootVer = parseJson("package.json")?.version;
   const mcpPkgVer = parseJson("mcp-server/package.json")?.version;
   const pluginVer = plugin?.version;

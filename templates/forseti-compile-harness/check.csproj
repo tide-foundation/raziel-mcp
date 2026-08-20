@@ -30,6 +30,14 @@
 
     <!-- Default: a `contracts/` folder beside this harness. Override with -p:ContractPath=... -->
     <ContractPath Condition="'$(ContractPath)' == ''">contracts/**/*.cs</ContractPath>
+
+    <!--
+      Which candidate typing of `ctx.Data` to compile against: `bytes` (byte[], the default) or
+      `rom` (ReadOnlyMemory<byte>). The real SDK type is unresolved, so check.sh builds BOTH and
+      requires your contract to pass under each. See README "The ctx.Data question".
+    -->
+    <DataTyping Condition="'$(DataTyping)' == ''">bytes</DataTyping>
+    <DefineConstants Condition="'$(DataTyping)' == 'rom'">$(DefineConstants);FORSETI_DATA_ROM</DefineConstants>
   </PropertyGroup>
 
   <ItemGroup>

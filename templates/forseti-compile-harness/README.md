@@ -2,6 +2,48 @@
 
 Compile a Forseti contract locally, in about a second, before deploying it.
 
+## The `ctx.Data` question
+
+**The real type is not settled, so this harness compiles your contract against BOTH candidates and
+requires it to pass under each.** That is not caution for its own sake — the pack has already shipped
+the wrong single answer once and it rejected a contract with real threshold signatures on record.
+
+The evidence is asymmetric, and only one direction counts:
+
+| Style | Compiles if `Data` is `byte[]` | Compiles if `Data` is `ReadOnlyMemory<byte>` |
+|---|---|---|
+| `ReadOnlyMemory<byte> m = ctx.Data;` | yes (implicit conversion) | yes (identity) |
+| `byte[] d = ctx.Data;` | yes | **no** (`CS0029`) |
+| `ctx.Data == null` | yes | **no** (`CS0019` — illegal on a struct) |
+| `ctx.Data[0]` | yes | **no** (`CS0021`) |
+
+Measured with the real compiler, 2026-08-20.
+
+So every vendored quickstart contract — all written in the `ReadOnlyMemory` style — compiles under
+**either** typing and is therefore **not evidence for either**. That is exactly the trap the
+2026-08-11 stub revision fell into: it "corrected" the stub to `ReadOnlyMemory<byte>` on the strength
+of contracts that would have compiled regardless.
+
+Meanwhile two contracts that **only** compile against a reference type are ORK-proven:
+`music-license/forseti/OriginAttestation.cs` (its `contractId` matches its signed policy byte for
+byte, and it has produced real threshold signatures) and keylessh's `sshPolicy`. That is positive
+evidence for `byte[]` — reported independently as sashlings **L-10** and vialproof **L-02**.
+
+### Write the dual-compatible form
+
+```csharp
+ReadOnlyMemory<byte> mem = ctx.Data;   // identity if ROM, implicit if byte[]
+ReadOnlySpan<byte>  data = mem.Span;   // .Length and indexing work as before
+if (data.Length == 0) { /* ... */ }    // NEVER `ctx.Data == null` — illegal on a struct
+```
+
+`check.sh` reports `NOT PORTABLE` with the offending lines when a contract compiles under one typing
+only, rather than failing it outright — a contract in that state may well work on today's ORK, but
+you are betting on an unverified assumption with an operator approval as the stake.
+
+**Do not "simplify" `Stubs.cs` back to a single typing** without an ORK error message that settles
+it. The `#if FORSETI_DATA_ROM` split is load-bearing.
+
 ## Why this exists
 
 **Contracts are compiled by the ORK at request time.** A typo or a wrong context property does not

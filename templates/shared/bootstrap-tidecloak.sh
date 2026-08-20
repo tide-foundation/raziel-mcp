@@ -216,6 +216,55 @@ curl -s -X POST "$TIDECLOAK_URL/admin/realms" \
   --data-binary @"$TMP_REALM"
 rm -f "$TMP_REALM"
 
+# --- Step 3b: Never show Keycloak's "Update Account Information" page --------------------------
+# Tide asserts ONLY a username (the vuid) -- no email, no name. Keycloak's first-broker-login flow
+# starts with `idp-review-profile`, whose default mode `missing` runs User Profile validation on
+# that identity and renders an UNSTYLED form showing a 64-hex username to every new user.
+#
+# Turning it off here makes it the DEFAULT for every realm this script creates, rather than a fix
+# someone has to remember afterwards. Collect the details in the APP instead -- a dismissible modal
+# that writes through the Account API (templates/onboarding-modal/).
+#
+# ORDER MATTERS: this runs BEFORE toggle-iga. Once IGA is on, a realm-config write is a governed
+# admin write -- it would return 202 and sit as a change request instead of applying.
+#
+# Setting `updateProfileFirstLoginMode` on the IdP instead does NOTHING: that field is legacy, kept
+# for importing old realms. The runtime check reads the AUTHENTICATOR config, which is what this
+# writes.
+echo "==> Disabling the first-broker-login profile page..."
+TOKEN="$(get_token)"
+REVIEW_EXEC="$(curl -s "$TIDECLOAK_URL/admin/realms/$REALM_NAME/authentication/flows/first%20broker%20login/executions" \
+  -H "Authorization: Bearer $TOKEN")"
+REVIEW_CFG="$(printf '%s' "$REVIEW_EXEC" | jq -r '.[]? | select(.providerId=="idp-review-profile") | .authenticationConfig // empty' | head -1)"
+REVIEW_ID="$(printf '%s' "$REVIEW_EXEC" | jq -r '.[]? | select(.providerId=="idp-review-profile") | .id' | head -1)"
+
+if [ -n "$REVIEW_CFG" ]; then
+  # A stock realm already HAS this config object (alias "review profile config", value "missing"),
+  # so the normal path is an update, not a create. A POST here returns an error.
+  curl -s -o /dev/null -X PUT "$TIDECLOAK_URL/admin/realms/$REALM_NAME/authentication/config/$REVIEW_CFG" \
+    -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+    -d '{"alias":"review profile config","config":{"update.profile.on.first.login":"off"}}'
+elif [ -n "$REVIEW_ID" ]; then
+  curl -s -o /dev/null -X POST "$TIDECLOAK_URL/admin/realms/$REALM_NAME/authentication/executions/$REVIEW_ID/config" \
+    -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+    -d '{"alias":"review profile config","config":{"update.profile.on.first.login":"off"}}'
+fi
+
+# Read it back -- a 2xx is not proof the value stuck, and the symptom of failure is a page a human
+# sees at signup, long after this script has exited successfully.
+TOKEN="$(get_token)"
+REVIEW_NOW="$(curl -s "$TIDECLOAK_URL/admin/realms/$REALM_NAME/authentication/flows/first%20broker%20login/executions" \
+  -H "Authorization: Bearer $TOKEN" | jq -r '.[]? | select(.providerId=="idp-review-profile") | .authenticationConfig // empty' | head -1)"
+REVIEW_VAL=""
+[ -n "$REVIEW_NOW" ] && REVIEW_VAL="$(curl -s "$TIDECLOAK_URL/admin/realms/$REALM_NAME/authentication/config/$REVIEW_NOW" \
+  -H "Authorization: Bearer $TOKEN" | jq -r '.config["update.profile.on.first.login"] // empty')"
+if [ "$REVIEW_VAL" != "off" ]; then
+  echo "ERROR: could not disable the first-broker-login profile page (read back '${REVIEW_VAL:-<unset>}')." >&2
+  echo "       Every new user would be stopped by Keycloak's Update Account Information form." >&2
+  echo "       Diagnose with templates/skip-idp-review/diagnose-post-signup-page.sh" >&2
+  exit 1
+fi
+
 # --- Step 4: Initialize Tide + enable IGA ---
 echo "==> Initializing Tide realm (license + VRK)..."
 TOKEN="$(get_token)"
@@ -298,6 +347,34 @@ echo "Open this link in a browser to link your admin Tide account:"
 echo "$INVITE_LINK"
 echo "============================================"
 echo ""
+
+# The ONLY point in this script where a human is guaranteed to be present and idle. Everything else
+# an agent can do unattended -- and does, which is why asking anywhere else gets skipped: an agent
+# optimising for "finish without the human" makes both calls itself and reports them afterwards as
+# decisions rather than questions. Both choices are cheap to change and expensive to not be asked
+# about, so they go HERE, where the human is already waiting on the link. See AP-87.
+cat <<BANNER
+
+--------------------------------------------
+WHILE YOU ARE HERE — two things your users will see. Both are your call.
+
+1) BRANDING. Right now they see TIDE's logo at sign-in, not yours.
+   Say which you want and the agent will do it:
+     - generate one from the app's type   (vault identity notes chat data finance health media commerce)
+     - you supply artwork                 (drop logo.png + background.jpg in ./branding/)
+     - write me a prompt for an image AI  (tailored to this app)
+     - leave it as Tide's
+
+2) NEW-USER DETAILS. Tide gives each new user an account with NO name or email, and the Keycloak
+   signup form is already turned OFF for this realm. Which do you actually want to collect in-app?
+     - a display name        - first/last name        - email (Tide does NOT need it for recovery)
+     - nothing; the vuid is enough
+
+   AGENT: ask these as QUESTIONS and wait for the answer. Do not pick for the user and report it
+   afterwards -- that is the one failure this placement exists to prevent.
+--------------------------------------------
+
+BANNER
 
 # --- Step 8: Wait for account linking ---
 echo "Waiting for admin to link Tide account (polling every 5s)..."
@@ -384,3 +461,20 @@ echo "TideCloak URL:  $TIDECLOAK_URL"
 echo "Realm:          $REALM_NAME"
 echo "Client:         $CLIENT_NAME"
 echo "============================================"
+
+echo ""
+echo "--------------------------------------------"
+echo "TWO THINGS YOUR USERS WILL SEE. Decide them now."
+echo ""
+echo "1) BRANDING — right now they see TIDE's logo at sign-in, not yours."
+echo "     bash templates/enclave-branding/brand-tidecloak.sh --realm $REALM_NAME \\"
+echo "          --kind <vault|identity|notes|chat|data|finance|health|media|commerce|generic>"
+echo "     Or drop your own artwork in ./branding/ and pass --logo/--background."
+echo ""
+echo "2) NEW-USER DETAILS — Tide gives each new user a unique account with NO name or email."
+echo "   The Keycloak signup form is already turned OFF for this realm, so collect them in YOUR app:"
+echo "   Tell the agent which fields you want; it calls tide_onboarding and WRITES the"
+echo "   component into your app already wired up. You should not have to copy a template."
+echo "   It updates the user through the Account API with the user's own token. Ask which fields you"
+echo "   actually need first — and never invent a placeholder email (AP-85)."
+echo "--------------------------------------------"

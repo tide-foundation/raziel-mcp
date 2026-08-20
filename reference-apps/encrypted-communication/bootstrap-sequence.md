@@ -81,6 +81,12 @@
 
 11. Generate invite link (`lifespan=43200`). Admin completes Tide account linking.
 
+> **Print the two end-user questions next to this link, before the polling loop** — branding and
+> what the in-app form collects. It is the only step where a human is present and idle, and an
+> agent will otherwise decide both itself and report them afterwards (**AP-87**). The exact
+> banner is in `canon/tidecloak-bootstrap.md`.
+
+
 ---
 
 ## Phase 4: IDP Settings and Adapter Export
