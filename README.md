@@ -8,17 +8,9 @@ This MCP server gives your AI assistant deep knowledge of Tide authentication, t
 
 ## Quick Start
 
-### Claude Code (CLI or VS Code extension)
+Raziel is a standard MCP server — it works with any AI coding agent or MCP client. The universal way to add it is a project-level `.mcp.json`; most clients also have their own native config, shown below.
 
-Run this one command:
-
-```bash
-claude mcp add tide-pack -- npx -y @tideorg/mcp
-```
-
-Done. Start a conversation and ask your agent to add Tide auth to your app.
-
-### Project-level config (any MCP client)
+### Any MCP client (project-level config)
 
 Add a `.mcp.json` file to your project root:
 
@@ -33,7 +25,17 @@ Add a `.mcp.json` file to your project root:
 }
 ```
 
-Works with: Claude Code, Cursor, Windsurf, Cline, and any MCP-compatible tool.
+Works with Claude Code, Cursor, Windsurf, Cline, and any MCP-compatible tool.
+
+### Claude Code (CLI or VS Code extension)
+
+Run this one command:
+
+```bash
+claude mcp add tide-pack -- npx -y @tideorg/mcp
+```
+
+Then start a conversation and ask your agent to add Tide auth to your app.
 
 ### Claude Desktop
 
