@@ -20,6 +20,24 @@ When a user describes an app that matches a known scenario, agents use the scena
 5. If no scenario matches and the request is a standard auth/protection flow, fall back to `tide-setup` skill detection and playbook routing.
 6. If no scenario matches and the request describes a **novel pattern** not covered by existing playbooks, route to `tide-solutions-architect` to explore safe implementation options within pack constraints.
 
+## Built-in contract first
+
+Before choosing a scenario that needs a contract, check whether the ORK's built-in
+`RelationshipAttestation:1` contract covers the need. It requires nothing written or deployed.
+
+| Scenario | Built-in contract? |
+|---|---|
+| `relationship-attestation` | Yes — it is the scenario for it |
+| `attestation` | Partly — admin-granted relationships (`assigned`; `member-of` and `shared-with` when a realm admin grants). Not consent, owner-issued or value-carrying statements |
+| `organisation-password-manager` | Yes for per-vault access (a member, a team via `Group`, or an org role via `Role`). Not access spanning every vault, nor owner-made grants |
+| `policy-governed-signing`, `git-pr-signing-service`, `attested-provenance-registry` | No — the built-in contract only allows encryption and decryption. These need a custom contract, deployed by the Tide team |
+| `encrypted-communication` | Optional — a room's key can be stored under a `Group`-subject policy so members decrypt it (INFERRED design). Message crypto itself stays outside Tide |
+| `iga-admin-governance` | Not applicable — no encryption. But `Group`/`Role` membership changes that grant record access appear here as change requests |
+
+**Availability:** the contract is on ORK `main` (VERIFIED from source `c69fc4f6`, 2026-10-16). It is
+the default for per-record encrypted access: choose it before any custom contract. A `Group` subject
+needs the access-token claim named exactly **`groups`** (mandated).
+
 ## Disambiguation
 
 If the request could map to multiple scenarios, resolve with these questions:
@@ -35,6 +53,8 @@ If the request could map to multiple scenarios, resolve with these questions:
 | Signing service vs direct signing | Does the app sign git commits/merges server-side after PR-based admin approval? | `git-pr-signing-service` | `policy-governed-signing` (direct in-app signing) |
 | Durable certificate vs immediate signature | Does the app hand someone an artifact that a THIRD PARTY verifies later, without contacting the issuer? | `attested-provenance-registry` | `policy-governed-signing` (signature consumed immediately by a protocol) |
 | Attestation vs generic signing | Does the app need to prove WHO made a claim and WHEN, enforced by the network rather than asserted by the app? | `attested-provenance-registry` (custom contract binding vuid + timestamp skew) | `policy-governed-signing` |
+| Per-record access vs org-wide vault | Must ONE record's data be decryptable only by a named user, group or role? | `relationship-attestation` (built-in contract; one admin-approved policy per user and record) | `organisation-password-manager` (everyone holding the role decrypts) |
+| Decryption gate vs server-checked fact | Does the fact gate DECRYPTION of data, rather than being something your server checks later? | `relationship-attestation` | `attestation` |
 | Single scenario vs no match | Does the description mention domain-specific keywords (SSH, vault, signing, admin, governance, chat, video, messaging)? | Use matched scenario | Use generic playbook routing |
 
 ## Scenarios
@@ -47,6 +67,7 @@ If the request could map to multiple scenarios, resolve with these questions:
 | `iga-admin-governance` | Custom admin panel for IGA change request governance | IGA change-set lifecycle + multi-admin quorum | `_tide_enabled`, `tide-realm-admin` | None (governance, not data) | Admin dashboard, approval workflow, change request management, governance panel |
 | `encrypted-communication` | Real-time encrypted chat/video with Tide-protected key storage | Self-encryption (key storage) + external crypto (runtime E2E) | `_tide_enabled`, `_tide_<tag>.selfencrypt`, `_tide_<tag>.selfdecrypt` | None | Encrypted chat, encrypted video calls, secure messaging, zero-knowledge server |
 | `attested-provenance-registry` | Timestamped, third-party-verifiable attestations about content | Custom Forseti contract binding signer vuid + ORK-clock timestamp skew | `_tide_enabled`, `appUser`, `<attest-role>` (in default-roles composite) | `<admin-role>` gates policy deployment | Provenance, notarisation, content authenticity, certificates of authenticity, verifiable claims, rights/licensing registry, "prove I made this first" |
+| `relationship-attestation` | A named user, group or role may open one record's encrypted data | Policy-governed encryption under the ORK's built-in `RelationshipAttestation:1` contract | `_tide_enabled` | `_tide_encryptor`, `_tide_decryptor` (realm roles) | Assigned clinician reads an assessment, per-record or per-case access, caseload, need-to-know. Confirm the network has the contract first |
 
 ## Matching rules
 
@@ -57,6 +78,7 @@ If the request could map to multiple scenarios, resolve with these questions:
 - `iga-admin-governance` matches: "admin panel", "admin dashboard", "governance panel", "governance dashboard", "change request", "approval workflow", "multi-admin", "quorum approval", "iga admin", "iga panel", "manage change requests", "approve changes", "admin console", "policy management panel".
 - `attested-provenance-registry` matches: "provenance", "attestation", "attest", "timestamped claim", "trusted timestamp", "notarisation", "notarization", "proof of authorship", "authorship claim", "content authenticity", "content credentials", "chain of custody", "certificate of authenticity", "verifiable certificate", "verifiable claim", "signed claim", "third party verification", "independently verifiable", "prove i created", "registry of works", "copyright registry", "licensing registry", "derivative lineage", "who made this", "cannot be backdated", "tamper evident".
 - `encrypted-communication` matches: "encrypted chat", "encrypted messaging", "encrypted video", "e2e chat", "e2e messaging", "secure chat", "secure messaging", "private messaging", "zero knowledge", "encrypted group chat", "encrypted video call", "signal-like", "whatsapp-like", "chat app with encryption", "video app with encryption", "encrypted collaboration", "forward secrecy", "key exchange".
+- `relationship-attestation` matches: "relationship attestation", "relationship-based access", "assigned to an assessment", "assigned to a case", "assigned clinician", "only the assigned", "per-record access", "per-case access", "caseload", "care team access", "need to know access", "grant a user access to a record".
 - If the user describes a **single-user private vault** with no sharing, do NOT use the password manager scenario. Use the `nextjs-e2ee-vault` template instead.
 - If the user describes **only authentication** with no signing or encryption, do NOT use these scenarios. Use the standard playbook sequence.
 - If the user only needs the **built-in TideCloak Admin Console** for governance, do NOT use the `iga-admin-governance` scenario. Use the standard `setup-iga-admin-panel` playbook directly.

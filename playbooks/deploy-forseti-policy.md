@@ -23,6 +23,7 @@ encountered with a real error message, not predicted.
 **Do not use** for:
 - Policy-governed E2EE with built-in models → [setup-forseti-e2ee.md](setup-forseti-e2ee.md)
 - Simple role-gated multi-approval → use a built-in contract, no custom deployment needed
+- Who may encrypt or decrypt one record (a user, a group, or a role) → the built-in `RelationshipAttestation:1`, no custom deployment needed (`relationship-attestation`)
 
 ---
 
@@ -255,69 +256,11 @@ clauses.
 
 ---
 
-## Step 6: Upload the contract source (scriptable — no enclave)
 
-```
-POST /admin/realms/{realm}/iga/forseti-contracts
-Authorization: Bearer <admin-token>
-Content-Type: application/json
+> _Withheld: uploading a custom Forseti contract is done by the Tide team (experimental, test networks only). Do not reconstruct this step._
 
-{ "contractCode": "<C# source>", "name": "MyPolicy" }
-```
 
-Requires `manage-realm`. **No enclave, no browser — fully scriptable.** Prefer this: it gets the
-contract into the realm without a human, leaving the policy signature as the only manual step.
-
----
-
-## Step 7: Build the contract transport — THREE nested levels
-
-**Prefer the SDK helper.** `heimdall-tide` already builds this correctly:
-
-```typescript
-const { PolicySignRequest } = await import('heimdall-tide');
-const policyRequest = PolicySignRequest.New(policy).addForsetiContractToUpload(contractSource);
-```
-
-VERIFIED against `heimdall-tide@0.14.20`. Four codebases hand-roll this instead (GAP-069).
-
-If you must hand-roll it, the shape is:
-
-```
-contractTransport = [ "forseti",        forsetiData  ]   <- contract TYPE lives here
-forsetiData       = [ <empty>,          innerPayload ]
-innerPayload      = [ contractSource,   "Contract"   ]   <- entry type
-draft             = [ policy.toBytes(), contractTransport ]
-```
-
-```typescript
-const encoder = new TextEncoder();
-const innerPayload = TideMemory.CreateFromArray([
-  encoder.encode(contractSource),
-  encoder.encode('Contract'),
-]);
-const forsetiData = TideMemory.CreateFromArray([new Uint8Array(0), innerPayload]);
-const contractTransport = TideMemory.CreateFromArray([
-  encoder.encode('forseti'),       // the level everyone omits
-  forsetiData,
-]);
-const draft = TideMemory.CreateFromArray([policy.toBytes(), contractTransport]);
-```
-
-Build two levels instead of three and every ORK rejects:
-
-```
-TIDE-TIDEJS-NET-THRESHOLD_FAILURE: Could not reach enough VVK ORKs (0 of 20, 20 failed)
-  [TIDE-ORK-INTERNAL-UNEXPECTED] Unknown contract type ''
-```
-
-An **empty** type — the ORK read position 0 of a structure one level too shallow and found the middle
-level's leading `new Uint8Array(0)`. `TideMemory.CreateFromArray` accepts any nesting, so nothing
-client-side objects, and it fails **after** the enclave approval.
-
-*(L-09, AP-64)*
-
----
+> _Withheld: uploading a custom Forseti contract is done by the Tide team (experimental, test networks only). Do not reconstruct this step._
 
 ## Step 8: Fetch the realm admin policy — the name is `tide-realm-admin`
 
@@ -524,7 +467,6 @@ Keyed by the error text you will actually see. Full table:
 - **Skipping the local compile** — a typo costs an operator approval (AP-67)
 - **`modelIds`, or a Policy missing `version`/`keyId`** (AP-60)
 - **Hand-written Models type not mirroring the constructor** — typechecks, throws (AP-61)
-- **Two-level contract transport** (AP-64)
 - **Inventing a model id**, or borrowing `AttestationUnit:1` (AP-65)
 - **`?? policies[0]`** when the named admin-policy lookup misses (AP-63)
 - **Binding a contract check to the JWT subject** rather than the vuid (AP-66)

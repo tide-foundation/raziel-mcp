@@ -66,6 +66,9 @@ def call(path, method="GET", body=None):
         return "ERR", str(e)[:200]
 
 
+NEVER_DRAIN = {"DISABLE_IGA", "DELETE_REALM", "OFFBOARD_REALM"}
+
+
 def pending():
     status, data = call(f"{base}?status=PENDING")
     if status != 200 or data is None:
@@ -76,8 +79,17 @@ def pending():
     # a drain written for the keyed shape does Object.keys() on an array and gets "0","1","2",
     # which then 404 as change-request ids.
     if isinstance(data, dict):
-        return [(k, v.get("actionType", "?")) for k, v in data.items()]
-    return [(c.get("id"), c.get("actionType", "?")) for c in data if c.get("id")]
+        items = [(k, v.get("actionType", "?")) for k, v in data.items()]
+    else:
+        items = [(c.get("id"), c.get("actionType", "?")) for c in data if c.get("id")]
+    # Never approve these as a side effect of a drain. Each is a change request like any other, so
+    # an unfiltered loop commits it -- and a stray second `toggle-iga` call is enough to queue a
+    # DISABLE_IGA. Handle them deliberately, never in bulk.
+    kept = [(cid, action) for cid, action in items if action not in NEVER_DRAIN]
+    for cid, action in items:
+        if action in NEVER_DRAIN:
+            print(f"   SKIPPED {action} {str(cid)[:8]} -- not approved by a drain; decide it on purpose")
+    return kept
 
 
 total = 0
@@ -100,7 +112,7 @@ for round_no in range(1, max_rounds + 1):
         if c_status == 412:
             note = "  <- not ready (412: threshold/dependency unmet)"
         elif a_status == 409:
-            note = "  <- four-eyes (409: a DIFFERENT admin must authorize)"
+            note = "  <- 409: not PENDING, this admin already signed, or the realm is multiAdmin (enclave needed)"
         elif ok:
             note = ""
         else:
@@ -117,7 +129,7 @@ print(f"   committed {total} change request(s)")
 if stalled:
     print(
         "   NOTE: the queue did not fully drain. Common causes:\n"
-        "     - 409 four-eyes: another admin must authorize (multiAdmin realm)\n"
+        "     - 409: this admin already signed, or the realm is multiAdmin and needs the enclave\n"
         "     - 412: an unmet dependency, or a threshold this admin alone cannot satisfy\n"
         "     - the realm flipped to multiAdmin (granting tide-realm-admin does this), after\n"
         "       which approvals need a human enclave session, not a script"

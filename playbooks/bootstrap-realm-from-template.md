@@ -35,7 +35,7 @@ CLIENT_APP_URL="${CLIENT_APP_URL:-http://localhost:3000}"
 get_token() {
   curl -s -X POST "$TIDECLOAK_URL/realms/master/protocol/openid-connect/token" \
     -H "Content-Type: application/x-www-form-urlencoded" \
-    -d "username=admin&password=password&grant_type=password&client_id=admin-cli" \
+    --data-urlencode "username=$KC_BOOTSTRAP_ADMIN_USERNAME" --data-urlencode "password=$KC_BOOTSTRAP_ADMIN_PASSWORD" -d "grant_type=password&client_id=admin-cli" \
     | jq -r '.access_token'
 }
 TOKEN="$(get_token)"
@@ -66,12 +66,28 @@ rm -f "$TMP_REALM"
 
 ### Step 4: Initialize Tide realm
 
+> ### ⛔ Before this step: licence email and Terms & Conditions (AP-90)
+>
+> `setUpTideRealm` licenses the realm to an email address under Tide's Terms & Conditions
+> (**https://tide.org/legal**). ASK the user both questions and WAIT for their own answer **before
+> starting TideCloak or creating the realm**:
+>
+> 1. *"Which email address should manage your Tide licence?"* — a real address they control.
+> 2. *"Tide's Terms & Conditions are at https://tide.org/legal. Do you agree to them? (yes/no)"*
+>
+> Never invent the email or use a placeholder. Never accept the terms for them. If they decline,
+> stop. Their answers are `TIDE_LICENSE_EMAIL` and `TIDE_TERMS_ACCEPTED=yes`; the request below fails
+> closed without both.
+
 ```bash
+# Fail closed: both come from the user (AP-90). No default email, no implied acceptance.
+: "${TIDE_LICENSE_EMAIL:?ask the user which email should manage their Tide licence}"
+[ "${TIDE_TERMS_ACCEPTED:-}" = "yes" ] || { echo "The user has not agreed to https://tide.org/legal - ask them" >&2; exit 2; }
 TOKEN="$(get_token)"
 curl -s -X POST "$TIDECLOAK_URL/admin/realms/$REALM_NAME/vendorResources/setUpTideRealm" \
   -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/x-www-form-urlencoded" \
-  --data-urlencode "email=admin@yourorg.com" \
+  --data-urlencode "email=$TIDE_LICENSE_EMAIL" \
   --data-urlencode "isRagnarokEnabled=true"
 ```
 
@@ -83,7 +99,7 @@ This activates the Tide license and generates the VRK. No manual "Manage License
 
 | Param | Required | Default | Notes |
 |-------|----------|---------|-------|
-| `email` | Yes (for licensing) | — | Used to request the free-tier license. Ignored only when `skipLicense=true`. |
+| `email` | Yes (for licensing) | — | The address the USER gave for managing their licence (`TIDE_LICENSE_EMAIL`) — never a placeholder (AP-90). Used to request the free-tier license. Ignored only when `skipLicense=true`. |
 | `isRagnarokEnabled` | No | `true` | Enables realm offboarding (Ragnarok). The endpoint already defaults it to `true`; passing `isRagnarokEnabled=true` explicitly is harmless and matches the default. |
 | `skipLicense` | No | `false` | When `true`, skips license activation (`email` unused) and returns early. Leave at the default for normal bootstrap. |
 
@@ -128,7 +144,7 @@ approve_all_pending() {
   # See canon/iga-change-requests-api.md.
   ids=$(curl -s "$TIDECLOAK_URL/admin/realms/$REALM_NAME/iga/change-requests?status=PENDING" \
     -H "Authorization: Bearer $TOKEN" 2>/dev/null \
-    | jq -r 'if type=="array" then .[].id else empty end' 2>/dev/null)
+    | jq -r 'if type=="array" then (.[] | select(.actionType | IN("DISABLE_IGA","DELETE_REALM","OFFBOARD_REALM") | not) | .id) else empty end' 2>/dev/null)
   for id in $ids; do
     TOKEN="$(get_token)"
     curl -s -X POST "$TIDECLOAK_URL/admin/realms/$REALM_NAME/iga/change-requests/$id/authorize" \
@@ -140,7 +156,7 @@ approve_all_pending() {
     TOKEN="$(get_token)"
     ready=$(curl -s "$TIDECLOAK_URL/admin/realms/$REALM_NAME/iga/change-requests?status=PENDING" \
       -H "Authorization: Bearer $TOKEN" 2>/dev/null \
-      | jq -r '.[] | select(.readyToCommit==true) | .id' 2>/dev/null)
+      | jq -r '.[] | select(.actionType | IN("DISABLE_IGA","DELETE_REALM","OFFBOARD_REALM") | not) | select(.readyToCommit==true) | .id' 2>/dev/null)
     [ -z "$ready" ] && break
     for id in $ready; do
       TOKEN="$(get_token)"
@@ -181,7 +197,7 @@ approve_and_commit clients
 ## Anti-Patterns
 
 - **Do not** create a minimal realm.json. Every section in the template is required.
-- **Do not** skip IGA enablement. The `jwk` field in adapter JSON only appears with IGA enabled.
+- **Do not** skip IGA enablement. (The `jwk` field in adapter JSON does not depend on it: it appears once `setUpTideRealm` has created the realm's Tide vendor key. An earlier revision said otherwise.)
 - **Do not** reorder steps. License before IGA. IGA before change request approval.
 - **Do not** leave license activation as a manual step. `setUpTideRealm` handles it automatically.
 - **Do not** blindly set `registrationAllowed: true`. This is a deployment decision — open registration lets any user sign up via Tide IdP. For invite-only apps, keep it `false` and use admin invite links (`tideAdminResources/get-required-action-link`). The admin invite link bypasses the registration gate. VERIFIED (LEARNINGS-batch-008 L-01).

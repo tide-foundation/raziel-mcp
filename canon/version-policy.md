@@ -39,7 +39,7 @@ Resolved from the npm registry on **2026-08-06**. npm is the release source of t
 **The `@tidecloak/*` npm versions track TideCloak server releases.** A TideCloak `0.14.17` instance expects SDK `0.14.17`. This is not cosmetic — the Skycloak cluster `version` field takes the same numbers (`type: "tidecloak"` clusters use `0.14.x`), so the server and client versions are directly comparable and should match.
 
 Two failure modes when they drift:
-- **`tide_dpop_auth.html` is version-bound and is NOT shipped in the npm packages.** Upgrading the SDK does not update it. A stale copy after a bump causes an unexplained **500** at the token exchange. Refresh it from the pack template or the Tide team when you change SDK version. See T-26.
+- **`tide_dpop_auth.html` is version-bound, and the copy in your app's `public/` is not updated by an SDK upgrade.** A stale copy after a bump causes an unexplained **500** at the token exchange. `@tidecloak/js` ships the file from **0.14.34** (VERIFIED 2026-10-07 against the published tarball: `node_modules/@tidecloak/js/tide_dpop_auth.html`, same sha256 as the pack copy); earlier versions do not. Re-copy it whenever you change SDK version — `tide_dpop_asset` prints the command. See T-26.
 - **Known-bad server versions exist.** TideCloak `0.13.13` ships a broken automation client; `0.14.11` fails Tide licensing on hosted clusters (`KEYGEN_FAILED`). Use `0.14.17+` for hosted. See `canon/hosting-options.md`.
 
 VERIFIED 2026-08-06 against a live hosted `0.14.17` cluster with SDK `0.14.17`.

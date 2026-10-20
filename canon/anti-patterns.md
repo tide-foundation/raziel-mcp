@@ -688,19 +688,27 @@ app.post('/api/admin/ragnarok', async (req, res) => {
 
 **Consequence**: Single compromised admin can trigger irreversible offboarding. Keys reconstructed without quorum approval.
 
-**Correct approach**:
-```typescript
-// ✅ CORRECT: Ragnarok via IGA quorum approval
-// Admin creates change-set for Ragnarok
-const changeSet = await createChangeRequest({
-  type: 'FABRIC_OFFBOARDING',
-  data: { realm: realmId }
-});
+**Correct approach**: an app never builds its own offboarding route. Offboarding is triggered through TideCloak and approved by admins in the enclave.
 
-// Requires quorum approval (same as other admin changes)
-// Sealed by threshold signatures before execution
-// Irreversible; must have maximum scrutiny
 ```
+POST /admin/realms/{realm}/ragnarok/trigger-offboarding      # caller needs manage-realm
+  → 202 + a change request: entity type REALM, action OFFBOARD_REALM
+  → 412 if backup is off, or there are fewer active tide-realm-admins than the floor
+  → 409 if another realm-level change request is already pending
+```
+
+- **The quorum is stricter than for other admin changes.** Approvals required = the larger of the
+  normal quorum and `iga.offboardMinAdmins` (default **3**), even in firstAdmin mode. A realm with
+  one admin — which is what the pack's bootstrap scripts create — **cannot offboard** until it has
+  three.
+- The request appears in the ordinary change-request list and is approved through
+  `POST /iga/change-requests/{id}/approve`. Nothing is torn down until it commits; a failed ORK
+  ceremony leaves everything in place and can be retried.
+- Never include `OFFBOARD_REALM` in a bulk drain (see `canon/iga-change-requests-api.md`).
+
+An earlier revision of this entry showed `createChangeRequest({ type: 'FABRIC_OFFBOARDING' })` and
+"same quorum as other admin changes". Neither exists. VERIFIED 2026-10-07 against `ragnarok` `main`
+(`RagnarokAdminRealmResource.java`) and iga-core (`TideAttestor.java`).
 
 **Related**: Invariants I-10, [Concepts](concepts.md#ragnarok-fabric-offboarding)
 
@@ -1511,7 +1519,7 @@ docker run -d tidecloak/tidecloak-dev:latest   # ← WRONG org name
 docker run -d tideorg/tidecloak-dev:latest
 ```
 
-The org is `tideorg`, not `tidecloak`. And `tidecloak-dev` — despite the suffix — IS the production image; `tidecloak-stg-dev` is an internal pre-release build and is not supported.
+The org is `tideorg`, not `tidecloak`. And `tidecloak-dev` is the only image this pack supports (a development build of the server, wired to the production Tide network); `tidecloak-stg-dev` is an internal pre-release build and is not supported.
 
 **Related**: AP-39
 
@@ -1546,7 +1554,6 @@ The org is `tideorg`, not `tidecloak`. And `tidecloak-dev` — despite the suffi
 - [ ] Policy constructed with all five fields and **singular** `modelId` (AP-60)
 - [ ] No hand-written Models/Policy type diverging from the runtime constructor (AP-61)
 - [ ] `modelId` is a registered id or `BasicCustom<...>`; `request.id() === policy.modelIds[0]` (AP-65)
-- [ ] Contract transport has the outer `"forseti"` level (AP-64)
 - [ ] `contractId` is UPPERCASE SHA-512 hex, `/^[0-9A-F]{128}$/` (L-14)
 - [ ] Admin policy matched by name `tide-realm-admin`, no `?? policies[0]` (AP-63)
 - [ ] Contract identity checks compare the **vuid**, not the JWT subject (AP-66)
@@ -1657,6 +1664,9 @@ The org is `tideorg`, not `tidecloak`. And `tidecloak-dev` — despite the suffi
 | AP-85 | Medium | Medium | Easy to check, and the fake data is indistinguishable from real data once written |
 | AP-86 | High | **HIGH** | **Very hard** — failure and discovery are far apart, and the evidence is deleted before anyone looks |
 | AP-87 | High | Low | **Hard** — the agent does the work well and reports it, so nothing looks broken |
+| AP-88 | Medium | **HIGH** | **Hard** — the regenerated file reviews as correct; only the hash disagrees |
+| AP-89 | Medium | **CRITICAL** | **Hard** — it looks like a stuck bootstrap, not a broken quorum |
+| AP-90 | High | **HIGH** | **Hard** — the realm works; nothing shows that nobody agreed to anything |
 
 > AP-38 through AP-59 predate this table and are not classified here. Treat the omission as a known
 > gap in this section, not as an assessment of low severity.
@@ -1837,36 +1847,71 @@ VERIFIED (learning-batch-003, L-04).
 
 ## AP-43: Re-Verifying DPoP Proofs on App API Routes When Using secureFetch
 
-**What it looks like**:
-```typescript
-// ❌ WRONG: Attempt RFC 9449 DPoP proof verification on secureFetch requests
-import { jwtVerify, importJWK } from 'jose';
+> ## ⚠️ THIS ENTRY WAS INVERTED AND IS NOW REVERSED — 2026-08-21
+>
+> It previously told you to **skip** DPoP proof verification, with a `✅ CORRECT` marker on
+> "verify JWT signature only". **That pattern is exploitable and was proven so on a live
+> deployment: a bare-`Bearer` replay of a sender-constrained token returned `200`**
+> (LEARNINGS-nightfabric-001 L-01). If you followed the old guidance, your DPoP is decorative.
 
-const dpopHeader = req.headers.get('dpop');
+**What it looks like** — the mistake that produced the old advice:
+
+```typescript
+// ❌ WRONG: verifying the DPoP proof with the REALM's key
 const { payload } = await jwtVerify(dpopHeader, publicKey);  // Throws: Invalid Compact JWS
 ```
 
-**Why it's wrong**:
-- `secureFetch` from `@tidecloak/js` sends DPoP proofs in a Tide-specific format, not standard RFC 9449 compact JWS
-- `jwtVerify()` rejects the non-standard format with `401: Invalid Compact JWS`
-- DPoP binding is already enforced at TideCloak during token issuance — the `cnf.jkt` claim proves binding
-- JWT signature verification via embedded JWKS (VVK) is the primary security layer
+**Why it fails**: a DPoP proof is signed by the **client's ephemeral key**, which the proof carries
+in its own header as `jwk`. Verifying it with the realm's public key cannot work. The original report
+read that failure as *"secureFetch sends a Tide-specific format, not standard RFC 9449 compact JWS"*
+and concluded the check should be skipped.
 
-**Consequence**: All API requests via `secureFetch` return 401. Login works but no API calls succeed.
+**That conclusion was wrong, and it is measurable.** From `@tidecloak/js@0.14.20`,
+`lib/tidecloak-dpop.js` → `generateDPoPProof`:
 
-**Correct approach**:
-```typescript
-// ✅ CORRECT: Verify JWT signature only. cnf.jkt proves DPoP binding at issuance.
-const jwt = await verifyTideJWT(token);
-// The presence of cnf.jkt confirms TideCloak bound this token with DPoP.
-// No need to re-verify the proof on the app side.
+```js
+const header  = { alg, typ: "dpop+jwt", jwk: { crv, kty, x, y } };
+const payload = { jti, htm, htu: urlObj.origin + urlObj.pathname, iat, ath, nonce? };
+return `${b64u(header)}.${b64u(payload)}.${b64u(signature)}`;
 ```
 
-**When to use DPoP proof verification**: Only if your app sends manual DPoP proofs (not via `secureFetch`). If using `secureFetch`, skip DPoP proof verification entirely.
+That is an ordinary RFC 9449 compact JWS. Nothing about it is Tide-specific.
 
-VERIFIED (LEARNINGS-batch-005, L-06).
+**What the resource server MUST do.** `cnf.jkt` proves the token was *issued* bound to a key. It
+proves nothing about who is *presenting* it. Without proof verification the binding is decorative:
 
-**Related**: I-12, [verify-jwt-server-side.md](../playbooks/verify-jwt-server-side.md) Step 4
+```typescript
+// ✅ CORRECT: both, always. Neither replaces the other.
+const claims = await verifyTideJWT(token);   // signature, iss, azp, exp
+await verifyDpop(req, token, claims);        // RFC 9449 — templates/dpop-verify/verifyDpop.ts
+```
+
+`verifyDpop` must, at minimum:
+
+| Check | Why |
+|---|---|
+| auth scheme is `DPoP`, not `Bearer` | **this is the replay that succeeded** — reject a `cnf.jkt` token sent as Bearer |
+| proof `typ` is `dpop+jwt` | it is a proof, not some other JWT |
+| verify with the `jwk` **in the proof header** | not the realm key — this is what the old advice got wrong |
+| `thumbprint(jwk) === cnf.jkt` | the proof's key is the key the token was bound to |
+| `ath === b64u(sha256(accessToken))` | ties this proof to *this* token |
+| `htm` / `htu` match the request | a proof for one endpoint cannot be reused on another |
+| `iat` fresh, `jti` single-use | replay window |
+
+⚠️ **`htu` behind a proxy.** The SDK signs `origin + pathname` of the URL the *browser* saw. Behind
+cloudflared, a load balancer, or Vercel, `req.nextUrl.origin` is the internal origin
+(`https://localhost:3000`), so htu comparison rejects **every legitimate request** and the app 401s
+entirely. Reconstruct from `x-forwarded-host` + `x-forwarded-proto` — measured to be correct in both
+the tunnelled and the direct-localhost case. Only trust those headers behind a proxy you control.
+
+⚠️ **The `jti` replay store must be shared.** A per-process `Set` does not prevent replay across
+serverless instances — see AP-44.
+
+`templates/dpop-verify/` ships the verifier and a test that exercises all of this: 13 assertions,
+including the Bearer-replay rejection, with proofs built exactly as the SDK builds them.
+
+**Related**: I-12, AP-44, [verify-jwt-server-side.md](../playbooks/verify-jwt-server-side.md) Step 4
+
 
 ---
 
@@ -2281,7 +2326,7 @@ window.parent.postMessage({ type: "pageLoaded" }, openerOrigin);   // ❌
 
 Correct in an **iframe**. In a **popup** — which is what `_popupDPoPFallback` → `_openDPoPPopup`
 opens — `window.parent === window`, so the page messages *itself*, the opener never receives
-`pageLoaded`, and tide-js reports `Popup DPoP verification failed to load`.
+`pageLoaded`, and the enclave (served by the ORK) reports `Popup DPoP verification failed to load`.
 
 **Correct** (present in newer copies):
 ```js
@@ -2325,30 +2370,8 @@ A named lookup that misses is a bug, not a case to default through. VERIFIED aga
 
 ---
 
-## AP-64: Building the Contract Transport Without the Outer `"forseti"` Wrapper
 
-The Forseti contract transport is **three** nested levels and the outermost carries the contract
-type:
-
-```
-contractTransport = [ "forseti",       [ <empty>, [ source, "Contract" ] ] ]
-draft             = [ policy.toBytes(), contractTransport ]
-```
-
-Build two levels and every ORK answers `Unknown contract type ''` — an *empty* type, because the
-ORK read position 0 of a structure one level too shallow and found the middle level's leading
-`new Uint8Array(0)`.
-
-`TideMemory.CreateFromArray` accepts any nesting, so nothing client-side objects, and the failure
-lands at the threshold signature **after** the enclave approval — every attempt costs an operator
-approval cycle.
-
-**Correct**: use `PolicySignRequest.New(policy).addForsetiContractToUpload(source)` from
-`heimdall-tide`, which builds this nesting (VERIFIED, 0.14.20). If hand-rolling, assert
-`draft.GetValue(1).GetValue(0)` decodes to `"forseti"` before submitting. GAP-069.
-(LEARNINGS-music-license-001 L-09)
-
----
+> _Withheld: uploading a custom Forseti contract is done by the Tide team (experimental, test networks only). Do not reconstruct this step._
 
 ## AP-65: Inventing a Model Id Instead of Using a Registered One or `BasicCustom<...>`
 
@@ -3340,9 +3363,161 @@ own `init-tidecloak.sh` per app, adapted to that app's realm, roles and containe
 hand-written and correct; it simply never contained the banner, because the banner lived in a file
 nothing read.
 
+### Where it finally had to go
+
+Five placements were tried and each failed for a different reason:
+
+| Placement | Why it did not reach the agent |
+|---|---|
+| MCP `instructions` | advisory, and only reach a session that connected *after* the rebuild |
+| The pack's bootstrap script output | agents **write their own** init script; they never run it |
+| A playbook section | reads as documentation, not as a stop |
+| `canon/tidecloak-bootstrap.md` | read as background, mid-document |
+| Reference-app bootstrap sequences | same — buried below the steps |
+
+The two questions now lead the **response body** of every bootstrap-shaped tool
+(`tide_scenario_bootstrap`, and playbooks matching bootstrap / initialize-admin / provision /
+start-tidecloak / deploy-tidecloak-docker), *above* the document. An agent building a Tide realm has
+to call one of those to know what to do, so it is the last position where the message is unavoidable.
+
+A content gate additionally asserts that **no playbook containing `get-required-action-link` is
+excluded from that pattern** — an invite link means a realm bootstrap, and a realm bootstrap means
+these questions.
+
 **The rule this generalises to:** guidance only reaches generated code if it lives where the agent
 reads *while generating* — `canon/tidecloak-bootstrap.md` and the reference-app
 `bootstrap-sequence.md` files — not in an example script it will never execute. If you find yourself
 patching a shipped script to change agent behaviour, check first whether agents run it at all.
 
 **Related:** the same "guidance existed, nothing surfaced it" shape as AP-86.
+
+---
+
+## AP-88: Regenerating a Byte-Exact Asset Instead of Copying It
+
+**Severity: High. Blast radius: login fails, and the file looks right.**
+
+`public/tide_dpop_auth.html` is a relay page the enclave loads during login. It is integrity-relevant
+**to the byte**. It is not yours to restyle, reformat, prettify, or "improve".
+
+The pack's own tool used to hand over 9 KB of HTML with *"write this verbatim"* — which is an
+instruction an agent cannot reliably follow. Reproducing that much markup silently normalises quote
+style, indentation, or line endings, and the result looks correct in review: the structure is there,
+the logic is there, the hash is not.
+
+**Copy it. Then verify the hash.**
+
+```bash
+cp "<pack>/templates/nextjs-customer-portal/public/tide_dpop_auth.html" public/tide_dpop_auth.html
+sha256sum public/tide_dpop_auth.html   # 9d7844b938f0a2565fa910d3d30e9b8797cbfd6e0b73d59d804169a089aea757
+```
+
+**The hash check is the point, not the ceremony.** It is the only thing that separates a good copy
+from a plausible one, and it is equally required when a listing genuinely has to be transcribed
+(a remote MCP server, a machine without the pack checked out).
+
+**Two adjacent traps:**
+
+- **No trailing newline.** Editors and copy-paste add one; that changes the bytes and the hash.
+  `truncate -s -1 f` if you are one byte over.
+- **Do not fetch it from GitHub.** Two copies exist in the wild and the obvious path gives the stale
+  one — `keylessh` contains **both**, and the copy at its repo root posts to `window.parent`. In a
+  popup `window.parent === window`, so the page messages itself, the enclave never receives
+  `pageLoaded`, and login fails with `TIDE-SWE-UNHANDLED` (AP-62, AP-83).
+
+**Know which kind of asset you have.** The opposite rule applies to
+`templates/onboarding-modal/ProfileOnboarding.tsx`: that one is *meant* to be customised per app, so
+the MCP emits a built version to write. Copy-exactly and generate-per-app are both correct — for
+different files. The distinguishing question is whether anything downstream verifies the bytes.
+
+**Related:** AP-62, AP-83.
+
+---
+
+## AP-89: Proxying Governed Approvals Through Your Server
+
+**Severity: Critical. Blast radius: a service account holds two of the quorum's votes.**
+
+`POST /iga/change-requests/{id}/approve` credits the approval to **whoever authenticated the HTTP
+request** — not to the subject of the doken presented in the body.
+
+Route approvals through your app server, which authenticates as the Skycloak automation client or
+any service account, and every human enclave signature is recorded under that account. Because
+**filing a change request auto-authorises the filer**, that identity has already voted. The tally
+sits at `1/2` forever no matter how many humans approve, and the bootstrap appears to hang.
+
+That symptom is the harmless part. The real problem is that one identity now both proposes and
+approves — it holds two of the votes the quorum exists to split. Quorum-enforced authorization with a
+single account on both sides is not quorum-enforced.
+
+**Send governed approvals to TideCloak directly from the admin's browser, with the admin's own
+DPoP-bound token.** The realm's CORS already permits the app origin and the `DPoP` header, so
+browser → TideCloak works without a proxy.
+
+Measured on a live deployment (LEARNINGS-nightfabric-001 L-03).
+
+**Adjacent field-name trap:** read the count from **`authorizationCount`** with **`authorizers[]`**,
+and if it is absent fall back to **`readyToCommit`** — never to `0`. `authCount ?? approvals?.length
+?? 0` renders "0/1 signed" beside `readyToCommit: true`, reporting the signature missing at the
+moment it reports the CR ready.
+
+**Related:** AP-43 (the same shape — a control that looks enforced and is not).
+
+---
+
+## AP-90: Licensing a Realm Without Asking for the Email or Showing the Terms
+
+**Severity: High. Blast radius: a licence held by a placeholder, under terms nobody agreed to.**
+
+`setUpTideRealm` licenses the realm to an **email address** under Tide's **Terms & Conditions**
+(https://tide.org/legal). Tide's own setup flows ask a person for both: the keylessh init script and
+the `@tidecloak/create-nextjs` CLI prompt for *"an email to manage your license"* and for
+*"I agree to the Terms & Conditions"*. The keylessh script loops until the answer is yes; the CLI asks
+once and, on "no", skips initialisation without calling the server. Neither sends the acceptance
+anywhere: `setUpTideRealm` has no terms parameter and nothing server-side records it (VERIFIED
+2026-10-07 across `tidecloak-idp-extensions`, `Midgard` and `tidecloak-js`), so the question put to
+the user is the only place agreement happens. The email is what selects the free-tier licence: a
+blank one silently switches to paid checkout.
+
+The pack's bootstraps did neither. The email defaulted to `admin@yourorg.com` / `admin@example.com`
+and the terms were never mentioned, so an agent following the pack licensed realms to an address
+nobody owns, on behalf of a user who had been shown nothing. The realm works afterwards, which is why
+it went unnoticed: there is no error to trace back.
+
+❌ **Wrong:**
+
+```bash
+ADMIN_EMAIL="${ADMIN_EMAIL:-admin@yourorg.com}"          # a default is an answer nobody gave
+curl ... --data-urlencode "email=$ADMIN_EMAIL" .../setUpTideRealm
+```
+
+```
+agent: "I set TIDE_TERMS_ACCEPTED=yes so the bootstrap could continue."   # not the agent's to accept
+```
+
+✅ **Right:** ask, wait, then pass exactly what the user said.
+
+> Which email address should manage your Tide licence?
+>
+> Tide's Terms & Conditions are at https://tide.org/legal. Do you agree to them? (yes/no)
+
+```bash
+TIDE_LICENSE_EMAIL=<their email> TIDE_TERMS_ACCEPTED=yes npm run init
+```
+
+**Rules:**
+
+- Ask **before** TideCloak is started or a realm is created, so that declining leaves nothing behind.
+- The email is theirs. Never invent one; the scripts reject the usual placeholders.
+- Only the user can agree. "Just set it up" is not agreement, and neither is silence.
+- Show the link. Do not summarise or paraphrase the terms.
+- Every init script fails closed without both — including one the agent writes itself. The block
+  to paste is in `canon/tidecloak-bootstrap.md`.
+- Ask once per realm. A `.env` that already holds both, from the user's own answer, is a record of
+  that answer and is not asked again.
+
+**Detect:** `grep -n 'email=' <init script>` shows a literal address, or the script has no
+`tide.org/legal` in it.
+
+**Related:** AP-85 (never invent an email for a user), AP-87 (decisions that are the user's, made by
+the agent and reported afterwards).

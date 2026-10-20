@@ -43,9 +43,19 @@ Use a built-in contract for simple role-gated multi-approval. Write a custom con
 |-------------|--------|------------|
 | `GenericResourceAccessThresholdRole:1` | Approvers have a **client role** | `role`, `resource`, `threshold` |
 | `GenericRealmAccessThresholdRole:1` | Approvers have a **realm role** | `role`, `resource`, `threshold` |
-| `SimpleTagBasedDecryption:1` | Executor has `_tide_{tag}.encrypt`/`.decrypt` role | tag from data |
+| `SimpleTagBasedDecryption:1` | Executor has realm role `_tide_{tag}.encrypt` / `.decrypt` for **every** tag | none (tags from the data) |
+| `RelationshipAttestation:1` | Encrypt/decrypt only: every tag equals `assignmentId`; policy `roles` grants the operation; executor holds `_tide_encryptor` / `_tide_decryptor` **and** matches the subject (`User` key, `Group` in `groups`, or `Role`) | `subjectType`, `subjectId`, `assignmentId`, `roles` (JSON array string), optional `clientId` |
 
-Built-in contracts only validate approvers (or tags). They do NOT validate the executor or the data. For anything beyond "N people with role X must approve", write a custom contract.
+The two threshold-role contracts validate **approvers** only. The two encryption contracts validate
+the data's tags and the **executor**, require `ExecutionType.PRIVATE`, and accept only
+`PolicyEnabledEncryption:1` / `PolicyEnabledDecryption:1`. For signing, or anything beyond these
+rules, write a custom contract (deployment is done by the Tide team).
+
+**`RelationshipAttestation:1` availability:** ORK `main` (VERIFIED from source `c69fc4f6`,
+2026-10-16). It is the **default** for "who may encrypt or decrypt this record": check it before
+writing any custom contract. A `Group` subject needs the access-token claim
+named exactly **`groups`** (mandated); its values must equal `subjectId` exactly. Full guide:
+`reference-apps/relationship-attestation`. VERIFIED (source).
 
 ---
 
@@ -138,11 +148,19 @@ public PolicyDecision ValidateData(DataContext ctx)
 }
 ```
 
-### `ctx.Data` is a nested `ReadOnlyMemory<byte>` — not a collection, not a flat buffer
+### `ctx.Data` is a nested byte structure — not a collection, not a flat buffer
 
 This is the single most commonly invented API in a Forseti contract, and the ORK's compiler is the
-first thing that tells you. There is **no `DataItem` type**. `ctx.Data` is a `ReadOnlyMemory<byte>`
-holding a **nested TideMemory structure**, walked with two extension methods:
+first thing that tells you. There is **no `DataItem` type**. `ctx.Data` holds a **nested TideMemory
+structure**, walked with two extension methods.
+
+**Its declared type is `byte[]?`** (and so is `ctx.DynamicData`). SETTLED 2026-10-07 from the ORK
+source, `Ork.Forseti.Sdk/Contracts/IAccessPolicy.cs`, which agrees with the two ORK-proven contracts
+that only compile against a reference type (see `templates/forseti-compile-harness/README.md`).
+Earlier revisions of this section said `ReadOnlyMemory<byte>`. The walking helpers `GetValue` /
+`TryGetValue` extend `ReadOnlyMemory<byte>`, so the style below — assign to a `ReadOnlyMemory<byte>`
+first — is still the one to write: it compiles under either typing, and it is what every vendored
+contract does. **`ctx.Data` can be null**; check before walking it.
 
 ```csharp
 ReadOnlyMemory<byte> data = ctx.Data;
@@ -156,10 +174,11 @@ for (int i = 2; inner.TryGetValue(i, out var tag); i++)    // probe until absent
 
 | You might write | Reality |
 |---|---|
-| `foreach (DataItem d in ctx.Data)` | ❌ no such type; `ReadOnlyMemory<byte>` is not enumerable |
-| `ctx.Data[0]` | ❌ no indexer — use `data.GetValue(0)`, or `.Span[0]` for a raw byte |
-| `byte[] b = ctx.Data` | ❌ no implicit conversion in that direction |
-| `Encoding.UTF8.GetString(ctx.Data)` | ❌ pass a `Span`: `GetString(leaf.Span)` |
+| `foreach (DataItem d in ctx.Data)` | ❌ no such type |
+| `ctx.Data[0]` | compiles (it is a `byte[]`) but gives you one raw byte, not a child — use `data.GetValue(0)` |
+| `byte[] b = ctx.Data` | compiles, but the helpers are on `ReadOnlyMemory<byte>` — assign to that instead |
+| `Encoding.UTF8.GetString(leaf)` on a child | ❌ a child is a `ReadOnlyMemory<byte>`: pass `leaf.Span` |
+| `ctx.Dokens` / `ctx.Doken` as bytes | ❌ they are typed `Doken` objects; wrap with `new DokenDto(ctx.Doken)` / `DokenDto.WrapAll(ctx.Dokens)` |
 
 VERIFIED against two working, deployed contracts (`forseti-crypto-quickstart`,
 `tidecloak-test-cases`), both vendored in `sources/`.
@@ -215,7 +234,7 @@ guard against being deployed the wrong way.
 
 #### A decision cannot be inspected
 
-There is **no `IsAllowed`** on `PolicyDecision` or on the `Decision` chain. `Decision.RequireX(...)`
+There is **no `IsAllowed`** on `PolicyDecision` or on the `Decision` chain (on ORK `main` `PolicyDecision` does expose `Allowed` and `Error`, but no vendored contract relies on them). `Decision.RequireX(...)`
 chains **return** the decision — you return it, you never interrogate it:
 
 ```csharp
@@ -232,9 +251,15 @@ does with `ApproverSuccessfulRole`).
 `ValidateData` + `ValidateExecutor` and **omits `ValidateApprovers` entirely**. Implement it only when
 you need a quorum — and remember it runs **only** under `ApprovalType.EXPLICIT`.
 
-⚠️ Because it is optional, a **misspelled** override (`ValidateExecuter`) compiles and silently never
-runs. Pin method presence with the parity tests
+⚠️ Because it is optional, a **misspelled** override (`ValidateExecuter`) compiles and the real
+method is never yours. Pin method presence with the parity tests
 ([templates/forseti-parity-tests/](../templates/forseti-parity-tests/)).
+
+**What an unimplemented stage does — DIFFERS ON `main`.** On ORK `main` the interface defaults are
+**Deny** (`"ValidateApprovers not implemented"` / `"ValidateExecutor not implemented"`), so a missing
+or misspelled method **fails closed** whenever that stage runs: a PRIVATE policy with
+`ValidateExecuter` denies every request. The compile harness stub defaults to Allow, so it will not
+show you this. Implement all three methods explicitly and never rely on a default either way.
 
 ### Per-resource capabilities are IGA-governed — so binding to one costs an approval per share
 
@@ -395,8 +420,14 @@ Decision
     .RequireMinWithRole(approvers, 2, "resource", "approver")  // N approvers with role
     .RequireAnyWithRole(approvers, "resource", "approver")     // at least one
     .ForbidSelfApproval(requestorId, approvers)                // no self-approval
-    .RequireDistinctOrgs(approvers, 2)                         // from N different orgs
+    .RequireDistinctOrgs(approvers, 2)                         // ⚠️ see below — cannot pass today
 ```
+
+⚠️ **`RequireDistinctOrgs(approvers, N)` with N ≥ 2 denies every request.** It counts distinct
+doken `Audience` values, and the ORK already requires every approver doken's audience to equal the
+same user/key id, so the distinct count is always 1. `Audience` is the VVK id, not a realm name.
+VERIFIED 2026-10-07 from ORK `main` (`DecisionBuilder.cs`, `PolicyAuthorizationFlow.cs`). Do not use
+it to express "approvers from different organisations".
 
 ### Time Checks
 
@@ -418,7 +449,7 @@ Decision
     .RequireUserId(doken, "user-123")
 ```
 
-### Geo Checks
+### Geo Checks — not a real control
 
 ```csharp
 var country = ForsetiSdk.Claim("country") as string;
@@ -426,6 +457,12 @@ Decision
     .RequireCountry(country, "US", "CA", "AU")
     .ForbidCountry(country, "XX", "YY")
 ```
+
+⚠️ **This does not check where the caller is.** `ForsetiSdk.Claim(key)` reads the policy's own
+**parameters**, not anything about the request or the user, and `ForbidCountry` passes when the value
+is null or empty. There is no geo source on this path. VERIFIED 2026-10-07 from ORK `main`
+(`Ork.Forseti.VmHost/Program.cs`, `DecisionBuilder.cs`). Never present a contract using these as a
+location restriction.
 
 ### Generic
 
@@ -483,17 +520,20 @@ public string Priority { get; set; } = "medium";
 | `AllowedValues` | Enum-like string validation |
 | `Description` | Human-readable description |
 
-#### ⚠️ Only `string` and `int` binding are verified. Declare 64-bit values as `string`.
+#### ⚠️ `long` and `decimal` never bind. Declare 64-bit values as `string`.
 
-Every documented example binds a `string` or an `int`. **Whether `[PolicyParam]` binds `long`,
-`decimal` or `bool` is UNVERIFIED** (GAP-073), and a binding surprise does not fail politely: it
-surfaces as a contract failure at request time, **on the ORKs, after an enclave approval has been
-spent.**
+Binding needs an **exact type match** against the policy's wire types: `str`→`string`, `num`→`int`,
+`bnum`→`System.Numerics.BigInteger`, `bln`→`bool`, `byt`→`byte[]`. So `string`, `int`, `bool`,
+`BigInteger` and `byte[]` bind; **`long` and `decimal` never do.** A `Required` one throws
+`PolicyParam.Missing`; a non-required one **silently keeps its default**. Read from ORK `main`
+2026-10-07 (`Ork.Shared/Models/Contracts/Policy.cs`); this answers GAP-073 from source, not from a
+run. A binding surprise does not fail politely: it surfaces at request time, **on the ORKs, after an
+enclave approval has been spent.**
 
 This matters most for money. Currency amounts in cents overflow `int` quickly — a $21,474,836.48
 ceiling is the limit, which is fine for a demo and not for a corporate one.
 
-**Until it is tested, declare 64-bit values as `string` and parse them in the contract:**
+**Declare 64-bit values as `string` (or `BigInteger`) and parse them in the contract:**
 
 ```csharp
 [PolicyParam(Required = true, Description = "Hard ceiling in cents.")]
@@ -506,8 +546,7 @@ A hand-written digit loop also buys **determinism** for free: reject signs, sepa
 leading zeros, and no culture setting can change what a number means on one ORK versus another.
 `long.Parse` with an implicit culture is exactly the kind of thing that produces a 13-of-20 split.
 
-This is a workaround, not an answer. VERIFIED as the safe path; the binding question is open
-(LEARNINGS-tidewater-001 L-06).
+VERIFIED as the safe path (LEARNINGS-tidewater-001 L-06).
 
 ---
 
@@ -522,36 +561,14 @@ ForsetiSdk.GasUsed         // current gas consumed
 ForsetiSdk.GasLimit        // total gas budget (default 50,000)
 ```
 
-Gas limit is 50,000. Exceeding it throws `OutOfGasException` and the operation fails.
+Gas limit is 50,000. Exceeding it fails the operation (`Policy.Throw: Out of gas`). Only SDK calls are charged against it (`Claim` 5, `Log` 25); on ORK `main` the bound that actually stops a runaway contract is the wall-clock limit, about 10 seconds, reported as `VmHost.Timeout`.
 
 ---
 
 ## Deploying a Contract
 
-### Step 1: Upload Contract to TideCloak (scriptable — no enclave)
 
-```
-POST /admin/realms/{realm}/iga/forseti-contracts
-Content-Type: application/json
-Authorization: Bearer <admin-token>
-
-{
-  "contractCode": "<C# source code as string>",
-  "name": "MyPolicy"
-}
-```
-
-Requires `manage-realm`. **No enclave and no browser — this step is fully scriptable.** It upserts into the realm's contract library, and max source length is 1,048,576 characters. Companion endpoints: `GET /iga/forseti-contracts`, `GET /iga/forseti-contracts/{id}`, `DELETE /iga/forseti-contracts/{id}` (deleting nulls `CONTRACT_ID` on any referencing policy rows via `ON DELETE SET NULL`).
-
-> ⚠️ **Two different hashes. Do not use the response's `contractHash` as your policy's `contractId`.**
-> - The response `contractHash` is **SHA-256** of the source — TideCloak's internal dedup key for the library table only.
-> - A policy's **`contractId` is SHA-512 hex** of the exact source, which is what the ORK matches against (`ForsetiContract.Id => Convert.ToHexString(SHA512.HashData(...))`). Built-in contracts instead use `Name + ":" + Version`, e.g. `GenericRealmAccessThresholdRole:1`.
->
-> Compute the SHA-512 yourself; never copy it out of this response. VERIFIED against `iga-core` / ORK source 2026-08-07.
-
-Uploading here is optional in the sense that `PolicySignRequest.addForsetiContractToUpload(source)` also carries the source during signing. Prefer the REST upload: it is the seamless path, getting the contract into the realm without a human, so the only remaining manual step is the policy signature.
-
-(Earlier pack revisions said no REST API existed, having tested the legacy `/tide-admin/forseti-contracts` path. That path is gone; the surface moved to `/iga/`.)
+> _Withheld: uploading a custom Forseti contract is done by the Tide team (experimental, test networks only). Do not reconstruct this step._
 
 ### Step 2: Create a Policy Using the Contract
 
@@ -661,6 +678,16 @@ Model id '...' not found in registry
 The registry is `@tideorg/js/dist/Models/ModelRegistry.js` (`modelBuildersMap`) and it holds
 exactly nine models:
 
+> This is the **client's** registry — what the enclave can render. The ORK checks model ids against
+> its own registries, which also accept `"any"` (a wildcard when it is the first id) and ids not
+> listed here such as `EnableOffboard:1`, `SelfDecrypt:1`, `TideSelfEncryption:1`.
+>
+> **Policy version — DIFFERS ON `main`.** This pack teaches `version: '3'` and "the ORKs are
+> V3-only", measured against the live network in August 2026. On `main`, both `tide-js` and `ork`
+> set `Policy.latestVersion` to **`"4"`** (v4 adds an optional expiry) while still reading v3;
+> published `@tideorg/js` builds up to 0.14.25 still say `"3"`. Do not hardcode either: pass
+> `Policy.latestVersion` from the SDK you have installed.
+
 | Model id | Purpose |
 |---|---|
 | `Offboard:1` | Offboarding (leaving the Tide network) |
@@ -670,7 +697,7 @@ exactly nine models:
 | `HederaTx:1` | Hedera transactions |
 | `PolicyEnabledEncryption:1` | Policy-gated encryption |
 | `PolicyEnabledDecryption:1` | Policy-gated decryption |
-| `ServerCert:1` | Server certificates |
+| `ServerCert:1` | Server certificates. ⚠️ Present in this client-side registry but **absent from ORK `main`**; a policy naming it fails there |
 | `AttestationUnit:1` | **IGA governance changes** — NOT arbitrary attestations |
 
 ⚠️ **`AttestationUnit:1` is a trap.** It is the obvious thing to reach for in an attestation app
@@ -838,7 +865,7 @@ silently picks the wrong one. Match on the name and fail loudly on a miss or on 
 ```typescript
 const tc = (IAMService as any)._tc;  // Internal TideCloak instance
 
-// 1. Build the policy bytes and contract transport (THREE nested levels — see below)
+// (withheld: the contract is uploaded by the Tide team, not from here)
 const policyBytes = policy.toBytes();
 const contractSource = `using Ork.Forseti.Sdk;\n\npublic class Contract : IAccessPolicy { ... }`;
 const encoder = new TextEncoder();
@@ -877,56 +904,8 @@ policy.signature.set(vvkSignature);
 const signedPolicyBytes = policy.toBytes();  // Store THESE bytes
 ```
 
-#### The contract transport is THREE nested levels, and the outermost carries the type
 
-```
-contractTransport = [ "forseti",       forsetiData  ]   <- contract TYPE lives here
-forsetiData       = [ <empty>,         innerPayload ]
-innerPayload      = [ contractSource,  "Contract"   ]   <- entry type
-draft             = [ policy.toBytes(), contractTransport ]
-```
-
-Build two levels instead of three and every ORK rejects the request:
-
-```
-TIDE-TIDEJS-NET-THRESHOLD_FAILURE: Could not reach enough VVK ORKs (0 of 20, 20 failed)
-  [TIDE-ORK-INTERNAL-UNEXPECTED] Unknown contract type ''
-```
-
-An **empty** contract type, not a wrong one — the ORK read position 0 of a structure one level too
-shallow and found the middle level's leading `new Uint8Array(0)`.
-
-**Why this one is expensive**: `TideMemory.CreateFromArray` accepts any nesting, so dropping a
-level is not an error anywhere in the client. The structure is positional and untyped, and omitting
-the wrapper produces a structure that is still perfectly well-formed. It fails at the **last**
-stage — the threshold signature, after the operator has already approved in the enclave — so every
-attempt costs a full approval cycle. The mistake is easy because the middle level's leading empty
-array looks like a placeholder that belongs at the top.
-
-**Prefer the SDK helper over hand-rolling.** `heimdall-tide`'s `PolicySignRequest` already builds
-this nesting correctly:
-
-```typescript
-const { PolicySignRequest } = await import('heimdall-tide');
-const policyRequest = PolicySignRequest.New(policy).addForsetiContractToUpload(contractSource);
-```
-
-VERIFIED against `heimdall-tide@0.14.20` `src/models/PolicySignRequest.ts` — it constructs exactly
-the three levels above, with `forsetiType = "forseti"` and `forsetiEntryType = "Contract"`. Four
-codebases (`ui-framework`, `ratifiy`, `keylessh`, `music-license`) hand-roll this instead; a shape
-four codebases duplicate by hand is a shape the library should own (GAP-069).
-
-**If you must hand-roll it** (see the note below on `BaseTideRequest` vs `PolicySignRequest`),
-assert the nesting before submitting — this is a pure client-side check that replaces an enclave
-round trip:
-
-```typescript
-const decoded = new TideMemory(draft.length); decoded.set(draft);
-const type = new TextDecoder().decode(decoded.GetValue(1).GetValue(0));
-if (type !== 'forseti') throw new Error(`contract transport type is '${type}', expected 'forseti'`);
-```
-
-LEARNINGS-music-license-001 L-09. AP-64.
+> _Withheld: uploading a custom Forseti contract is done by the Tide team (experimental, test networks only). Do not reconstruct this step._
 
 #### ✅ RESOLVED: `PolicySignRequest` and `BaseTideRequest` are two HALVES of one flow, not alternatives
 
@@ -939,20 +918,9 @@ the docs read as a conflict because neither said so.
 parses as TideMemory v1 with a 64-byte Ed25519 signature attached
 (LEARNINGS-tidewater-001 L-05):
 
-```typescript
-// 1. PolicySignRequest owns the THREE-level contract transport. Do not hand-roll it.
-const policyRequest = PolicySignRequest.New(policy).addForsetiContractToUpload(contractSource);
-const initialized   = await tc.createTideRequest(policyRequest.encode());
 
-// 2. The enclave approval comes back as an ENCODED request. Decode it with BaseTideRequest and
-//    attach the admin policy THERE — after the approval, not before it.
-const approval = await tc.requestTideOperatorApproval([{ id: 'policy-deploy', request: initialized }]);
-const approved = Models.BaseTideRequest.decode(approval[0].request);
-approved.addPolicy(adminPolicyBytes);          // the tide-realm-admin bytes
+> _Withheld: uploading a custom Forseti contract is done by the Tide team (experimental, test networks only). Do not reconstruct this step._
 
-// 3. Execute.
-const signatures = await tc.executeSignRequest(approved.encode(), true);   // 64-byte Ed25519
-```
 
 Three details made this work first time, and it is their **combination** that matters — each is
 documented separately elsewhere:
@@ -1069,6 +1037,9 @@ public class Contract : IAccessPolicy
     {
         var executor = new DokenDto(ctx.Doken);
 
+        // ⚠️ DIFFERS ON `main`: on ORK `main`, ExecutorContext (and ApproversContext) have no
+        // `RequestId` — only DataContext does — so this line is CS1061 there. If the ORK rejects
+        // it, decide the direction in ValidateData and keep it in a field, as the next section shows.
         if (ctx.RequestId == "PolicyEnabledEncryption:1")
         {
             return Decision
@@ -1147,6 +1118,44 @@ it formats its errors is not. (LEARNINGS-music-license-001 L-12.)
 
 ---
 
+## Two ways to attest something
+
+"Attest" means: the network signs a statement with the realm's key, after a contract agrees this
+signer may make it. A fact that was "a row says so" becomes "the network signed it, and it still
+verifies". There are two shapes. Pick by **what the statement is about and who checks it later**.
+
+| | Attestation (policy-as-attestation) | Provenance (custom payload) |
+|---|---|---|
+| About | **people**: membership, assignment, consent, verification, approval, sharing, delegation | **content**: who made it, when |
+| The signed thing | a **policy** whose parameters are the statement | your own binary envelope |
+| Request | `Policy:1`, authorised by an IMPLICIT/PRIVATE signing rule | `BasicCustom<X>:BasicCustom<V>` |
+| Contract inspects | the policy being signed (`ctx.Data` → model ids, params, expiry) | the envelope bytes |
+| Time | not attested; an expiry is enforced by your server | the ORK's own clock, within a skew window |
+| Checked later by | **your own server**, by rebuilding the bytes from a row | **a third party**, from a portable certificate |
+| Scenario | `attestation` | `attested-provenance-registry` |
+| Template | `templates/attestation/` | scenario docs |
+
+**Who may issue** is the design decision in the first shape, and the contract enforces it:
+
+| Mode | The network requires | Proves |
+|---|---|---|
+| `self` | subject = issuer = the signer | the person said this about themselves (the only mode that proves agreement) |
+| `owner` | owner = issuer = the signer | the owner of the thing said this |
+| `role` | the signer holds a named role, and is the issuer | someone authorised said this, and who |
+
+Rules common to both shapes:
+
+- **The signer's credential is the whole check**, so the contract is mostly about what to refuse.
+  Under an IMPLICIT rule nobody approves anything. Keep each rule narrow: the claim types that share
+  one answer to "who may issue", and nothing more.
+- **`IMPLICIT` must come with `PRIVATE`.** Implicit and public needs no credential at all.
+- **Identify people by vuid**, and bind the signer: compare `DokenDto.UserId` with the identity the
+  statement names. The executor stage has no `RequestId` and no `Data`, so capture what it needs in
+  `ValidateData` and fail closed if that never ran.
+- **A signature is over bytes.** Store inputs and signature; rebuild and verify. Never store the bytes.
+- **An attestation authorises nothing.** Give it a model id no real request carries, and refuse it
+  if it is ever presented as one.
+
 ## Sandbox Restrictions
 
 Contracts run in a sandboxed VM. The following are blocked:
@@ -1157,11 +1166,22 @@ Contracts run in a sandboxed VM. The following are blocked:
 - Reflection (`System.Reflection`)
 - Process/diagnostics (`System.Diagnostics`)
 - Console (`System.Console`)
-- Non-deterministic calls (`DateTime.Now`, `Guid.NewGuid`, `Random`)
+- Non-deterministic calls (`DateTime.Now`, `Guid.NewGuid`, `Random`, `Stopwatch`, `Environment.TickCount`)
+- Interop and emit (`System.Runtime.InteropServices`, `System.Reflection.Emit`, `Microsoft.Win32`, P/Invoke, `Unsafe`)
 
 A contract using a blocked namespace compiles but fails IL vetting with `BadPolicy.ForbiddenCall` at upload time.
 
-Available: `System`, `System.Linq`, `System.Collections.Generic`, `System.Text`, plus SDK types (`Ork.Forseti.Sdk`, `Cryptide`, `Ork.Shared`).
+**Three things that compile, look harmless, and are rejected.** VERIFIED 2026-10-07 from the ORK's IL
+vetter (`Ork.Forseti.Shared/Security/IlVetter.cs`); the local compile harness does not catch them:
+
+- **Lambdas and method groups.** They emit `ldftn`, which is banned. That rules out LINQ with a
+  lambda (`approvers.Where(a => ...)`, `.Any(x => ...)`) and `Decision.Require(() => ...)`. Write
+  loops. The SDK's own source notes that it "avoids LINQ which is blocked by IL vetter".
+- **Static constructors** — which includes any `static` field with an initialiser
+  (`static readonly string[] Allowed = {...}`). Use `const`, or build the value inside the method.
+- **`[ModuleInitializer]`**, `calli`, `localloc`.
+
+Available: `System`, `System.Collections.Generic`, `System.Text`, plus SDK types (`Ork.Forseti.Sdk`, `Cryptide`, `Ork.Shared`). `System.Linq` is referenced, but in practice only its lambda-free calls survive vetting.
 
 ---
 
@@ -1173,7 +1193,6 @@ Available: `System`, `System.Linq`, `System.Collections.Generic`, `System.Text`,
 - **Params as plain object**: Use `[['Role', 'admin']]` not `{ Role: 'admin' }` (AP-54)
 - **Policy with `modelIds`, or without `version`/`keyId`**: the constructor reads singular `modelId` and requires all five fields (AP-60)
 - **Hand-written Models type that does not mirror the runtime constructor**: typechecks clean, throws at runtime (AP-61)
-- **Two-level contract transport**: the outer `"forseti"` wrapper is required — `Unknown contract type ''` (AP-64)
 - **Inventing a model id**: use a registered id or the `BasicCustom<...>` form (AP-65)
 - **Binding a contract check to the JWT subject**: a doken has no `sub`; compare the vuid (AP-66)
 - **Deploying without compiling locally**: `VmHost.CompileFailed` costs an operator approval (AP-67)
@@ -1203,11 +1222,15 @@ Contract errors propagate to the client as strings:
 | `PolicyDecision.Deny("message")` | Contract explicitly denied |
 | `BadPolicy.ForbiddenCall:{target}` | Contract used a blocked namespace |
 | `BadPolicy.EntryTypeNotFound` | Class `Contract` not found or doesn't implement `IAccessPolicy` |
-| `BadPolicy.BudgetExceeded` | Gas limit exceeded |
-| `VmHost.Timeout` | Contract took too long |
-| `OutOfGasException` | Gas exhausted mid-execution |
+| `BadPolicy.BudgetExceeded:Methods/Instructions` | The contract exceeds an IL size budget. Not a gas error |
+| `BadPolicy.Interface: ...` / `IlVetter.Failed: ...` | Vetting rejected the assembly (lambda, static constructor, wrong interface) |
+| `PolicyParam.Missing: ...` / `PolicyParam.Validation: ...` | A `[PolicyParam]` did not bind — check the type is one of `string`, `int`, `bool`, `BigInteger`, `byte[]` |
+| `VmHost.Timeout` | Contract took too long (about 10 s wall clock) |
+| `Policy.Throw: Out of gas` | SDK-call gas exhausted mid-execution |
+| `Forseti policy denied (<stages>): <err> (gas: N)` | How a contract's own denial arrives at the client |
+| `Policy expired at <n>` | The policy carries an expiry and it has passed |
+| `Model does not have a policy passed with it` / `Policy supplied has not been signed` | No policy attached / attached without a signature. Two different omissions |
 | `VmHost.CompileFailed: ... error CS####` | Contract does not compile on the ORK. Compile locally first (L-17) |
-| `Unknown contract type ''` | Contract transport is missing the outer `"forseti"` level (L-09) |
 | `Model id '...' not found in registry` | `modelId` is not one of the nine built-ins and not `BasicCustom<...>` (L-11/L-13) |
 | `Policy refers to wrong contract. Expected 'X' but policy has 'Y'` | Compare X and Y: differ only in **case** → lowercase hex (L-14); differ entirely → contract edited after deploy (L-19) |
 | `Could not find specified policy version: 2` | Emitting the V2 layout. The ORKs are V3-only (L-12) |

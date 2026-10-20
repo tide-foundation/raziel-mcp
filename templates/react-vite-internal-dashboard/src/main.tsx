@@ -1,6 +1,6 @@
 import React from "react";
 import ReactDOM from "react-dom/client";
-import { TideCloakProvider } from "@tidecloak/react";
+import { TideCloakContextProvider } from "@tidecloak/react";
 import App from "./App";
 import tcConfig from "../public/tidecloak.json";
 
@@ -8,10 +8,10 @@ import tcConfig from "../public/tidecloak.json";
 // useDPoP goes inside the config object, not as a separate JSX prop (I-12).
 ReactDOM.createRoot(document.getElementById("root")!).render(
   <React.StrictMode>
-    <TideCloakProvider
+    <TideCloakContextProvider
       config={{ ...tcConfig, useDPoP: { mode: "strict", alg: "ES256" } }}
     >
       <App />
-    </TideCloakProvider>
+    </TideCloakContextProvider>
   </React.StrictMode>
 );

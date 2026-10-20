@@ -35,6 +35,9 @@ match_keywords:
   - pr signing
   - merge signing
   - sign commits
+  - sign git commits
+  - signing git commits
+  - git commits
   - sign merges
   - code signing service
   - enterprise commit signing
@@ -78,3 +81,6 @@ notes: >
   Ed25519 threshold signatures must be wrapped in SSH wire format for GitHub verification.
   Requires a GitHub App (or bot account) with the threshold Ed25519 public key registered as an SSH signing key.
   cosign and gitsign are NOT used — they target container images and local git signing respectively.
+
+# No built-in ORK contract covers signing; this scenario needs a custom contract (Tide team deploys).
+builtin_contract: none

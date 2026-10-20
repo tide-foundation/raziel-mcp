@@ -53,10 +53,5 @@ Forseti contracts use `[PolicyParam]` attributes for automatic parameter binding
 | `BasicCustomRequest` | `BasicCustom<Name>:BasicCustom<Version>` | Data to sign is known at request creation time and does not change |
 | `DynamicCustomRequest` | `DynamicCustom<Name>:DynamicCustom<Version>` | Data to sign may change between authorization and signing |
 
-## Contract transport structure [OBSERVED_PATTERN]
 
-PolicySignRequest draft contains:
-1. Policy bytes (serialized `Policy` object)
-2. Contract transport: `[contractType("forseti"), [emptyBytes, [sourceCode, entryType("Contract")]]]`
-
-This is constructed via `TideMemory.CreateFromArray` nesting. The contract ID is the SHA-512 hash of the source code.
+> _Withheld: uploading a custom Forseti contract is done by the Tide team (experimental, test networks only). Do not reconstruct this step._

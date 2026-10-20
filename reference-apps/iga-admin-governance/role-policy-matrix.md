@@ -27,7 +27,7 @@ Apps that embed the governance panel alongside user-facing features may add thei
 
 3. **All admin mutations in an IGA-enabled realm create draft change requests.** These must be signed and committed before they take effect. The governance panel is the tool for this.
 
-4. **Change-set types are fixed by TideCloak.** The app does not define new types. Known types: `USER`, `USER_ROLE`, `COMPOSITE_ROLE`, `CLIENT`, `GROUP_ROLE`, `GROUP_MEMBERSHIP`, `GROUP_MOVE`, `REALM_LICENSE`, `POLICY`, `DEFAULT_ROLES`, `REALM_SETTINGS`, `RAGNAROK`.
+4. **Change-request types are fixed by TideCloak.** The app does not define new ones. Each request carries an `entityType` (`USER`, `REALM`, `ROLE`, `GROUP`, `CLIENT`, `CLIENT_SCOPE`, `COMPOSITE_ROLE`, `PROTOCOL_MAPPER`, …) and a granular `actionType` (`CREATE_USER`, `GRANT_ROLES`, `SET_REALM_CONFIG`, `INSTALL_LICENSE`, `REGEN_ADMIN_POLICY`, `OFFBOARD_REALM`, …). Read both from the API; see `playbooks/setup-iga-admin-panel.md`. The older single-word list (`USER_ROLE`, `REALM_LICENSE`, `RAGNAROK`, …) belonged to the removed `change-set` surface; offboarding is now `OFFBOARD_REALM` on entity type `REALM`.
 
 5. **`DEFAULT_ROLES` and role creation are ACTIVE (auto-approved).** They appear in the change-set list for audit but do not require sign/commit. All other types require quorum approval.
 
@@ -44,7 +44,6 @@ The governance panel may optionally include policy management. These are NOT req
 | Realm policy | `GET/POST/DELETE /tide-admin/realm-policy/*` | View and manage the realm-level Forseti policy | Lifecycle: none → pending → committed. Requires sign/commit flow. |
 | Policy templates | `GET/POST/PUT/DELETE /tide-admin/policy-templates/*` | CRUD for reusable policy templates | Templates are building blocks. Not policies themselves. |
 | SSH/role policies | `GET/PUT/DELETE /tide-admin/ssh-policies` | Attach Forseti contracts to specific roles | Despite the name, not SSH-specific. Sets approval type, execution type, threshold. |
-| Forseti contracts | `GET/PUT /tide-admin/forseti-contracts` | List and register Forseti contracts | Contracts are stored server-side. SDK signing flow deploys them to ORKs. |
 | Role policies view | `GET /tide-admin/role-policies` | Combined view of all role-policy attachments | Read-only summary. Useful for auditing which roles have policies attached. |
 
 ---
@@ -58,7 +57,7 @@ Current `/iga/change-requests/...` surface (replaces legacy `/tide-admin/change-
 | List | `/iga/change-requests?status=PENDING` | GET | — | Objects keyed by `id`; `status` = PENDING/APPROVED/DENIED/CANCELLED. Derive counts from the list. |
 | Get one | `/iga/change-requests/{id}` | GET | — | Full CR (`entityType`, `readyToCommit`, `threshold`, `dependsOn`) |
 | Authorize (approve) | `/iga/change-requests/{id}/authorize` | POST | `application/json` | Body `{}` optional. 409 = four-eyes re-sign |
-| Bulk authorize | `/iga/change-requests/bulk-authorize` | POST | `application/json` | `{ "actionTypeIn": ["CREATE","DELETE"], "limit": 100 }`; 429 if a bulk run is active |
+| Bulk authorize | `/iga/change-requests/bulk-authorize` | POST | `application/json` | `{ "actionTypeIn": ["ADOPT_ROLE","CREATE_USER"], "limit": 100 }` (granular action types only) or `{ "crIdIn": [...] }`; 429 if a bulk run is active |
 | Commit | `/iga/change-requests/{id}/commit` | POST | — | 412 if under threshold / unmet dependency |
 | Deny (reject) | `/iga/change-requests/{id}/deny` | POST | — | → 204 |
 | Enclave sign (Tide MultiAdmin) | `/iga/change-requests/{id}/approval-model` | GET/POST | `application/json` | Two-phase: GET challenge → POST `{ requestModel }` |

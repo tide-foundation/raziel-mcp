@@ -2,6 +2,13 @@
 
 ---
 
+> **⛔ Before Phase 1 — ask the user, and wait (AP-90).** Setting up the realm licenses it to an
+> email address under Tide's Terms & Conditions (**https://tide.org/legal**). Ask: (1) *which email
+> address should manage your Tide licence?* and (2) *do you agree to the Terms & Conditions at that
+> link? (yes/no)*. Never invent the email, never accept for them, and stop if they decline. Pass the
+> answers as `TIDE_LICENSE_EMAIL` and `TIDE_TERMS_ACCEPTED=yes`. Any init script you write must exit
+> non-zero without both — the block to paste is in canon `tidecloak-bootstrap`.
+
 ## Phase 1: TideCloak Infrastructure
 
 1. Start TideCloak container:
@@ -14,7 +21,7 @@
    ```bash
    TOKEN=$(curl -s -X POST "http://localhost:8080/realms/master/protocol/openid-connect/token" \
      -H "Content-Type: application/x-www-form-urlencoded" \
-     -d "grant_type=password&client_id=admin-cli&username=admin&password=password" \
+     -d "grant_type=password&client_id=admin-cli" --data-urlencode "username=$KC_BOOTSTRAP_ADMIN_USERNAME" --data-urlencode "password=$KC_BOOTSTRAP_ADMIN_PASSWORD" \
      | jq -r '.access_token')
    ```
 
@@ -38,7 +45,7 @@
    curl -s -X POST "http://localhost:8080/admin/realms/$REALM/vendorResources/setUpTideRealm" \
      -H "Authorization: Bearer $TOKEN" \
      -H "Content-Type: application/x-www-form-urlencoded" \
-     -d "email=admin@example.com"
+     -d "email=$TIDE_LICENSE_EMAIL"
    ```
    **Content-Type**: `application/x-www-form-urlencoded`, NOT JSON.
 
@@ -61,12 +68,16 @@
 
 6. Approve/commit initial change requests (current `/iga/change-requests/...` surface; see `canon/iga-change-requests-api.md`):
    ```bash
-   # Authorize all pending, then commit ready ones (FirstAdmin bootstrap signs server-side)
-   curl -s -X POST "http://localhost:8080/admin/realms/$REALM/iga/change-requests/bulk-authorize" \
-     -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
-     -d '{"actionTypeIn":["CREATE","DELETE"],"limit":100}'
+   # Authorize each pending request, then commit the ready ones (FirstAdmin bootstrap signs
+   # server-side). NOT bulk-authorize with actionTypeIn ["CREATE","DELETE"]: those are not real
+   # action types, so that call authorizes ZERO requests and still returns 200.
    for id in $(curl -s "http://localhost:8080/admin/realms/$REALM/iga/change-requests?status=PENDING" \
-       -H "Authorization: Bearer $TOKEN" | jq -r '.[] | select(.readyToCommit==true) | .id'); do
+       -H "Authorization: Bearer $TOKEN" | jq -r '.[] | select(.actionType | IN("DISABLE_IGA","DELETE_REALM","OFFBOARD_REALM") | not) | .id'); do
+     curl -s -X POST "http://localhost:8080/admin/realms/$REALM/iga/change-requests/$id/authorize" \
+       -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" -d '{}' > /dev/null
+   done
+   for id in $(curl -s "http://localhost:8080/admin/realms/$REALM/iga/change-requests?status=PENDING" \
+       -H "Authorization: Bearer $TOKEN" | jq -r '.[] | select(.actionType | IN("DISABLE_IGA","DELETE_REALM","OFFBOARD_REALM") | not) | select(.readyToCommit==true) | .id'); do
      curl -s -X POST "http://localhost:8080/admin/realms/$REALM/iga/change-requests/$id/commit" \
        -H "Authorization: Bearer $TOKEN"
    done

@@ -2,10 +2,17 @@
 
 All steps must complete before the service can sign merge commits. Order matters.
 
+> **⛔ Before Phase 1 — ask the user, and wait (AP-90).** Setting up the realm licenses it to an
+> email address under Tide's Terms & Conditions (**https://tide.org/legal**). Ask: (1) *which email
+> address should manage your Tide licence?* and (2) *do you agree to the Terms & Conditions at that
+> link? (yes/no)*. Never invent the email, never accept for them, and stop if they decline. Pass the
+> answers as `TIDE_LICENSE_EMAIL` and `TIDE_TERMS_ACCEPTED=yes`. Any init script you write must exit
+> non-zero without both — the block to paste is in canon `tidecloak-bootstrap`.
+
 ## Phase 1: TideCloak infrastructure
 
 1. **Start TideCloak container**
-   - Use `tideorg/tidecloak-dev:latest` — despite the `-dev` suffix this IS the production image and the only supported one. No ORK/threshold env vars needed or wanted.
+   - Use `tideorg/tidecloak-dev:latest` — it is wired to the production Tide network (ork1, 14-of-20), though it is a development build of the server and the only supported one. No ORK/threshold env vars needed or wanted.
    - Staging requires `SYSTEM_HOME_ORK`, `USER_HOME_ORK`, `THRESHOLD_T`, `THRESHOLD_N`.
    - Wait for readiness: `curl http://localhost:8080/health/ready` returns 200.
 
@@ -21,7 +28,7 @@ All steps must complete before the service can sign merge commits. Order matters
 
 4. **License the realm**
    - `POST /admin/realms/{realm}/vendorResources/setUpTideRealm` with admin email.
-   - Content-Type: `application/x-www-form-urlencoded`. Body: `email=admin@example.com`.
+   - Content-Type: `application/x-www-form-urlencoded`. Body: `email=$TIDE_LICENSE_EMAIL` — the address the user gave (AP-90).
 
 5. **Enable IGA**
    - `POST /admin/realms/{realm}/tide-admin/toggle-iga` with **form-encoded** `isIGAEnabled=true`.
@@ -39,7 +46,7 @@ All steps must complete before the service can sign merge commits. Order matters
 
 6. **Approve initial change requests** (current `/iga/change-requests/...` surface — see `canon/iga-change-requests-api.md`)
    - List: `GET /admin/realms/{realm}/iga/change-requests?status=PENDING` (objects keyed by `id`).
-   - Approve: `POST .../iga/change-requests/bulk-authorize` (`{"actionTypeIn":["CREATE","DELETE"],"limit":100}`), then `POST .../iga/change-requests/{id}/commit` for each `readyToCommit` CR. FirstAdmin bootstrap signs server-side.
+   - Approve per id: `POST .../iga/change-requests/{id}/authorize` (body `{}`) for each pending request, skipping `DISABLE_IGA`, `DELETE_REALM` and `OFFBOARD_REALM`, then `POST .../iga/change-requests/{id}/commit` for each `readyToCommit` CR. FirstAdmin bootstrap signs server-side.
 
 ## Phase 4: Admin user setup
 
@@ -104,7 +111,6 @@ All steps must complete before the service can sign merge commits. Order matters
       - Forseti contract: `GitCommitSigningPolicy` (see role-policy-matrix.md)
       - Parameters: `Role` = `git-sign:main`, `Resource` = client ID, `threshold` = 2
       - Model ID: `BasicCustom<GitSign>:BasicCustom<1>`
-      - Contract transport: source + entry type
     - PolicyApproval must be signed and committed so `signed_policy_data` is populated.
     - Repeat for each branch that needs a separate signing policy.
 

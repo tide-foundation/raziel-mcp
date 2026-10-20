@@ -4,8 +4,25 @@ Compile a Forseti contract locally, in about a second, before deploying it.
 
 ## The `ctx.Data` question
 
-**The real type is not settled, so this harness compiles your contract against BOTH candidates and
-requires it to pass under each.** That is not caution for its own sake — the pack has already shipped
+**Settled 2026-10-07: the ORK source declares `public byte[]? Data`**
+(`Ork.Forseti.Sdk/Contracts/IAccessPolicy.cs`), which matches the positive evidence below. The harness
+still compiles your contract against BOTH candidates and requires it to pass under each, because a
+contract written in the `ReadOnlyMemory` style is the one that works on any ORK build.
+
+> **What this harness does NOT catch.** It checks that your contract compiles. The stubs are wider
+> than the real SDK in places, so a PASS here is not a PASS on the ORK. Known gaps, from ORK `main`:
+>
+> - **Lambdas, method groups and static field initialisers** compile here and are rejected by the
+>   ORK's IL vetter. Write loops; use `const`.
+> - **`ExecutorContext` / `ApproversContext` have no `RequestId`** on ORK `main`; the stubs give
+>   them one.
+> - **`Utils.Hash`, `Utils.ToHexString`, `Utils.FromHexString`** are in the stubs but not in
+>   `Cryptide.Tools.Utils` on ORK `main`.
+> - **Unimplemented stages default to Allow here and to Deny on the ORK.**
+> - A contract over **256 KB** of source compiles here and is refused by the ORK.
+
+The original reasoning follows. **The real type was not settled when this was written, so this
+harness compiles your contract against BOTH candidates and requires it to pass under each.** That is not caution for its own sake — the pack has already shipped
 the wrong single answer once and it rejected a contract with real threshold signatures on record.
 
 The evidence is asymmetric, and only one direction counts:

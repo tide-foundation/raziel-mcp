@@ -360,7 +360,7 @@ curl -X POST "${TIDECLOAK_URL}/admin/realms/${REALM}/iga/change-requests/${CR_ID
 curl -X POST "${TIDECLOAK_URL}/admin/realms/${REALM}/iga/change-requests/${CR_ID}/commit" \
   -H "Authorization: Bearer ${ADMIN_TOKEN}"
 # Batch approve during bootstrap:
-#   POST .../iga/change-requests/bulk-authorize  -d '{"actionTypeIn":["CREATE","DELETE"],"limit":100}'
+#   POST .../iga/change-requests/{id}/authorize  -d '{}'      # per pending id; see canon/iga-change-requests-api.md
 ```
 
 **Common confusion**: IGA docs read as "approval workflow" without emphasizing threshold signatures. This is NOT procedural approval; it is cryptographic enforcement.

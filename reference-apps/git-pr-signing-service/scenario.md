@@ -6,6 +6,18 @@ A server-side service that threshold-signs git merge commits after admin approva
 
 No single entity holds the signing key. The key exists only as threshold shares across independent ORKs.
 
+## Built-in contract: does not cover signing
+
+The ORK's built-in `RelationshipAttestation:1` contract (ORK `main`; VERIFIED from source `c69fc4f6`:
+it throws unless the policy names only `PolicyEnabledEncryption:1` / `PolicyEnabledDecryption:1`) only allows **encryption and decryption**
+of tagged data for a named user, group or role. It refuses every other request, so it cannot authorise a commit or merge signature.
+
+This scenario therefore needs a **custom** contract. You can write it and compile-check it; putting
+it into service is done by the Tide team (info@tide.org or Discord: https://discord.gg/XBMd9ny2q5). Say this to the user before the build starts.
+
+If what the user actually needs is "a user, group or role may read one record's encrypted data", that is
+`relationship-attestation`, which needs no contract written or deployed.
+
 ## When to use this scenario
 
 Use when the user describes:

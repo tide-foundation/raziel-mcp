@@ -1,6 +1,6 @@
 # Configure E2EE Roles and Policies
 
-Create encryption/decryption realm roles, assign them to default users, and approve the resulting change requests. Optionally deploy a Forseti contract for shared (policy-governed) encryption.
+Create encryption/decryption realm roles, assign them to default users, and approve the resulting change requests. For shared (policy-governed) encryption, use the ORK's built-in `RelationshipAttestation:1` contract: create realm roles `_tide_encryptor` and `_tide_decryptor` (names fixed) and sign one policy per record (see `setup-forseti-e2ee`, "Start here"). Deploy a custom Forseti contract only when the built-in one cannot express the rule.
 
 This is realm-level preparation. App-level E2EE wiring (`doEncrypt`/`doDecrypt`) is covered in playbook `setup-forseti-e2ee` and skill `tide-rbac-and-e2ee`.
 
@@ -139,12 +139,10 @@ Add all three to the default composite role.
 
 ### Step 2: Forseti contract deployment (browser signing flow only)
 
-**There is no REST API for deploying Forseti contracts.** The endpoint `PUT /tide-admin/forseti-contracts` does not exist on the dev or staging image (returns 404/405). VERIFIED (learning-batch-003, L-06; session-001, RB-010).
 
 The contract is deployed as part of the PolicySignRequest flow in the admin's browser:
 1. Embed the contract C# source code in the admin page
 2. Compute the SHA-512 hash client-side as the `contractId`
-3. Use `policyRequest.addForsetiContractToUpload(contractSource)` during the signing flow
 
 The contract source code is included in the signing request and uploaded to the ORKs automatically. No prior deployment step is needed.
 
@@ -192,5 +190,5 @@ Both policies must be signed before the group is usable. See playbook `setup-for
 - **Do not** assign decrypt roles to all users by default for shared data. Encrypt roles can be broad; decrypt roles are your access control boundary.
 - **Do not** encrypt everything with the same tag. Different sensitivity levels should use different tags mapped to different roles.
 - **Do not** skip tags on encrypted fields. Tags define who can decrypt.
-- **Do not** use the built-in `GenericRealmAccessThresholdRole` contract for production. Deploy a custom Forseti contract.
+- **Do not** use the built-in `GenericRealmAccessThresholdRole` contract for encrypted-data access: it checks approvers only. Use the built-in `RelationshipAttestation:1`, and a custom Forseti contract only when that cannot express the rule.
 - **Do not** use `_tide_*` roles in your Forseti contract's `ValidateExecutor`. Those are voucher gates only. Use a regular realm role for access control.

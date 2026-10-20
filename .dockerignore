@@ -1,0 +1,14 @@
+# Keep build output, local state and private workshop material out of the image build context.
+.git
+**/node_modules
+**/dist
+**/obj
+**/bin
+**/.next
+**/__pycache__
+**/.env
+**/.env.local
+sources
+notes
+evals
+vscode-extension

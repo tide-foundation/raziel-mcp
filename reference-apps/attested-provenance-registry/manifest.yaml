@@ -31,9 +31,12 @@ core_patterns:
 
 match_keywords:
   - provenance
-  - attestation
-  - attest
-  - attested
+  # The bare words attest / attestation / attested belong to the general `attestation` scenario
+  # (facts about people). This one needs a content, authorship, time or third-party signal.
+  - attested provenance
+  - attest authorship
+  - attest that i created
+  - content attestation
   - timestamped claim
   - trusted timestamp
   - timestamping
@@ -164,3 +167,6 @@ notes: >
   Reference implementation: `~/music-license` (Origin) — Next.js 16, Prisma/Postgres,
   171 passing tests, typecheck clean. ORK acceptance of the deployed policy is
   REQUIRES_RUNTIME_VALIDATION; see reference-app-notes in scenario.md.
+
+# No built-in ORK contract covers signing; this scenario needs a custom contract (Tide team deploys).
+builtin_contract: none

@@ -26,7 +26,6 @@ Grep this file for your error text before reading anything else.
 | `KeyId is not a string` | Policy constructor: `keyId` missing | AP-60 — `keyId` IS the vendorId |
 | `Params is null` | Policy constructor: `params` missing | AP-60 / AP-54 — `[key, value]` pairs |
 | `object is not iterable` | `params` passed as a plain object | AP-54 |
-| `Unknown contract type ''` | Contract transport built with 2 levels, not 3 | AP-64 — outer `"forseti"` wrapper |
 | `Model id '...' not found in registry` | `modelId` not one of the nine built-ins, not `BasicCustom<...>` | AP-65 |
 | `Could not find specified policy version: 2` | Emitting the V2 policy layout | The ORKs are **V3-only**. Do not subclass `Policy` to emit V2 (GAP-070 WITHDRAWN) |
 | `Policy refers to wrong contract. Expected 'X' but policy has 'Y'` | Compare X and Y | Differ only in **case** → lowercase hex, `.toUpperCase()`. Differ entirely → contract edited after deploy, redeploy the policy |
@@ -49,6 +48,7 @@ Grep this file for your error text before reading anything else.
 | A pinned `sha256-…` appears in the CSP error and **matches your relay file** | Not a fault in the file — that is the hash the embedder **expects**. You have the **right file at the wrong address** | Fix the rewrite/headers. Do **not** go hunting a stale asset (GAP-068 is the wrong destination here) |
 | Enclave refuses to frame your origin, after you "hardened" CSP | You added `frame-ancestors 'self'`. The SWE frames your own origin for silent SSO and the approval popup | Canon specifies **exactly** `frame-src 'self' *` — do not add `frame-ancestors` |
 | The DPoP **popup appears every time** | Symptom, not a setting. The relay runs in an **iframe** first; when that path fails (e.g. it 404s) the SDK falls back to a popup for first-party context | No CSP setting suppresses it. Fix the iframe path (rewrite + headers); then the popup appears only when the browser genuinely blocks third-party storage |
+| Approve / sign / an enclave action silently does nothing; console `Error opening enclave of type: Popup`, or an amber "Pop-ups are currently blocked" bar | The enclave iframe failed and the browser blocked the pop-up fallback | T-27 — allow pop-ups; optionally `registerPopupErrorCallback` (`@tidecloak/js` `0.14.41-staging`+, not in `latest` `0.14.34`) |
 | `Failed to construct 'URL': Invalid URL` / `TypeError: Invalid URL` | **`secureFetch` was given a RELATIVE url.** It derives the DPoP proof's `htu` with a bare `new URL()` and no base (`tidecloak.js:626-627`), so it throws before any request. Reads like a bad adapter config; it is not | AP-74 — `secureFetch(new URL(path, window.location.origin).href)` |
 | 401 on your **own** API routes, with no DPoP error detail | App called its own endpoints with bare `fetch` in a DPoP realm — no `Authorization`, no proof | AP-73 — thread `secureFetch` from `useTideCloak()` into helper modules too |
 | `toggle-iga` returned `{"enabled":true}` when you asked for `false` | The endpoint reads the FORM param `isIGAEnabled`; a JSON body is parsed by nothing and **fails open to true** | Form-encode and assert the response. `tidecloak-bootstrap.md` → toggle-iga |
@@ -860,7 +860,7 @@ echo $TOKEN | base64 -d | jq '.exp - .iat'
 
 **Possible Causes**:
 1. Endpoint not available (wrong TideCloak version)
-2. Missing request body fields (email, terms)
+2. Missing `email` — a blank email does not error, it silently switches to paid checkout and the body is `NEED_PAYMENT` (still HTTP 200). There is no `terms` field.
 3. IGA toggle fails
 4. Protocol mappers not created
 5. `tidebrowser` flow not created
@@ -877,7 +877,7 @@ curl "${TIDECLOAK_URL}/admin/realms/${REALM}/vendorResources/setUpTideRealm" \
 curl -X POST "${TIDECLOAK_URL}/admin/realms/${REALM}/vendorResources/setUpTideRealm" \
   -H "Authorization: Bearer ${ADMIN_TOKEN}" \
   -H "Content-Type: application/x-www-form-urlencoded" \
-  -d "email=admin@example.com&isRagnarokEnabled=true"
+  --data-urlencode "email=$TIDE_LICENSE_EMAIL" -d "isRagnarokEnabled=true"   # the user's own address (AP-90)
 
 # 3. Check realm configuration after setup
 curl "${TIDECLOAK_URL}/admin/realms/${REALM}" | jq '.browserFlow, .defaultRoles'
@@ -1069,12 +1069,10 @@ jq '
 
 1. Policy constructor shape — missing `version`/`contractId`/`modelId`/`keyId`/`params`, or the **plural** `modelIds` key. Throws a **bare string**, sequentially, one per wrong field (AP-60)
 2. `modelId` not one of the nine registered models and not `BasicCustom<Name>:BasicCustom<Version>` (AP-65)
-3. Contract transport built with **two** nested levels instead of three — missing the outer `"forseti"` wrapper (AP-64)
 4. `contractId` is lowercase hex; the ORKs compare case-sensitively. `.toUpperCase()` at the point of computation (L-14)
 5. `contractId` no longer matches the contract source — the contract was edited after deployment, even a comment (L-19)
 6. Contract does not compile on the ORK — compile locally first (AP-67)
 7. Destructuring `{ ApprovalType, ExecutionType }` from `Models.Policy` instead of `Models` (`Models.Policy` is the Policy class, not a namespace)
-8. Building the request manually with `BaseTideRequest` + `TideMemory` instead of using `PolicySignRequest.New(policy)` from `heimdall-tide` — which also builds the contract transport correctly
 9. Not decoding `createTideRequest` result via `BaseTideRequest.decode()` before passing to approval
 10. Calling `addPolicy(policy.toBytes())` during `BaseTideRequest` construction (attaching unsigned policy)
 11. Using `modelId: "any"`. For E2EE use `["PolicyEnabledEncryption:1", "PolicyEnabledDecryption:1"]`; for a custom contract use the `BasicCustom<...>` form
@@ -1141,7 +1139,7 @@ request.setDraft(TideMemory.CreateFromArray([policy.toBytes(), contractBytes]));
 // ✅ CORRECT — use PolicySignRequest.New from heimdall-tide
 const { PolicySignRequest } = await import("heimdall-tide");
 const policyRequest = PolicySignRequest.New(policy);
-policyRequest.addForsetiContractToUpload(CONTRACT_SOURCE);
+// (withheld: the contract is uploaded by the Tide team, not from here)
 policyRequest.setCustomExpiry(604800);
 ```
 
@@ -1218,7 +1216,7 @@ const policy = new Policy({
 });
 
 const policyRequest = PolicySignRequest.New(policy);
-policyRequest.addForsetiContractToUpload(CONTRACT_SOURCE);
+// (withheld: the contract is uploaded by the Tide team, not from here)
 const initialized = BaseTideRequest.decode(
   await tc.createTideRequest(policyRequest.encode())
 );
@@ -1850,9 +1848,64 @@ grep -q "window.opener" public/tide_dpop_auth.html || echo "STALE COPY — repla
 **both** copies and the one at its repo root is the stale one. Its `client/public/` copy is the good
 one. Take it from the MCP (`tide_dpop_asset`) or a pack template instead.
 
-The file is not shipped in the `@tidecloak/*` packages, so if you have the known-good copy and it
-still fails after an SDK bump, ask the Tide team for the build matching your SDK version.
+`@tidecloak/js` ships the file only from 0.14.34 (`node_modules/@tidecloak/js/tide_dpop_auth.html`).
+If you have the known-good copy and it still fails after an SDK bump, re-copy it from the installed
+SDK; if that copy also fails, ask the Tide team for the build matching your SDK version.
 
 **Do not "fix" this by removing `useDPoP` alone.** The server still demands proofs and login stays broken. Disabling DPoP requires flipping the client attribute to `false` as well, which on an IGA realm is a change request — and after the realm goes multiAdmin, a human enclave approval.
 
 See `playbooks/add-auth-nextjs-fresh.md` (Step 4) for the full configuration, and I-12.
+
+---
+
+## T-27: Enclave Pop-up Blocked — Signing or Approval Silently Stalls
+
+**Symptoms:**
+- An action that needs the Tide enclave after login does nothing: approving a change request, signing
+  a policy (for example a `RelationshipAttestation:1` grant), or a Forseti signing request.
+- Console: `Error opening enclave of type: Popup` (heimdall `RequestEnclave`).
+- With `@tidecloak/js` `0.14.41-staging` or later: a one-line amber notice across the top of the page —
+  *"Pop-ups are currently blocked. For advanced security features, please allow pop-ups for this site."*
+  — linking to `https://tide.org/allow-popups`.
+
+**Cause:** heimdall opens the enclave as a **hidden iframe** first. When that fails (third-party
+storage blocked, CSP, a framing error), it falls back to a **pop-up**. Browsers block pop-ups that are
+not opened from a user gesture. The more the app awaits between the click and the enclave (network
+calls, building the request), the more likely the click's activation has expired. VERIFIED (heimdall
+source) for the trigger; the timing effect is INFERRED.
+
+**Where it is handled (VERIFIED from source and the published packages, 2026-10-16):**
+- heimdall (tide-foundation/heimdall#102, merged): `RequestEnclave.init({ ..., popupBlockedCallback })`.
+  It fires when the iframe failed and the pop-up attempt failed too. Before this it only logged.
+- tidecloak-js `main` (PR #158, `121fa5e`, merged 2026-10-15): passes `popupBlockedCallback` into both
+  `initRequestEnclave` and `initApprovalEnclave`. The default handler shows the notice above, in the
+  browser's top layer (`popover="manual"`, z-index max) so app modals cannot cover it. It is
+  dismissable and shown once (`#tide-popup-blocked`).
+- `tidecloak.registerPopupErrorCallback(cb)` **replaces** the default notice entirely (declared in
+  `dist/types/lib/tidecloak.d.ts`).
+- **Published:** `@tidecloak/js` and `heimdall-tide` **`0.14.41-staging`** (npm dist-tag `staging`)
+  contain it. **`latest` (`0.14.34`) does not**: there the block is only logged and the action stalls
+  silently.
+
+**Fix:**
+1. Tell the user to allow pop-ups for the app's origin; the notice links to the help page.
+2. To show your own UI, register a callback. `IAMService` has no passthrough, so go through the core
+   instance. Register after init resolves; `_tc` is null before that:
+   ```js
+   await IAMService.initIAM(config);
+   IAMService._tc?.registerPopupErrorCallback?.(() => showMyAllowPopupsBanner());
+   ```
+   The optional chaining keeps this safe on `0.14.34`, which lacks the feature. The callback is read
+   when the block happens, so registering late is fine. A block during init itself still gets the
+   default notice.
+3. Keep the action that needs the enclave **inside the click handler**, with as little awaiting
+   before it as possible. Do any preparation (fetching the admin policy, building the request) before
+   the click. Never chain an enclave action automatically after other awaited work.
+
+**Verification:** with pop-ups blocked and the iframe path failing, the notice (or your callback)
+appears instead of a silent stall. After allowing pop-ups, the action completes.
+
+**Do not** treat the notice as a fault to suppress with an empty callback. A no-op
+`registerPopupErrorCallback(() => {})` brings back the silent stall this feature exists to remove.
+Under a strict CSP without `style-src 'unsafe-inline'`, the notice's inline `style=""` attributes
+are blocked: it still appears and works, just unstyled. INFERRED.

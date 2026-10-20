@@ -40,14 +40,20 @@ This scenario does not require app-specific roles beyond the Tide bootstrap role
 
 ## Shared Encryption Variant
 
-If the app requires **Tide-native shared encryption** (recipients decrypt via `IAMService.doDecrypt` with policy bytes, not external crypto), the self-encryption path above is insufficient. You need:
+If the app requires **Tide-native shared encryption** (recipients decrypt via `IAMService.doDecrypt`
+with policy bytes, not external crypto), use the ORK's built-in `RelationshipAttestation:1`
+(`relationship-attestation`). No contract is written or deployed. You need:
 
-1. **Additional roles**: A Forseti contract role (e.g., `shared-data-access`) that the contract checks for authorization
-2. **Voucher gate roles**: `_tide_<tag>.selfencrypt` / `_tide_<tag>.selfdecrypt` still needed for the voucher system
-3. **Forseti contract**: Deployed via `PolicySignRequest.addForsetiContractToUpload()` during the admin signing ceremony
-4. **Playbook**: Add `setup-forseti-e2ee` to the playbook sequence BEFORE `add-rbac-nextjs`
+1. **Contract roles**: realm roles `_tide_encryptor` (to encrypt) and `_tide_decryptor` (to
+   decrypt). Names fixed by the contract.
+2. **One policy per room** (or conversation), signed once by a realm admin in the enclave:
+   `subjectType` `Group` + the room's full group path (or `Role`), `assignmentId` = room id, which is
+   also the only tag on what is encrypted.
+3. **The `groups` claim** on the client for `Group` subjects (name mandated; the pack's realm
+   templates ship the mapper before IGA).
 
-See `setup-forseti-e2ee` playbook for the complete Forseti policy signing flow. VERIFIED (LEARNINGS-batch-009 L-03, L-06).
+VERIFIED from the contract source (ORK `main`, `c69fc4f6`). The room-key design itself is INFERRED:
+it has not been built or run.
 
 ---
 

@@ -2,9 +2,19 @@
 // Runs the protocol smoke tests + content-consistency checks and exits non-zero on any failure.
 import { run as smoke } from "./smoke.test.mjs";
 import { run as content } from "./content.test.mjs";
+import { run_ as scaffold } from "./scaffold.test.mjs";
+import { run as restricted } from "./restricted.test.mjs";
+import { run as relationship } from "./relationship.test.mjs";
+import { existsSync } from "node:fs";
+
+// The attestation suite checks a custom Forseti contract. That material is not self-service, so
+// scripts/redact-public.mjs removes the suite from the public tree along with what it tests.
+const suites = [smoke, content, scaffold];
+if (existsSync(new URL("./attestation.test.mjs", import.meta.url))) suites.push((await import("./attestation.test.mjs")).run);
+suites.push(restricted, relationship);
 
 const results = [];
-for (const suite of [smoke, content]) {
+for (const suite of suites) {
   try {
     results.push(...(await suite()));
   } catch (e) {

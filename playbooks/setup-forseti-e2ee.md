@@ -6,10 +6,44 @@ Implement end-to-end encrypted data sharing using Tide's Forseti policy contract
 
 ---
 
+## Start here: the built-in contract (default)
+
+Before writing a contract, check whether the ORK's built-in `RelationshipAttestation:1` covers the
+need. It is on ORK `main` (VERIFIED from source `c69fc4f6`, 2026-10-16) and needs **nothing written,
+compiled or deployed**. It covers "this user, this group, or holders of this role may encrypt and/or
+decrypt the data of this one record":
+
+| Policy field | Value |
+|---|---|
+| `contractId` | `RelationshipAttestation:1` |
+| `modelId` | `["PolicyEnabledEncryption:1", "PolicyEnabledDecryption:1"]` (nothing else is accepted) |
+| `executionType` | `PRIVATE` (required) |
+| `subjectType` / `subjectId` | `User` + the grantee's `tideuserkey`; `Group` + the full path from the `groups` claim; `Role` + a realm role, or a client role with `clientId` |
+| `assignmentId` | the record id. It is also the **only** tag on every encrypted item |
+| `roles` | JSON string array: `["_tide_encryptor","_tide_decryptor"]`, or just one of them |
+
+The caller needs realm role `_tide_encryptor` to encrypt or `_tide_decryptor` to decrypt (names
+fixed), the policy's `roles` must list it, and the caller must match the subject. A realm admin signs
+the policy once in the enclave (`PolicySignRequest` with **no** contract attached). Working code:
+`templates/relationship-attestation/relationship.ts`. Scenario: `relationship-attestation`.
+
+Use the rest of this playbook only for rules the built-in contract cannot express (grants made by
+someone other than a realm admin, or checks on the data's content). Those contracts are deployed by
+the Tide team.
+
+---
+
+
+> ⚠️ **Never proxy IGA approvals through your app server.** `approve` credits the **caller**, so a
+> server-side proxy records every human signature under its own service account — and because filing
+> a CR auto-authorises the filer, the tally sticks below quorum forever. Send approvals to TideCloak
+> **from the admin's browser with the admin's own token**. Measured; see
+> `canon/iga-change-requests-api.md` and AP-89.
+
 ## When to Use
 
 - Encrypting data that multiple users must decrypt (shared secrets, messages, credentials)
-- Enforcing role-based access to encrypted data via Forseti contracts on the ORK network
+- Enforcing role-based access to encrypted data on the ORK network (built-in `RelationshipAttestation:1` first; a custom Forseti contract only when it cannot express the rule)
 - Building scoped group encryption (e.g., team vaults, org-level shared data)
 - Requiring threshold-governed operations with custom business rules
 
@@ -76,7 +110,6 @@ Read this before designing the setup flow — it determines how much of the cere
 | Step | Scriptable? | How |
 |---|---|---|
 | Author the contract (C#) | Yes | a file in your repo |
-| **Upload the contract** | **Yes** | `POST /admin/realms/{realm}/iga/forseti-contracts` (admin bearer, no enclave) |
 | Create the `_tide_*` voucher-gate roles + app roles | Yes | admin REST + change-request drain |
 | Compute `contractId` | Yes | SHA-512 of the source |
 | Construct the policy object | Yes | plain JSON |
@@ -245,37 +278,7 @@ public class Contract : IAccessPolicy
 
 ## Step 2: Compute the Contract Hash
 
-**The contract-upload REST API DOES exist — at the `/iga/` path, not `/tide-admin/`.**
-
-```bash
-POST /admin/realms/{realm}/iga/forseti-contracts
-Authorization: Bearer <admin token>
-{"contractCode": "<full C# source>", "name": "my-contract"}
-```
-
-Requires `manage-realm`. **No enclave, no browser** — so contract upload is fully scriptable. It upserts, deduplicating within the realm by SHA-256 of `contractCode`, and returns the stored contract. Max source length 1,048,576 chars. Companion endpoints: `GET /iga/forseti-contracts`, `GET /iga/forseti-contracts/{id}`, `DELETE /iga/forseti-contracts/{id}`.
-
-> Earlier pack revisions said "there is no REST API for deploying Forseti contracts", based on `PUT`/`POST /tide-admin/forseti-contracts` returning 404/405. That legacy path is indeed gone — the surface moved to `/iga/`, the same migration the change-request API went through. CORRECTED 2026-08-07 against `iga-core` source (`IgaAdminResource.upsertForsetiContract`, `IgaForsetiContractService.upsert`).
-
-Uploading via `PolicySignRequest.addForsetiContractToUpload(contractSource)` during the browser signing flow (Step 4) still works and is what the enclave path uses. Pre-uploading via REST is the seamless option: it gets the source into the realm's contract library without a human, so the only remaining human step is the policy signature itself.
-
-**Two different hashes — do not conflate them:**
-- **`contractId` = SHA-512 hex of the exact contract source.** This is what the ORK uses to identify a compiled contract (`ForsetiContract.Id => Convert.ToHexString(SHA512.HashData(...))`) and what goes in the policy's `contractId`. Built-in contracts instead use `Name + ":" + Version` (e.g. `GenericRealmAccessThresholdRole:1`).
-- **SHA-256** is TideCloak's internal dedup key for the contract-library table only. Never put it in a policy.
-
-
-The `contractId` must be the SHA-512 hash of the EXACT contract source. Compute it locally:
-
-```js
-async function computeContractHash(source) {
-  const data = new TextEncoder().encode(source);
-  const hash = await crypto.subtle.digest("SHA-512", data);
-  return Array.from(new Uint8Array(hash))
-    .map(b => b.toString(16).padStart(2, "0")).join("").toUpperCase();
-}
-```
-
----
+> _Withheld: uploading a custom Forseti contract is done by the Tide team (experimental, test networks only). Do not reconstruct this step._
 
 ## Step 3: Construct the Policy
 
@@ -340,7 +343,7 @@ if (!tc) throw new Error("TideCloak not initialized — user must be logged in b
 
 // Step 1: Build and initialize the request
 const policyRequest = PolicySignRequest.New(policy);
-policyRequest.addForsetiContractToUpload(CONTRACT_SOURCE);
+// (withheld: the contract is uploaded by the Tide team, not from here)
 policyRequest.setCustomExpiry(604800); // 1 week
 
 const initializedBytes = await tc.createTideRequest(policyRequest.encode());
@@ -418,7 +421,6 @@ The correct endpoint is an admin API route and **requires an admin bearer token*
 
 **If the proxy route is protected with `withAuth` (correct per I-03), the client must use authenticated fetch** (e.g., `appFetch` or `secureFetch` with Bearer header). A bare `fetch()` without Authorization returns 401. The resulting empty/error response produces undefined policy bytes, causing `PolicyAuthorizationFlowException: "Model does not have a policy passed with it"` at signing time. VERIFIED (LEARNINGS-batch-009 L-08).
 
-**Contract upload has a REST API** at `POST /admin/realms/{realm}/iga/forseti-contracts` — see Step 2. The legacy `/tide-admin/forseti-contracts` path is gone; that is what earlier revisions tested.
 
 **The signed bytes arrive as a base64 string in the `policy` field, not raw binary.** Read the `policy` field and decode before using:
 
@@ -555,7 +557,7 @@ const policy = new Policy({
 
 // 2. Same PolicySignRequest.New -> createTideRequest -> approval popup -> executeSignRequest
 const policyRequest = PolicySignRequest.New(policy);
-policyRequest.addForsetiContractToUpload(contractCode);
+// (withheld: the contract is uploaded by the Tide team, not from here)
 policyRequest.setCustomExpiry(604800);
 
 const initialized = BaseTideRequest.decode(
@@ -695,7 +697,7 @@ const { Policy, ApprovalType, ExecutionType, BaseTideRequest } = Models;
 // PolicySignRequest: from heimdall-tide (NOT @tidecloak/nextjs)
 const { PolicySignRequest } = await import("heimdall-tide");
 const policyRequest = PolicySignRequest.New(policy);
-policyRequest.addForsetiContractToUpload(CONTRACT_SOURCE);
+// (withheld: the contract is uploaded by the Tide team, not from here)
 policyRequest.setCustomExpiry(604800); // 1 week
 ```
 
@@ -749,7 +751,6 @@ The forseti-crypto-quickstart is the reference implementation that works against
 
 ## Verification Checklist
 
-- [ ] `contractId` (SHA-512 of contract source) matches what is passed to `PolicySignRequest.addForsetiContractToUpload`
 - [ ] Policy constructed with `ApprovalType.IMPLICIT` and `ExecutionType.PRIVATE` from `Models` (not `Models.Policy`)
 - [ ] `modelId` is `["PolicyEnabledEncryption:1", "PolicyEnabledDecryption:1"]` (array, not string)
 - [ ] `PolicySignRequest` imported from `heimdall-tide`
@@ -785,7 +786,6 @@ The forseti-crypto-quickstart is the reference implementation that works against
 ### "Policy refers to wrong contract"
 
 **Cause:** `contractId` (SHA-512 hash) does not match the deployed contract source. Common reasons: whitespace or `using` differences between local and deployed copies, OR the hash is lowercase but the ORK stores it uppercase. The ORK comparison is **case-sensitive**.
-**Fix:** Fetch `contractHash` from `GET /tide-admin/forseti-contracts` instead of computing locally. If computing locally, the hex string MUST be uppercase (`.toUpperCase()`).
 
 ### `Index out of range` in `Policy.From` during `PreSign`
 

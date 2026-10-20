@@ -403,12 +403,27 @@ Option A — **use the Tide-provided proxy/middleware helpers.** `@tidecloak/nex
 import { createTideCloakProxy } from '@tidecloak/nextjs/server';
 import tcConfig from './data/tidecloak.json';
 
-export default createTideCloakProxy(tcConfig);
+// ONE options object. `protectedRoutes` maps a path pattern to the roles allowed on it.
+export const proxy = createTideCloakProxy({
+  config: tcConfig,
+  protectedRoutes: {
+    '/dashboard/*': ['user'],
+    '/admin/*': ['admin'],
+  },
+});
 
 export const config = {
-  matcher: ['/dashboard/:path*', '/admin/:path*'],
+  matcher: ['/((?!_next|.*\\..*).*)'],
 };
 ```
+
+> ⚠️ **`createTideCloakProxy(tcConfig)` protects NOTHING.** The function takes ONE options object,
+> `{ config, protectedRoutes, ... }`. Passing the adapter JSON directly leaves `protectedRoutes`
+> empty, so no route is ever tested and every request passes unverified — with no error. Earlier
+> revisions of this pack showed exactly that call. VERIFIED 2026-10-07 against
+> `tidecloak-js` `main`, `packages/tidecloak-nextjs/src/server/tidecloakProxy.ts`. The proxy
+> verifies the JWT in the `kcToken` cookie only; it does not check a DPoP proof, so API routes
+> still verify the token and the proof themselves.
 
 Option B — **remove proxy.ts / middleware.ts** and rely on the client-side provider for UX gating plus server-side JWT verification in each API route (Step 8). Do this if you do not want request-interception at all.
 

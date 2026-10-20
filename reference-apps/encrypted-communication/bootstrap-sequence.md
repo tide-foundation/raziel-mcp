@@ -2,6 +2,13 @@
 
 ---
 
+> **⛔ Before Phase 1 — ask the user, and wait (AP-90).** Setting up the realm licenses it to an
+> email address under Tide's Terms & Conditions (**https://tide.org/legal**). Ask: (1) *which email
+> address should manage your Tide licence?* and (2) *do you agree to the Terms & Conditions at that
+> link? (yes/no)*. Never invent the email, never accept for them, and stop if they decline. Pass the
+> answers as `TIDE_LICENSE_EMAIL` and `TIDE_TERMS_ACCEPTED=yes`. Any init script you write must exit
+> non-zero without both — the block to paste is in canon `tidecloak-bootstrap`.
+
 ## Phase 1: TideCloak Infrastructure
 
 1. Start TideCloak container:
@@ -14,7 +21,7 @@
    ```bash
    TOKEN=$(curl -s -X POST "http://localhost:8080/realms/master/protocol/openid-connect/token" \
      -H "Content-Type: application/x-www-form-urlencoded" \
-     -d "grant_type=password&client_id=admin-cli&username=admin&password=password" \
+     -d "grant_type=password&client_id=admin-cli" --data-urlencode "username=$KC_BOOTSTRAP_ADMIN_USERNAME" --data-urlencode "password=$KC_BOOTSTRAP_ADMIN_PASSWORD" \
      | jq -r '.access_token')
    ```
 
@@ -45,7 +52,7 @@
    curl -s -X POST "http://localhost:8080/admin/realms/$REALM/vendorResources/setUpTideRealm" \
      -H "Authorization: Bearer $TOKEN" \
      -H "Content-Type: application/x-www-form-urlencoded" \
-     -d "email=admin@example.com"
+     -d "email=$TIDE_LICENSE_EMAIL"
    ```
 
 5. Enable IGA — **form-encoded `isIGAEnabled=true`**, then ASSERT. The endpoint reads the form

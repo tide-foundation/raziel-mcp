@@ -109,8 +109,25 @@ fi
 case "$code" in
   200) : ;;
   401|403) die "Skycloak rejected the API key ($code). Re-mint with scripts/skycloak-mint-key.sh." ;;
-  404) die "no supported-versions endpoint at $API (got 404). Ask Skycloak which versions are
-  offered — do NOT substitute Docker Hub tags, they are not the same list." ;;
+  400|404|405)
+    # MEASURED on prod 2026-08: BOTH discovery endpoints return
+    #   400 {"detail":"Invalid parameter: cluster_id"}
+    # because /clusters/{cluster_id} swallows the trailing path segment and tries to parse the word
+    # "versions" as a UUID. The endpoints exist in the Skycloak source but are unreachable in front
+    # of that route. (LEARNINGS-nightfabric-001 L-09.)
+    #
+    # Failing outright here would block provisioning entirely, so fall back to the VERIFIED FLOOR --
+    # loudly, on stderr, marked ASSUMED. What must NOT happen is a silent downgrade: never walk a
+    # version list downward on `400 invalid cluster version` to find something that sticks.
+    echo "WARNING: Skycloak version discovery is unavailable (HTTP $code)." >&2
+    echo "         Both /clusters/supported-versions and /clusters/versions currently 400 with" >&2
+    echo "         'Invalid parameter: cluster_id' — the /clusters/{id} route swallows the path." >&2
+    echo "         Falling back to the verified floor $FLOOR. This is ASSUMED-good, not discovered:" >&2
+    echo "         a newer version may well be available. Confirm with Skycloak, and if create" >&2
+    echo "         returns '400 invalid cluster version', ASK them rather than trying older tags." >&2
+    printf '%s\n' "$FLOOR"
+    exit 0
+    ;;
   *) die "could not read supported versions from Skycloak (HTTP $code): $(printf '%s' "$body" | head -c 300)" ;;
 esac
 

@@ -161,5 +161,5 @@ fi
 
 echo
 echo "PRE-FLIGHT PASSED (compile + sandbox + structure)."
-echo "Still unchecked by this harness: policy modelId, contract transport nesting, contractId"
+echo "Still unchecked by this harness: policy modelId, how the signing request is nested, contractId"
 echo "match, vuid-vs-subject. See canon/custom-contracts.md pre-flight checklist."

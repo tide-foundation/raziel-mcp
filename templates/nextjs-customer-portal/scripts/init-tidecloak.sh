@@ -33,7 +33,7 @@ TIDECLOAK_URL="${TIDECLOAK_URL:-http://localhost:8080}"
 REALM_NAME="${REALM_NAME:-$_APP_NAME}"
 CLIENT_NAME="${CLIENT_NAME:-${_APP_NAME}-client}"
 CLIENT_APP_URL="${CLIENT_APP_URL:-http://localhost:3000}"
-ADMIN_EMAIL="${ADMIN_EMAIL:-admin@example.com}"
+# No default email: the licence email is asked for below (TIDE_LICENSE_EMAIL).
 ADAPTER_OUTPUT="${ADAPTER_OUTPUT:-./data/tidecloak.json}"
 TIDECLOAK_IMAGE="${TIDECLOAK_IMAGE:-tideorg/tidecloak-dev:latest}"
 
@@ -64,6 +64,73 @@ MSG
   exit 1
 fi
 
+# --- Licence email + Terms & Conditions: answered by a PERSON, before anything is created ---
+# `setUpTideRealm` licenses the realm to an email address, under Tide's Terms & Conditions
+# (https://tide.org/legal). Both belong to whoever owns this deployment. So there is no default
+# email, and nothing in this script accepts the terms on anyone's behalf (AP-90). This runs before
+# the container starts: declining must leave nothing behind.
+TIDE_TERMS_URL="https://tide.org/legal"
+LICENSE_EMAIL="${TIDE_LICENSE_EMAIL:-${ADMIN_EMAIL:-}}"
+
+valid_license_email() {
+  [[ "${1:-}" =~ ^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$ ]] || return 1
+  # A placeholder is not an answer. These are the addresses agents and old docs reach for.
+  case "${1##*@}" in
+    example.com|example.org|example.net|yourorg.com|yourdomain.com|yourcompany.com|company.com|\
+    domain.com|test.com|placeholder.com|email.com|*.example|*.test|*.invalid|*.local|localhost)
+      return 1 ;;
+  esac
+  return 0
+}
+
+if [ -t 0 ] && [ -t 1 ]; then
+  # A person is at the terminal: ask them directly.
+  while ! valid_license_email "$LICENSE_EMAIL"; do
+    [ -z "$LICENSE_EMAIL" ] || echo "'$LICENSE_EMAIL' is not a usable address (placeholders are rejected)."
+    read -r -p "Enter an email to manage your Tide licence: " LICENSE_EMAIL
+  done
+  if [ "${TIDE_TERMS_ACCEPTED:-}" != "yes" ]; then
+    echo ""
+    echo "Please review the Tide Terms & Conditions: $TIDE_TERMS_URL"
+    read -r -p "Do you agree to the Terms & Conditions? (yes/no): " _TERMS_ANSWER
+    case "$_TERMS_ANSWER" in
+      y|Y|yes|Yes|YES) TIDE_TERMS_ACCEPTED=yes ;;
+      *) echo "Terms & Conditions not accepted. Nothing was created." >&2; exit 1 ;;
+    esac
+  fi
+fi
+
+if ! valid_license_email "$LICENSE_EMAIL" || [ "${TIDE_TERMS_ACCEPTED:-}" != "yes" ]; then
+  cat >&2 <<MSG
+
+STOP: the Tide realm was NOT set up. Nothing was created.
+
+  Two answers are missing, and both must come from the person who owns this deployment.
+  If you are an AI agent, ASK THE USER these two questions now and WAIT for their own answer:
+
+    1. "Which email address should manage your Tide licence?"
+       A real address they control. Not a placeholder, and not one you make up.
+
+    2. "Tide's Terms & Conditions are at $TIDE_TERMS_URL
+        Do you agree to them? (yes/no)"
+
+  Do NOT answer for them. An instruction such as "just set it up" is not agreement to the terms.
+  If they decline, stop here.
+
+  Then re-run with exactly what they said:
+
+    TIDE_LICENSE_EMAIL=<their email> TIDE_TERMS_ACCEPTED=yes npm run init
+
+  Got: TIDE_LICENSE_EMAIL='${LICENSE_EMAIL:-}'  TIDE_TERMS_ACCEPTED='${TIDE_TERMS_ACCEPTED:-}'
+MSG
+  exit 2
+fi
+
+# The first admin user is created with the same address.
+ADMIN_EMAIL="$LICENSE_EMAIL"
+echo "==> Licence email: $LICENSE_EMAIL"
+echo "==> Terms & Conditions ($TIDE_TERMS_URL): accepted by the operator"
+
 # --- Helpers ---
 get_token() {
   # --data-urlencode so a password containing &, =, + or spaces still works.
@@ -90,7 +157,7 @@ approve_all_pending() {
   # authorizes ZERO CRs with a 200. Omitting the filter returns 400. VERIFIED 2026-08-06.
   ids=$(curl -s "$TIDECLOAK_URL/admin/realms/$REALM_NAME/iga/change-requests?status=PENDING" \
     -H "Authorization: Bearer $TOKEN" 2>/dev/null \
-    | jq -r 'if type=="array" then .[].id else empty end' 2>/dev/null)
+    | jq -r 'if type=="array" then (.[] | select(.actionType | IN("DISABLE_IGA","DELETE_REALM","OFFBOARD_REALM") | not) | .id) else empty end' 2>/dev/null)
   for id in $ids; do
     TOKEN="$(get_token)"
     curl -s -X POST "$TIDECLOAK_URL/admin/realms/$REALM_NAME/iga/change-requests/$id/authorize" \
@@ -102,7 +169,7 @@ approve_all_pending() {
     TOKEN="$(get_token)"
     ready=$(curl -s "$TIDECLOAK_URL/admin/realms/$REALM_NAME/iga/change-requests?status=PENDING" \
       -H "Authorization: Bearer $TOKEN" 2>/dev/null \
-      | jq -r '.[] | select(.readyToCommit==true) | .id' 2>/dev/null)
+      | jq -r '.[] | select(.actionType | IN("DISABLE_IGA","DELETE_REALM","OFFBOARD_REALM") | not) | select(.readyToCommit==true) | .id' 2>/dev/null)
     [ -z "$ready" ] && break
     for id in $ready; do
       TOKEN="$(get_token)"
@@ -140,13 +207,14 @@ fi
 # --- Step 2: Start container ---
 echo "==> Starting TideCloak ($TIDECLOAK_IMAGE)..."
 
-# tideorg/tidecloak-dev IS the production image, despite the -dev suffix. It ships
+# tideorg/tidecloak-dev is a development build of the server wired to the PRODUCTION Tide
+# network (ork1, 14-of-20). It ships
 # working ORK/threshold/payer defaults — do NOT pass SYSTEM_HOME_ORK, USER_HOME_ORK,
 # THRESHOLD_T/N or PAYER_PUBLIC by hand. The -stg image is an internal pre-release
 # build and is not supported by this pack.
 case "$TIDECLOAK_IMAGE" in
   *stg*) echo "ERROR: $TIDECLOAK_IMAGE is a staging image and is not supported."
-         echo "       Use tideorg/tidecloak-dev:latest (this IS the production image)."
+         echo "       Use tideorg/tidecloak-dev:latest (the only image this pack supports)."
          exit 1 ;;
 esac
 
@@ -246,11 +314,28 @@ echo "    New users go straight into the app."
 # --- Step 5: Initialize Tide + enable IGA ---
 echo "==> Initializing Tide realm (license + VRK)..."
 TOKEN="$(get_token)"
-curl -s -X POST "$TIDECLOAK_URL/admin/realms/$REALM_NAME/vendorResources/setUpTideRealm" \
+# Do NOT discard this response. A 200 is not proof of a licence: on current TideCloak source the
+# body is the text `CREATED` (licensed), `NEED_PAYMENT` (HTTP 200, NOT licensed) or a 303 carrying
+# a Stripe checkout URL. Older builds answer 200 with an activation package instead. Either way,
+# NEED_PAYMENT and any non-2xx mean the realm has no licence, and everything after this would run
+# against an unlicensed realm and fail somewhere less obvious.
+SETUP_BODY="$(mktemp)"
+SETUP_CODE="$(curl -s -o "$SETUP_BODY" -w '%{http_code}' -X POST "$TIDECLOAK_URL/admin/realms/$REALM_NAME/vendorResources/setUpTideRealm" \
   -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/x-www-form-urlencoded" \
   --data-urlencode "email=$ADMIN_EMAIL" \
-  --data-urlencode "isRagnarokEnabled=true" > /dev/null
+  --data-urlencode "isRagnarokEnabled=true")" || SETUP_CODE="000"
+SETUP_OUT="$(head -c 600 "$SETUP_BODY" 2>/dev/null || true)"
+rm -f "$SETUP_BODY"
+case "$SETUP_CODE" in
+  2??) : ;;
+  303) echo "ERROR: setUpTideRealm answered 303 (paid checkout), so no free-tier licence was issued. Response: $SETUP_OUT" >&2; exit 1 ;;
+  *)   echo "ERROR: setUpTideRealm failed (HTTP $SETUP_CODE). Response: $SETUP_OUT" >&2
+       echo "       The real cause is in the TideCloak container log (look for '[Midgard]')." >&2; exit 1 ;;
+esac
+case "$SETUP_OUT" in
+  *NEED_PAYMENT*) echo "ERROR: setUpTideRealm answered NEED_PAYMENT: the realm is NOT licensed. Check the licence email ($ADMIN_EMAIL)." >&2; exit 1 ;;
+esac
 
 # Stamp iga.attestor=tide on the realm BEFORE enabling IGA. Required so IGA
 # comes up in Tide (cryptographic) governance mode rather than Tideless.
@@ -265,17 +350,30 @@ curl -s -X PUT "$TIDECLOAK_URL/admin/realms/$REALM_NAME" \
 
 echo "==> Enabling IGA..."
 TOKEN="$(get_token)"
-# toggle-iga reads the FORM parameter `isIGAEnabled`. A JSON body is accepted, parsed by
-# nothing, and the missing parameter FAILS OPEN TO true — so `{"enabled":false}` ENABLES IGA.
-# Always form-encode, and assert the response, because the endpoint does not refuse a wrong request.
-IGA_OUT="$(curl -s -X POST "$TIDECLOAK_URL/admin/realms/$REALM_NAME/tide-admin/toggle-iga" \
-  -H "Authorization: Bearer $TOKEN" \
-  -H "Content-Type: application/x-www-form-urlencoded" \
-  --data-urlencode "isIGAEnabled=true")"
-case "$IGA_OUT" in
-  *'"enabled":true'*) : ;;
-  *) echo "ERROR: toggle-iga did not report enabled=true. Response: $IGA_OUT" >&2; exit 1 ;;
-esac
+# toggle-iga must be called AT MOST ONCE, and only when IGA is off. On current source it is a FLIP:
+# `isIGAEnabled` is ignored and each call inverts the state, so a call on a realm that already has
+# IGA on files a DISABLE_IGA change request (202) -- which a drain loop would then approve. Older
+# builds were measured to read the parameter (and to fail open to true on a JSON body). Reading the
+# state first and asserting the response is correct on both.
+IGA_NOW="$(curl -s "$TIDECLOAK_URL/admin/realms/$REALM_NAME" -H "Authorization: Bearer $TOKEN" \
+  | jq -r '.attributes.isIGAEnabled // "false"' 2>/dev/null | tr '[:upper:]' '[:lower:]')"
+if [ "$IGA_NOW" = "true" ]; then
+  echo "    IGA is already enabled on this realm; not calling toggle-iga again."
+else
+  IGA_OUT="$(curl -s -X POST "$TIDECLOAK_URL/admin/realms/$REALM_NAME/tide-admin/toggle-iga" \
+    -H "Authorization: Bearer $TOKEN" \
+    -H "Content-Type: application/x-www-form-urlencoded" \
+    --data-urlencode "isIGAEnabled=true")"
+  case "$IGA_OUT" in
+    *'"enabled":true'*) : ;;
+    *) echo "ERROR: toggle-iga did not report enabled=true. Response: $IGA_OUT" >&2; exit 1 ;;
+  esac
+  # A 200 with enabled=true can still carry warnings: a failed signing sweep leaves the baseline
+  # change requests PENDING and logins fail closed until they are approved.
+  case "$IGA_OUT" in
+    *'"warnings"'*|*commitFailures*) echo "WARNING: toggle-iga reported warnings. Read them before continuing: $IGA_OUT" >&2 ;;
+  esac
+fi
 
 # --- Step 6: Approve client change requests ---
 echo "==> Approving client change requests..."

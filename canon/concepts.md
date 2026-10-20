@@ -254,7 +254,7 @@ verification: [framework-matrix.md](framework-matrix.md) → **Browser Prerequis
 
 **Built-in default contracts** **VERIFIED** (vendor confirmation, GAP-046 resolved):
 
-Four pre-registered contracts in the ORK factory — no need to upload via the contract deployment API:
+Pre-registered contracts in the ORK factory — no need to upload via the contract deployment API (five on ORK `main`, including `RelationshipAttestation:1` since 2026-10-16):
 
 | Contract | Purpose | Validates | Parameters |
 |----------|---------|-----------|------------|
@@ -262,6 +262,7 @@ Four pre-registered contracts in the ORK factory — no need to upload via the c
 | `GenericRealmAccessThresholdRoleContract` | Same but checks **realm roles** | Approvers only | `role`, `resource`, `threshold` |
 | `SimpleTagBasedDecryptionContract` | Tag-based decryption. Checks `_tide_{tag}.encrypt`/`.decrypt` roles. One built-in option, not the standard Forseti flow. | Data + Executor | tag from data context |
 | `HederaTX` | Hedera transaction contract | Unknown | Unknown |
+| `RelationshipAttestationContract` (`RelationshipAttestation:1`) | A user, group or role may encrypt/decrypt one record's data. **The default for per-record encrypted access**: use it before writing a custom contract. ORK `main` (VERIFIED from source `c69fc4f6`) | Data (tags = `assignmentId`, policy `roles`) + Executor (`_tide_encryptor`/`_tide_decryptor`, subject) | `subjectType` (`User`/`Group`/`Role`), `subjectId`, `assignmentId`, `roles`, optional `clientId` |
 
 Use default contracts for simple role-gated multi-approval. Write custom contracts for executor validation, data validation, or complex logic. `GenericResourceAccessThresholdRoleContract` only validates **approvers** (not executor); its `ValidateData` is a no-op and `ValidateExecutor` is not implemented.
 
@@ -300,7 +301,7 @@ return Decision
 
 **Error surface**: `PolicyDecision.Deny("message")` — deny messages are string-based and propagated to the client. **VERIFIED** (test-cases F11 negative tests)
 
-**Forseti sandbox security model** **VERIFIED** (vendor confirmation, GAP-008 resolved): Five-layer model. Contracts compiled with Roslyn against .NET 8.0 references plus three SDK assemblies (`Ork.Forseti.Sdk`, `Cryptide`, `Ork.Shared`). After compilation, IL vetting enforces a block-list of forbidden namespace prefixes: `System.IO`, `System.Net`, `System.Diagnostics`, `System.Threading`, `System.Reflection`, `System.Runtime.InteropServices`, `System.Reflection.Emit`, `Microsoft.Win32`. `System.Console` and `System.Runtime.CompilerServices.Unsafe` are always hard-blocked. Non-deterministic calls (`DateTime.Now`, `Guid.NewGuid`, `Random`, etc.) blocked by default. Static constructors banned. A contract referencing a blocked namespace compiles but fails IL vetting with `BadPolicy.ForbiddenCall` at upload time. Each policy runs in an isolated `AssemblyLoadContext` inside a separate VmHost process with OS-level CPU/memory limits and gas metering (default 50,000 gas). `Claim(key)` = 5 gas, `Log(message)` = 25-30 gas. Throws `OutOfGasException` when exhausted.
+**Forseti sandbox security model** **VERIFIED** (vendor confirmation, GAP-008 resolved): Five-layer model. Contracts compiled with Roslyn against .NET 8.0 references (ORK `main` now uses .NET 10 reference assemblies; the live network's version was not re-checked) plus three SDK assemblies (`Ork.Forseti.Sdk`, `Cryptide`, `Ork.Shared`). After compilation, IL vetting enforces a block-list of forbidden namespace prefixes: `System.IO`, `System.Net`, `System.Diagnostics`, `System.Threading`, `System.Reflection`, `System.Runtime.InteropServices`, `System.Reflection.Emit`, `Microsoft.Win32`. `System.Console` and `System.Runtime.CompilerServices.Unsafe` are always hard-blocked. Non-deterministic calls (`DateTime.Now`, `Guid.NewGuid`, `Random`, etc.) blocked by default. Static constructors banned. A contract referencing a blocked namespace compiles but fails IL vetting with `BadPolicy.ForbiddenCall` at upload time. Each policy runs in an isolated `AssemblyLoadContext` inside a separate VmHost process with OS-level CPU/memory limits and gas metering (default 50,000 gas). `Claim(key)` = 5 gas, `Log(message)` = 25-30 gas. Throws `OutOfGasException` when exhausted.
 
 **Doken delivery**: Doken is an extra field (`"doken"`) in the OIDC token endpoint response body. Standard OIDC libraries discard unknown fields. To capture it, intercept the raw HTTP response before the OIDC library deserializes it. Doken is delivered at both initial login and token refresh. **VERIFIED** (tidewarden `DokenCapturingClient`)
 
@@ -407,7 +408,7 @@ Most key types are theory-only; not directly referenced in SDK code.
 | **CMK** (Consumer Master Key) | User identity key for BYOiD auth | Transparent to SDK | tier2-protocol-account-creation-keygen.mdx |
 | **VVK** (Vendor Verifiable Key) | Organization JWT signing key | `vendorId` in adapter JSON | tier2-protocol-vvk-jwt-signing.mdx |
 | **CVK** (Consumer Vendor Key) | Per-user personal authority key for Forseti, E2EE | `executeSignRequest()`, `doEncrypt()`/`doDecrypt()` | tier2-protocol-cvk-session.mdx, keylessh `tideSsh.ts` |
-| **VRK** (Vendor Random Key) | Monthly TideCloak-Fabric payment key | Theory-only | tier2-protocol-vendor-licensing.mdx |
+| **VRK** (Vendor Rotating Key) | Ed25519 key held by TideCloak, rotated about monthly. Signs vouchers and anchors licensing with the payer | `setUpTideRealm`, `force-rotate-vrk` | Midgard source (`VendorRotatingPrivateKey`); tier2-protocol-vendor-licensing.mdx |
 | **DVK** (Device Vendor Key) | Hardware biometric key on authenticator app | Theory-only | tier2-protocol-authenticator-app.mdx |
 | **BRK** (Browser Key) | localStorage cross-verification key | Theory-only | tier2-protocol-authenticator-app.mdx |
 | **RGK** (Ragnarok Key) | Offboarding reconstruction key | Theory-only | tier2-protocol-ragnarok.mdx |
@@ -422,15 +423,23 @@ Most key types are theory-only; not directly referenced in SDK code.
 
 **Official name**: "Ragnarok" is whimsical for a destructive operation. Use "Fabric offboarding (Ragnarok)" in docs.
 
-**How it works**:
-1. Quorum of admins approve Ragnarok
-2. Keys reconstructed locally via nested threshold (RGK)
-3. TideCloak switches to local EdDSA signing (Heimdall handler)
-4. Fabric integration disabled permanently
+**How it works** (steps 1 and 3-6 VERIFIED 2026-10-07 against `ragnarok` `main`; step 2 is theory):
+1. A quorum of admins approves an `OFFBOARD_REALM` change request, in the enclave. At least `iga.offboardMinAdmins` approvals (default **3**), so a one-admin realm cannot offboard.
+2. Keys reconstructed locally via nested threshold (RGK) — theory. What the code does: it sends the approved request plus the encrypted VVK backup (`eVVK`) to Midgard and receives the VVK back.
+3. The reconstructed VVK private key is **stored whole in TideCloak's database** (`eddsaPrivateKey` on the `tide-vendor-key` component), permanently. "Never a whole key" stops being true for this realm.
+4. Tokens stay **EdDSA**, now signed locally. The algorithm does not change.
+5. The Tide IdP is removed and the browser flow resets to password login. **Every user loses their Tide login and must set a password.** Accounts and roles survive; credentials do not. With SMTP configured users get a 12-hour reset link; without it nothing is sent.
+6. IGA stays enabled in Tideless mode. The realm is Keycloak with the Tide extensions still installed, not vanilla Keycloak.
+
+**Backup must be on first.** `isRagnarokEnabled=true` on `setUpTideRealm` (the default) turns backup on, which is what stores the `eVVK`. It cannot be turned off again. Without it `trigger-offboarding` returns 412 until `POST /admin/realms/{realm}/ragnarok/toggle-ragnarok` is called.
+
+⚠️ **DIFFERS ON `main`, not re-measured:** on `tidecloak-idp-extensions` `main`, backup-on also makes `email` a **required** user-profile attribute, enables login-with-email and forbids duplicate emails (setup fails if existing users share one). Tide supplies no email, so this is the condition that brings back Keycloak's profile page. `templates/skip-idp-review/README.md` records a measurement (2026-08-20) of **no** required attribute on a provisioned realm. One of the two is out of date; run the diagnostic in that template after bootstrap rather than assuming.
 
 **Agent implication**:
-- Ragnarok is irreversible once quorum-approved **ASSUMED** (ragnarok.md describes finalization but no rollback - A-24)
-- Post-Ragnarok details undocumented **STILL_UNRESOLVED** (GAP-021)
+- Irreversible once the change request commits. Until then it is a pending request; a failed ORK ceremony tears nothing down.
+- Admins must have a TideCloak password **before** commit, or they lock themselves out.
+- Encrypt/decrypt after offboarding moves to TideCloak-held-key endpoints under `/realms/{realm}/crypto`; threshold decryption is gone.
+- Still unknown (GAP-021, narrowed): what the ORKs do with their shares, whether the JWKS key and `kid` are unchanged for existing verifiers, and whether a realm can re-onboard.
 - keylessh does not implement Ragnarok
 
 ---
@@ -462,7 +471,7 @@ Discovered in keylessh; not in API documentation.
 
 | Endpoint | Purpose | Evidence |
 |----------|---------|----------|
-| `POST /admin/realms/{realm}/vendorResources/setUpTideRealm` | Initialize Tide features (email + terms) | `init-tidecloak.sh` |
+| `POST /admin/realms/{realm}/vendorResources/setUpTideRealm` | Initialize Tide features. Takes the licence `email`; **terms acceptance is not a request field** and is not recorded server-side (AP-90) | `init-tidecloak.sh` |
 | `POST /admin/realms/{realm}/tide-admin/toggle-iga` | Enable/disable IGA | `init-tidecloak.sh` |
 | `POST /admin/realms/{realm}/users/{user-id}/tideAdminResources/get-required-action-link` | Generate account linking URL | `init-tidecloak.sh` |
 | `GET /admin/realms/{realm}/vendorResources/get-installations-provider?clientId={client-uuid}&providerId=keycloak-oidc-keycloak-json` | Download adapter JSON with Tide extensions. Realm-level endpoint; client passed as `clientId={uuid}` query param (NOT a `/clients/{id}/` path segment). Only valid providerId: `keycloak-oidc-keycloak-json`. `tidecloak-oidc-keycloak-json` does not exist. | `init-tidecloak.sh`, vendor confirmation (GAP-044 resolved) |
@@ -510,7 +519,7 @@ New admin users must complete account linking:
 
 For self-encryption, the SDK checks `_tide_{tag}.selfencrypt`/`.selfdecrypt` roles on the client and ORK. For policy-based encryption, the SDK skips the tag-role check entirely (`tidecloak.js:703-704`); authorization is handled by the Forseti contract, which can check any Keycloak role (not necessarily `_tide_`-prefixed).
 
-**Voucher gate roles**: The voucher system still requires `_tide_*` roles to fund ORK operations, even for policy-based encryption. But you do not need per-tag `_tide_{tag}.encrypt`/`.decrypt` roles — any `_tide_*` role (e.g., `_tide_enabled`, or a generic `_tide_x.selfdecrypt`) satisfies the `vendorsign` voucher check. For `vendordecrypt`, a role matching `_tide_*.selfdecrypt` or `_tide_*.decrypt` is needed.
+**Voucher gate roles**: The voucher system still requires `_tide_*` roles to fund ORK operations, even for policy-based encryption. But you do not need per-tag `_tide_{tag}.encrypt`/`.decrypt` roles — any `_tide_*` role (e.g., `_tide_enabled`, or a generic `_tide_x.selfdecrypt`) satisfies the `vendorsign` voucher check. `vendordecrypt` is granted on the **same** condition (any `_tide_*` role, an authorizer role, or `tide-realm-admin`): `tidecloak-idp-extensions` `main` has no separate `.selfdecrypt` check at the voucher endpoint (VERIFIED 2026-10-07, `VoucherResource.java`). The voucher is not the decryption access-control boundary.
 
 **Forseti contract roles** (e.g., `shared-data-access`): Checked by the custom contract's `ValidateExecutor`. Controls WHO can actually decrypt. Regular realm role, NOT `_tide_*` prefixed. Only relevant for policy-based encryption.
 
@@ -707,7 +716,7 @@ Also add the `@tidecloak/react` ESM alias. See `canon/framework-matrix.md` for t
 | `Models.VendorData` | class | Vendor data. Properties: `VUID`, `gCMKAuth`, `blindSig`, `AuthToken`. |
 | `Models.VendorSettings` | class | Vendor config. Properties: `regOn`, `backupOn`, `imageURL`, `logoURL`. |
 | `Models.EnclaveEntry` | class | Enclave entry. Properties: `username`, `persona`, `expired`, `userInfo`, `orksBitwise`, `selfRequesti`, `sessKey`. |
-| `Models.PolicyParameters` | class | Policy parameter storage. Methods: `tryGetParameter()`, `getParameter()`, `toBytes()`. |
+| `Models.PolicyParameters` | class | Policy parameter storage. Methods: `tryGetParameter()`, `getParameter()`, `toBytes()`. ⚠️ Not exported from the `Models` namespace on `tide-js` `main`; check it exists in the version you install. |
 | `Models.ModelRegistry` | class | Registry for model builders. Static: `getHumanReadableModelBuilder()`. |
 | `Models.HumanReadableModelBuilder` | class | Builds human-readable request representations. Methods: `getDetailsMap()`, `getRequestDataJson()`, `getExpiry()`. |
 | `Models.Infos.KeyInfo` | class | User key info. Properties: `UserId`, `UserPublic`, `UserM`, `OrkInfo`. |
@@ -727,8 +736,8 @@ Also add the `@tidecloak/react` ESM alias. See `canon/framework-matrix.md` for t
 | Export | Type | Purpose |
 |--------|------|---------|
 | `Tools.TideMemory` | class (extends Uint8Array) | Tide's binary serialization format. Static: `CreateFromArray()`, `Create()`. Methods: `WriteValue()`, `GetValue()`, `TryGetValue()`. |
-| `Tools.Threshold` | constant | Default threshold (14). |
-| `Tools.Max` | constant | Default max ORKs (20). |
+| `Tools.Threshold` | constant | **Build-time** constant baked into the bundle, not discovered at runtime: 14 in published npm builds, 3 on `tide-js` `main`. App code must not read or depend on it. |
+| `Tools.Max` | constant | Build-time constant: 20 in published npm builds, 5 on `tide-js` `main`. Same rule. |
 | `Tools.CurrentTime()` | function | Current timestamp. |
 | `Tools.WaitForNumberofORKs()` | function | Wait for threshold ORK responses. |
 
@@ -813,17 +822,12 @@ because there is one policy; add a second and it silently deploys under the wron
 **What it is**: Endpoints for creating and managing the realm admin policy. The realm admin policy must exist before encryption policies can be signed. **VERIFIED** (operational exemplars: forseti-crypto-quickstart)
 
 **Endpoints**:
-```
-GET  /tide-admin/realm-policy              -> check status
-POST /tide-admin/realm-policy/pending      -> create pending policy (needs templateId + contractCode)
-POST /tide-admin/realm-policy/commit       -> commit after approval
-GET  /tide-admin/policy-templates          -> list templates
-POST /tide-admin/policy-templates          -> create template
-```
+
+> _Withheld: uploading a custom Forseti contract is done by the Tide team (experimental, test networks only). Do not reconstruct this step._
+
 
 **Setup sequence**:
 1. Create a policy template via `POST /tide-admin/policy-templates`
-2. Create a pending realm policy via `POST /tide-admin/realm-policy/pending` with `templateId` and `contractCode`
 3. Approve via enclave (admin browser required)
 4. Commit via `POST /tide-admin/realm-policy/commit`
 

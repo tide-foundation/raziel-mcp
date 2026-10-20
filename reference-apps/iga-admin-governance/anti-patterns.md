@@ -100,9 +100,9 @@ Scenario-specific mistakes for IGA admin governance panels. General Tide anti-pa
 
 **Mistake**: Assuming all change-set requests are under `/tide-admin/change-set/...`.
 
-**Why it fails**: Licensing requests use `/tideAdminResources/change-set/licensing/requests`. Ragnarok requests use `/ragnarok/change-set/offboarding/requests`. These are under different path prefixes.
+**Why it fails**: The `/tide-admin/change-set/...` surface is removed. Everything a governance panel shows, including offboarding (`OFFBOARD_REALM`), is in the one list at `GET /iga/change-requests`.
 
-**Fix**: Fetch licensing and ragnarok requests from their specific endpoints if the governance panel supports those change-set types.
+**Fix**: Read every request from `/iga/change-requests`. The old `/ragnarok/change-set/offboarding/requests` path still answers but **always returns an empty list** (VERIFIED 2026-10-07, `ragnarok` `main`), so a panel that reads it shows no offboarding requests and reports nothing wrong.
 
 ---
 

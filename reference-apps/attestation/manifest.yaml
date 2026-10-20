@@ -1,0 +1,203 @@
+# Attestation — Scenario Manifest
+
+id: attestation
+title: Attestation
+category: threshold-signing
+description: Makes a fact about people a statement the network signs with the realm's key, instead of a database row the server can edit. "Issuer attests Claim about Subject" — membership, assignment, consent, verification, approval, sharing, delegation. The statement is itself a policy, signed with a Policy:1 request under an IMPLICIT/PRIVATE rule; a custom Forseti contract decides who may attest what; the server relies on a fact only while its signature verifies.
+
+frameworks:
+  - nextjs
+
+core_patterns:
+  - forseti
+  - custom-forseti-contract
+  - doken
+  - dpop
+  - iga
+  - oidc
+  - threshold-signing
+  - policy-signing
+  - policy-as-attestation
+  - attestation
+  - signed-statement
+  - vuid-binding
+  - verify-on-read
+  - implicit-signing-rule
+  - membership
+  - consent
+  - verification
+
+match_keywords:
+  # the capability itself
+  - attest
+  - attest that
+  - attest to
+  - attestation
+  - attestations
+  - attested
+  - signed statement
+  - signed claim about a user
+  - signed fact
+  - network signed
+  - prove that a user
+  - prove that this user
+  - prove that someone
+  - verifiable statement
+  - tamper proof record of who
+  - server cannot forge
+  - even if the server is compromised
+  - even if the database is compromised
+  - cannot be forged by the server
+  # membership / groups (owner or role)
+  - attest membership
+  - membership attestation
+  - membership of
+  - membership in
+  - is a member of
+  - who is a member
+  - added to my
+  - added to a group
+  - added to the group
+  - add to group
+  - group membership
+  - signed membership
+  - prove membership
+  - close friends
+  - friends group
+  - friends list
+  - share list
+  - inner circle
+  - team membership
+  - roster
+  - allow list
+  - access list
+  # assignment / roles on objects (role)
+  - role on a case
+  - assigned to a case
+  - case assignment
+  - signed assignment
+  - attest assignment
+  - who is assigned
+  - project members
+  # consent / acknowledgement (self)
+  - attest consent
+  - signed consent
+  - proof of consent
+  - consent record
+  - user consented
+  - user agreed
+  - user accepted
+  - acknowledgement
+  - signed acknowledgement
+  - user declared
+  - signed declaration
+  # verification / approval by an authorised party (role)
+  - attest that a user is verified
+  - verified user
+  - kyc verified
+  - identity verified
+  - age verified
+  - signed approval
+  - attest approval
+  - approved by
+  - sign off
+  - signed off
+  - endorsement
+  - vouch for
+  - vouched
+  # sharing / delegation (owner)
+  - shared with
+  - attest sharing
+  - delegate
+  - delegation
+  - may act on behalf
+
+bootstrap_required: true
+requires_admin_preapproval: true
+requires_iga: true
+requires_e2ee: false
+signing_mode: policy-governed
+
+default_roles:
+  - _tide_enabled
+  - appUser
+
+policy_roles: []
+
+# self and owner rules need no issuer role: the issuer's identity is the check.
+# A role rule needs one client role, named by the rule's IssuerRole parameter.
+signing_role_pattern: "<issuer-role, role rules only>"
+
+required_protocol_mappers:
+  # The vuid claim is REQUIRED. Every statement names people by vuid, and the contract compares the
+  # signer's vuid with the statement's Issuer.
+  - name: Tide vuid
+    mapper: oidc-usermodel-attribute-mapper
+    user_attribute: vuid
+    claim_name: vuid
+  - name: Tide User Key
+    mapper: oidc-usermodel-attribute-mapper
+    user_attribute: tideUserKey
+    claim_name: tideuserkey
+
+custom_contract:
+  template: templates/attestation/AttestationContract.cs
+  entry_class: Contract
+  interface: IAccessPolicy
+  policy_params:
+    - name: Resource
+      type: string
+      required: true
+    - name: Claims
+      type: string
+      required: true
+      notes: comma-separated claim types this rule may sign
+    - name: IssuerMode
+      type: string
+      required: false
+      default: self
+      allowed: [self, owner, role]
+    - name: IssuerRole
+      type: string
+      required: false
+      default: ""
+    - name: AllowExpiry
+      type: string
+      required: false
+      default: "no"
+      allowed: ["no", "yes"]
+  validators:
+    validate_data: Refuses anything but a Policy:1 request under an IMPLICIT/PRIVATE rule; reads the policy being signed and requires exactly one model (the attestation), only the string fields Claim/Issuer/Subject/Resource plus optional Object/Owner/Value, each once; the claim type listed on the rule; the rule's own Resource; an expiry only if the rule allows; self - Subject == Issuer and no Owner; owner - Owner == Issuer and Subject != Issuer. Captures Issuer for the executor check
+    validate_approvers: Deny — there is no approval path
+    validate_executor: Not expired, the signer's vuid equals Issuer, and under a role rule the signer holds IssuerRole (fail closed if the data stage did not run)
+  attestation_model_id: "BasicCustom<Attestation>:BasicCustom<1>"
+  signing_rule_model_id: "Policy:1"
+  auth_flow: "Policy:1"
+  approval_type: IMPLICIT
+  execution_type: PRIVATE
+
+default_playbooks:
+  - start-tidecloak-dev
+  - bootstrap-realm-from-template
+  - initialize-admin-and-link-account
+  - add-auth-nextjs-fresh
+  - protect-api-nextjs
+  - verify-jwt-server-side
+  - deploy-forseti-policy
+
+discriminating_question: Is it a fact ABOUT PEOPLE that your own server relies on later (X is in Y's group, X consented, X was verified, X is assigned to a case)? Then this scenario. If it is a claim about CONTENT handed to a third party as a portable, timestamped certificate, use attested-provenance-registry. If it is a governed change to realm roles approved by admins, use iga-admin-governance.
+
+valid_only_when: The app has facts about its users that must hold even if the app server or its database is compromised, and the app's own server is the one that checks them. Requires a custom Forseti contract and one admin-signed signing rule per kind of issuer.
+
+notes: >
+  The attestation is a policy, not a custom payload. It authorises no network operation; the server
+  verifies it and reads its fields. Three issuer modes cover the cases: self (about yourself), owner
+  (about something you own), role (you hold a role that lets you). Revocation and time are NOT
+  attested by default — see scenario.md "What this does not give you".
+
+# Try the ORK's built-in contract first: nothing to write or deploy.
+builtin_contract:
+  id: "RelationshipAttestation:1"
+  scenario: relationship-attestation
+  covers: admin-granted relationships between a user, group or role and one record (assigned; member-of via a Group subject; shared-with when a realm admin grants)
+  does_not_cover: self statements (consent, acceptance), owner-issued statements, statements carrying a value, statements that gate no data

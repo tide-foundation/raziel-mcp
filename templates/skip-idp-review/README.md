@@ -35,6 +35,13 @@ different fix:
 | default required actions | one page per action, on every new user | clear `defaultAction` |
 | a stale action on an existing user | that one user is stuck | `PUT /users/{id}` with `requiredActions: []` — no realm-level change clears it |
 
+> ⚠️ **Source and measurement disagree — run the diagnostic, do not assume.** The measurement below
+> found nothing active. But on `tidecloak-idp-extensions` `main`, `setUpTideRealm` with
+> `isRagnarokEnabled=true` (the default, and what every pack script sends) makes **`email` a required
+> user-profile attribute**. Tide supplies no email, so that is exactly a required-attribute trigger.
+> Either the measured image predates `main` or the two differ in a way not yet understood. Source
+> read 2026-10-07; not re-measured.
+
 A correctly provisioned Tide realm has **none** of these active. VERIFIED read-only against a live
 Tide realm (2026-08-20): only `link-tide-account-action` and `idp_link` are enabled, both
 non-default, and no user-profile attribute is required. If the diagnostic reports "nothing will fire"

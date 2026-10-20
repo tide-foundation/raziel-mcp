@@ -54,9 +54,8 @@ After IGA is enabled, client and user mutations create draft change-sets. If the
 
 The model ID in the policy must match the request pattern used by the client. `BasicCustom<SSH>:BasicCustom<1>` is for `BasicCustomRequest`. `DynamicCustom<SSH>:DynamicCustom<1>` is for `DynamicCustomRequest`. A mismatch causes ORK rejection.
 
-## AP-PS14: Omitting contract transport from PolicySignRequest
 
-The PolicySignRequest draft must include both the serialized policy bytes and the contract transport (source code + entry type). Without the contract transport, ORKs cannot compile and execute the Forseti contract. The contract ID (SHA-512 of source) must match.
+> _Withheld: uploading a custom Forseti contract is done by the Tide team (experimental, test networks only). Do not reconstruct this step._
 
 ## AP-PS15: Using blocked namespaces in Forseti contracts
 

@@ -26,6 +26,20 @@ node -p "require('./.claude-plugin/plugin.json').version"   # 1.9.0
 grep -A1 '@tideorg/mcp' mcp-server/src/server.ts | grep version   # 1.9.0
 ```
 
+## 0. Publish from the public tree, not the workshop
+
+The workshop documents how a custom Forseti contract is uploaded, which is not self-service (the
+Tide team deploys contracts). Sync first, then release from `raziel-mcp`:
+
+```bash
+(cd mcp-server && npm ci && npm run build)
+scripts/sync-to-raziel.sh /path/to/raziel-mcp     # runs scripts/redact-public.mjs; stops if anything is left
+```
+
+The server also filters at runtime, so a package published from the workshop still withholds the
+step from its responses. But the files inside that package would contain it. Only the sync cleans
+the files.
+
 ## 1. Publish to npm
 
 `prepublishOnly` builds `dist/` first; `files` bundles the content dirs.
@@ -57,9 +71,11 @@ update the app to `tideorg/mcp:1.9.0` explicitly.
 cd mcp-server && npm run test:remote          # default: https://mcp.tide.org/mcp
 ```
 
-Expected after this release: **16 tools, 16/16 annotated, prompts: 5, tide_gaps
-ok: yes, version 1.9.0**. (Before the deploy it reports 14 / 0 annotated / 1.4.1
-— that's the before/after proof.)
+Expected: **22 tools, 22/22 annotated, prompts: 5**, the released version, and `ok: yes` for
+`tide_gaps`, `tide_dpop_asset`, `tide_branding`, `tide_onboarding` and `tide_choose_playbook`,
+instructions that fit, and both `/pack` routes. The asset tools and `/pack` routes read `templates/`
+from the image: an `ok: NO` there means the image was built without it. The check exits non-zero on
+any of these.
 
 Also:
 

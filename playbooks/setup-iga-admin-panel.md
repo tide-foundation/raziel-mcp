@@ -55,15 +55,15 @@ Current `/iga/change-requests/...` surface (replaces legacy `/tide-admin/change-
 1. Admin performs a governed change (role assignment, group change, etc.)
    -> The write returns 202 Accepted; a change request is created (PENDING)
 2. Admin reviews:  GET  /iga/change-requests?status=PENDING
-3. Admin approves: POST /iga/change-requests/{id}/authorize   (body {} optional)
-   -> Tide MultiAdmin mode: sign via the enclave two-phase exchange
-      GET/POST /iga/change-requests/{id}/approval-model
-   -> FirstAdmin / Tideless mode: authorize signs server-side, no popup
-4. Once threshold met: POST /iga/change-requests/{id}/commit  (412 if under threshold)
+3. Admin approves: POST /iga/change-requests/{id}/approve     (body {})
+   -> reply mode "recorded": done. FirstAdmin / Tideless, no popup.
+   -> reply mode "needs-approval": sign the returned requestModel in the Tide enclave,
+      then POST .../approve again with { "requestModel": "<base64>" }  (Tide MultiAdmin)
+4. /approve commits by itself once quorum is met. Read `committed` in the reply.
 5. Or reject:          POST /iga/change-requests/{id}/deny
 ```
 
-`authorize` (simple lane: firstAdmin/Tideless) records an approval and **never commits** — it refuses tide-multiAdmin CRs. `approve` is the multiAdmin enclave lane: it approves AND auto-commits once quorum is met (this is the deployed console "Authorize" button). `commit` is the explicit apply-only step for a CR that already has enough approvals (412 if sub-quorum). Use `bulk-authorize` to act on many at once.
+`approve` is the **one lane for every mode**: the server decides which ceremony applies, records the approval and auto-commits once quorum is met. It is the only approval call the deployed admin console makes (VERIFIED 2026-10-07 against `keycloak-IGA` and iga-core, which agree). `authorize` is the older simple lane (firstAdmin/Tideless): it records an approval, **never commits**, and returns `409 MULTIADMIN_REQUIRES_APPROVAL_ENCLAVE` for tide-multiAdmin CRs. `commit` is the explicit apply-only step for a CR that already has enough approvals (412 if sub-quorum). Use `bulk-authorize` to act on many at once.
 
 ---
 
@@ -78,11 +78,23 @@ GET  /iga/change-requests/{id}               # single CR (keyed by `id`)
 
 Each CR carries `id`, `entityType`, `actionType`, `status`, `readyToCommit`, `threshold`, `authorizers[]`, `dependsOn`/`blocked`. Derive dashboard counts from the list (there is no separate counts endpoint on the new surface; no per-type request endpoints and no `all/requests` path either).
 
-### Authorize (Sign)
+### Approve
 
 ```
-POST /iga/change-requests/{id}/authorize     # body {} optional  → 200/403/409 (409 = four-eyes)
-POST /iga/change-requests/bulk-authorize     # {"actionTypeIn":[...],"limit":100} → 429 if a bulk run is active
+POST /iga/change-requests/{id}/approve   Body: {}
+     → { mode: "recorded", committed, authCount, threshold, readyToCommit, status }      # done
+     → { mode: "needs-approval", changeRequestId, actionType, requestModel(base64) }     # sign it, then:
+POST /iga/change-requests/{id}/approve   Body: { "requestModel": "<base64 signed request>" }
+     → { mode: "recorded", committed, authCount, threshold, readyToCommit, status }
+```
+
+Build a panel on this one endpoint. Send the admin's own token straight from the browser to TideCloak — never through your app server (AP-89). The enclave call accepts an array, so a batch can be signed in one popup and POSTed back per request.
+
+### Authorize (older simple lane) and bulk
+
+```
+POST /iga/change-requests/{id}/authorize     # body {} optional  → 200/403/409 (409 = not PENDING, this admin already signed, or multiAdmin)
+POST /iga/change-requests/bulk-authorize     # {"actionTypeIn":[...],"limit":100} or {"crIdIn":[...]} → 429 if a bulk run is active
 # WARNING: "CREATE"/"DELETE" are NOT valid actionTypeIn values — real ones are granular
 # (CREATE_USER, DELETE_REALM, UPDATE_PROTOCOL_MAPPER, ADOPT_SCOPE_MAPPING, GRANT_ROLES...).
 # A wrong filter authorizes ZERO CRs and still returns 200; omitting it returns 400.
@@ -98,12 +110,7 @@ POST /iga/change-requests/{id}/deny          # → 204
 
 ### Enclave Review (Tide MultiAdmin)
 
-```
-GET  /iga/change-requests/{id}/approval-model   # → { changeRequestId, requestModel(base64) }
-POST /iga/change-requests/{id}/approval-model   # { "requestModel": "<base64 doken>" } → { recorded, authCount, threshold }
-```
-
-The two-phase `approval-model` exchange replaces the legacy `tideAdminResources/add-review`. In FirstAdmin / Tideless mode, `authorize` signs server-side and no enclave step is needed.
+The enclave step is the second call to `/approve` shown above. `GET`/`POST /iga/change-requests/{id}/approval-model` is the older exchange: still present as back-compat, does not commit, and no longer used by the console. Do not build on it.
 
 ### Deprecated: add-review / add-rejection
 
@@ -112,12 +119,12 @@ POST /tideAdminResources/add-review               # 410 Gone (deprecated)
 POST /tideAdminResources/add-rejection            # 410 Gone (deprecated)
 ```
 
-Both endpoints were removed as part of the IGA decoupling and now return **`410 Gone`**. Approval goes through `/iga/change-requests/{id}/authorize` (plus the `approval-model` enclave exchange in Tide MultiAdmin mode) and rejection through `/iga/change-requests/{id}/deny`.
+Both endpoints were removed as part of the IGA decoupling and now return **`410 Gone`**. Approval goes through `/iga/change-requests/{id}/approve` and rejection through `/iga/change-requests/{id}/deny`.
 
 ### Comments
 
 ```
-GET/POST   /iga/change-requests/{id}/comments             # { "comment": "..." } (≤2000 chars)
+GET/POST   /iga/change-requests/{id}/comments             # { "body": "..." } (≤2000 chars; `comment` also accepted)
 PUT/DELETE /iga/change-requests/{id}/comments/{commentId}
 ```
 
@@ -155,36 +162,27 @@ There are no `getChangeSetCounts`, `getAllChangeSetRequests`, `getChangeSetActiv
 
 ## Policy Management Endpoints
 
-```
-GET  /iga/forseti-contracts                      # List contracts
-GET  /iga/forseti-contracts/{id}                 # Get one contract
-POST /iga/forseti-contracts                      # Create a Forseti contract (POST, not PUT)
-DELETE /iga/forseti-contracts/{id}               # Delete a contract
-GET  /iga/role-policies                          # Roles with policy status
-```
-
-Create is `POST /iga/forseti-contracts` (there is no PUT). Policy-template, SSH-policy, and `role-policy/{roleId}/init-cert` endpoints are not part of the current surface.
-
----
+> _Withheld: uploading a custom Forseti contract is done by the Tide team (experimental, test networks only). Do not reconstruct this step._
 
 ## Change Request Taxonomy
 
 The current surface does not use a `ChangeSetType` enum. Each change request carries two free-form String columns on `IgaChangeRequestEntity`:
 
 - **`entityType`** — one of: `USER`, `REALM`, `ROLE`, `GROUP`, `CLIENT`, `CLIENT_SCOPE`, `ORGANIZATION`, `COMPOSITE_ROLE`, `CLIENT_SCOPE_CLIENT`, `CLIENT_SCOPE_ROLE`, `PROTOCOL_MAPPER`, `REALM_DEFAULT_SCOPE`, `SCOPE_MAPPING`.
-- **`actionType`** — a free-form verb such as `CREATE`, `SET`, `UPDATE`, `ASSIGN`, or an `ADOPT_*` variant.
+- **`actionType`** — a **granular** name, never a bare verb: `CREATE_USER`, `CREATE_ROLE`, `CREATE_GROUP`, `CREATE_CLIENT`, `CREATE_CLIENT_SCOPE`, `GRANT_ROLES`, `REVOKE_ROLES`, `JOIN_GROUPS`, `LEAVE_GROUPS`, `ADD_COMPOSITE`, `ASSIGN_SCOPE`, `ADD_PROTOCOL_MAPPER`, `UPDATE_PROTOCOL_MAPPER`, `UPDATE_CLIENT_REDIRECT_URIS`, `SET_REALM_ATTRIBUTE`, `SET_REALM_CONFIG`, `REGEN_ADMIN_POLICY`, `DISABLE_IGA`, `DELETE_REALM`, `OFFBOARD_REALM`, and the `ADOPT_*` family. There is no `CREATE`, `SET`, `UPDATE` or `ASSIGN` value; a filter on those matches nothing.
 
-Read both values back from the `GET /iga/change-requests` response; do not hardcode a fixed enum. Some change requests (e.g. role creation and default-role adoption) commit automatically as part of the login-closure converge and never need an explicit authorize/commit; the rest require quorum authorize/commit. The master realm and IGA-disabled realms are exempt from governance entirely.
+Read both values back from the `GET /iga/change-requests` response; do not hardcode a fixed enum. When IGA is first enabled on a firstAdmin realm, only an allow-list commits automatically (`ADOPT_*`, realm attribute/config, default scopes and groups). **`CREATE_ROLE`, `CREATE_CLIENT`, `CREATE_GROUP`, `CREATE_USER`, `ADD_PROTOCOL_MAPPER` and `GRANT_ROLES` stay pending** and need an explicit approve — earlier revisions of this file said role creation commits automatically, which it does not on `main`. The master realm and IGA-disabled realms are exempt from governance entirely.
 
 ## Status Values
 
 | Value | Meaning |
 |-------|---------|
-| `DRAFT` | Just created, not yet submitted for review |
-| `PENDING` | Awaiting approvals |
-| `APPROVED` | Enough approvals received, ready to commit |
-| `DENIED` | Rejected by reviewer |
-| `ACTIVE` | Committed and applied |
+| `PENDING` | Awaiting approvals. Use the `readyToCommit` field, not the status, to tell whether quorum is met |
+| `APPROVED` | **Committed and applied.** It does not mean "ready to commit" |
+| `DENIED` | Rejected by a reviewer |
+| `CANCELLED` | Cancelled when IGA was switched off (resumable for `ADOPT_*` requests) |
+
+There is no `DRAFT` and no `ACTIVE`. VERIFIED 2026-10-07: these four are the only values set anywhere in iga-core, and the admin console's type has no others.
 
 ---
 
@@ -194,11 +192,13 @@ A working IGA admin panel must include:
 
 1. **Pending list** -- Display change requests via `GET /iga/change-requests?status=PENDING` (keyed by `id`).
 
-2. **Approve button** -- Triggers `POST /iga/change-requests/{id}/authorize` per selected CR (or `POST /iga/change-requests/bulk-authorize` for a batch).
+2. **Approve button** -- Calls `POST /iga/change-requests/{id}/approve` with `{}` per selected CR and branches on the reply's `mode`.
 
-3. **Enclave popup** -- In Tide MultiAdmin mode, complete the two-phase enclave exchange: `GET /iga/change-requests/{id}/approval-model` → sign in the enclave → `POST /iga/change-requests/{id}/approval-model` with the base64 doken. In FirstAdmin/Tideless mode, `authorize` signs server-side and no popup is needed.
+3. **Enclave popup** -- When the reply is `mode: "needs-approval"`, sign the returned `requestModel` in the Tide enclave and POST it back to the same `/approve` endpoint as `{ "requestModel": "<base64>" }`. When the reply is `mode: "recorded"`, there is nothing to sign.
 
-4. **Batch support** -- Use `POST /iga/change-requests/bulk-authorize` (`{"actionTypeIn":[...],"limit":N}`) to approve many CRs at once; commit each ready CR (`readyToCommit === true`).
+4. **Batch support** -- Loop `/approve` over the selection. Collect every `needs-approval` request, open the enclave **once** with the array, then POST each signed request back. This is what the admin console does; it does not call `bulk-authorize`.
+
+   Count approvals from `authorizationCount`; if it is absent, fall back to `readyToCommit`, never to `0`.
 
 5. **Role check** -- Only users with admin roles should see the panel. Verify the admin token includes the required realm-admin or delegated role before rendering the UI. This is UI gating only; the server enforces authorization on every API call.
 
@@ -209,16 +209,16 @@ A working IGA admin panel must include:
 ### Lifecycle
 
 - [ ] A governed write returns 202 and a change request appears via `GET /iga/change-requests?status=PENDING`
-- [ ] `POST .../{id}/authorize` records an approval (409 if the same admin re-signs)
-- [ ] In Tide MultiAdmin mode, the `approval-model` enclave exchange completes and increments `authCount`
+- [ ] `POST .../{id}/approve` with `{}` replies `mode: "recorded"` (firstAdmin/Tideless) or `mode: "needs-approval"` (Tide MultiAdmin)
+- [ ] In Tide MultiAdmin mode, the second `/approve` call with the signed `requestModel` increments `authCount` and commits at quorum
 - [ ] Committing a ready CR (`readyToCommit`) applies the change (APPROVED); 412 while under threshold
 - [ ] `POST .../{id}/deny` removes it from the pending list (DENIED)
 
 ### Endpoints
 
 - [ ] `GET /iga/change-requests?status=PENDING` returns all pending CRs across types
-- [ ] `POST /iga/change-requests/{id}/authorize` records the approval
-- [ ] `POST /iga/change-requests/bulk-authorize` authorizes a batch (429 if a bulk run is active)
+- [ ] `POST /iga/change-requests/{id}/approve` records the approval and reports `committed`
+- [ ] The approval request goes browser → TideCloak with the admin's own token, not through the app server (AP-89)
 - [ ] `POST /iga/change-requests/{id}/commit` applies the change; 412 under threshold
 - [ ] `POST /iga/change-requests/{id}/deny` sets status to DENIED
 - [ ] `GET/POST /iga/change-requests/{id}/comments` persist and read back
@@ -236,11 +236,11 @@ A working IGA admin panel must include:
 
 ### Enclave Step Skipped in Tide MultiAdmin Mode
 
-**Symptom**: Approve appears to succeed but the change request stays in PENDING and `authCount` does not increase.
+**Symptom**: The first `/approve` call returns `mode: "needs-approval"` and the panel treats that as success; the change request stays PENDING and `authCount` does not increase. With the older `authorize` endpoint the same mistake surfaces as `409 MULTIADMIN_REQUIRES_APPROVAL_ENCLAVE`.
 
-**Cause**: In Tide MultiAdmin mode, a bare `authorize` is not enough — the admin must sign the enclave challenge via the two-phase `approval-model` exchange.
+**Cause**: In Tide MultiAdmin mode the admin must sign the request in the enclave. The first `/approve` call only hands back what to sign.
 
-**Fix**: `GET /iga/change-requests/{id}/approval-model`, decode `requestModel`, sign it in the Tide enclave, then `POST /iga/change-requests/{id}/approval-model` with `{ "requestModel": "<base64 doken>" }`. (FirstAdmin/Tideless mode signs server-side on `authorize` — no enclave step.)
+**Fix**: Base64-decode `requestModel`, sign it in the Tide enclave, then `POST /iga/change-requests/{id}/approve` with `{ "requestModel": "<base64 signed request>" }`. (FirstAdmin/Tideless replies `mode: "recorded"` straight away — no enclave step.)
 
 ---
 
@@ -258,9 +258,9 @@ A working IGA admin panel must include:
 
 **Symptom**: `POST /iga/change-requests/{id}/authorize` returns **409 Conflict**.
 
-**Cause**: Four-eyes enforcement — the same admin cannot sign a CR twice, or the CR is no longer PENDING.
+**Cause**: This admin has already signed the CR, the CR is no longer PENDING, or the realm is multiAdmin and `authorize` cannot sign it. This is once-per-caller counting, not a requester-cannot-approve rule: iga-core lets the person who filed a request approve it.
 
-**Fix**: Have a *different* admin authorize, or refresh the list; do not retry the same admin's signature.
+**Fix**: Refresh the list. If more approvals are needed, a *different* admin must approve. Calling `/approve` again as the same admin is safe: it re-runs the commit gates instead of returning 409.
 
 ---
 
@@ -280,11 +280,10 @@ A working IGA admin panel must include:
 
 **Cause**: Both endpoints were removed in the IGA decoupling. They are no longer functional.
 
-**Fix**: Approve via `POST /iga/change-requests/{id}/authorize` (passing the enclave-signed approval in the body) and reject via `POST /iga/change-requests/{id}/deny`.
+**Fix**: Approve via `POST /iga/change-requests/{id}/approve` (the signed request goes in the body as `{ "requestModel": "<base64>" }`) and reject via `POST /iga/change-requests/{id}/deny`.
 
 ---
 
 ## References
 
-- Current surface: `IgaAdminResource` (`tidecloak-iga-extensions` iga-core) — `/iga/change-requests/*`, `/iga/forseti-contracts`, `/iga/role-policies`.
-- Legacy bootstrap-compat surface: `/tide-admin/change-set/*`, still used by `localtest/init/init_tidecloak.sh` and the `tidecloak-js` `AdminAPI` client.
+- Legacy `/tide-admin/change-set/*`: **removed**. iga-core `main` serves no such route, so any caller still targeting it (older scripts, the `tidecloak-js` `AdminAPI` client) cannot work against a current server.

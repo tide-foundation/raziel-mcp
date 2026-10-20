@@ -69,7 +69,7 @@ For projects that do not use the init script, follow the manual sequence below. 
 ### ⚠️ `tide-roles-mapper` does not exist. Never put it in a realm.json.
 
 **There is no Tide-specific protocol-mapper provider at all** — not on the production image, not on
-staging. MEASURED against `tideorg/tidecloak-dev:latest` (the production image), 2026-08-11:
+staging. MEASURED against `tideorg/tidecloak-dev:latest`, 2026-08-11:
 
 ```bash
 GET /admin/serverinfo   ->   protocolMapperTypes["openid-connect"]
@@ -103,16 +103,39 @@ meant to cure.
 | `tideuserkey` | the **`tide-claims`** scope (provisioned by `setUpTideRealm`) | `oidc-usermodel-attribute-mapper` |
 | `vuid` | the **`tide-claims`** scope | `oidc-usermodel-attribute-mapper` |
 | `t\.uho` (home ORK URL) | the **`tide-claims`** scope | `oidc-hardcoded-claim-mapper` |
+| `groups` | declared **inline on the client by the pack's realm templates** | `oidc-group-membership-mapper` |
 
 VERIFIED on live Tide realms: `roles` is a **default** client scope carrying `realm roles` and
 `client roles`, and `setUpTideRealm` provisions a `tide-claims` scope holding `tide-uho`,
 `Tide User Key` and `Tide vuid` — every one a stock Keycloak provider.
 
 Declaring the `tideUserKey`/`vuid` attribute mappers inline on the client (as the pack templates do)
-also works and is harmless belt-and-braces. Declaring role mappers inline is likewise fine. **What is
+also works and is harmless belt-and-braces.
+
+**The `groups` mapper ships in every pack realm template, so it exists before IGA is enabled.**
+Claim name exactly `groups` (mandated by Tide: the ORK copies the access token's `groups` array into
+the doken, and `RelationshipAttestation:1` `Group` subjects match it), access token on, **full path
+on** (`/clinic-a/nurses`, so same-named subgroups under different parents never collapse into one
+value). Because it is in the imported realm, the enable-IGA adopt-scan attests it automatically
+(`ADOPT_PROTOCOL_MAPPER`, auto-approved) — no change request to approve later. The ORKs check every
+token claim against the attested state, so a mapper added **after** IGA is a governed change that
+must be approved before tokens carry it. MEASURED 2026-10-15 on the local stack: realm imported from
+`templates/shared/realm.json.template` → licensed → IGA on → the `groups` mapper adopted and approved
+with the rest (258 committed, 0 rejected) → an ORK-signed (EdDSA) token for a member of
+`/clinic-a/nurses` carried `groups: ["/clinic-a/nurses"]`. Also measured: the ORKs refuse to sign when
+any claim differs from the attested value (`token claim 'aud' does not match attested value`), so
+attestation is not a formality. Declaring role mappers inline is likewise fine. **What is
 never fine is naming a `tide-*` provider type.** AP-80.
 
-**Always use `tideorg/tidecloak-dev:latest`.** Despite the `-dev` suffix this IS the production image, and it is the only image the pack supports — for development and production alike. It has built-in ORK/threshold defaults and does not need `KC_HOSTNAME`, `SYSTEM_HOME_ORK`, `USER_HOME_ORK`, `THRESHOLD_T`, `THRESHOLD_N`, or `PAYER_PUBLIC`; supplying them by hand risks a broken threshold config. Do **not** use `tideorg/tidecloak-stg-dev` — it is an internal pre-release build.
+**Always use `tideorg/tidecloak-dev:latest`.** It is the only image the pack supports.
+
+**What this image is — corrected 2026-10-07 from the image source** (`tidecloak-override`, `quarkus/container/Dockerfile-dev`, confirmed independently from the `tidecloak` tree):
+
+- It is the **development build of the server**: embedded H2, non-strict hostname, and it **imports a realm named `myrealm` on every start** (with open registration). It is not the production *server* image; that is `tideorg/tidecloak` (Postgres required, strict hostname, proxy headers), for which this pack has no playbook.
+- It is wired to the **production Tide network**: home ORK `https://ork1.tideprotocol.com`, **T=14, N=20**, and the production payer key are baked in. "Local dev" on this image talks to live ORKs. It is not a 3-of-5 test network; 3/5 and `sork1` belong to staging builds and Tide's internal local stack.
+- Earlier revisions said "despite the `-dev` suffix this IS the production image". That conflated the two points above.
+
+It has built-in ORK/threshold defaults and does not need `KC_HOSTNAME`, `SYSTEM_HOME_ORK`, `USER_HOME_ORK`, `THRESHOLD_T`, `THRESHOLD_N`, or `PAYER_PUBLIC`; supplying them by hand risks a broken threshold config. Do **not** use `tideorg/tidecloak-stg-dev` — it is an internal pre-release build.
 
 **Do not append `start-dev` or any command** to `docker run`. TideCloak images have a pre-configured entrypoint — appending `start-dev` (a vanilla Keycloak convention) breaks Tide initialization. See AP-39.
 
@@ -151,20 +174,77 @@ threshold configuration. They are listed only so you recognise them if you meet 
 
 | Variable | Purpose | Example |
 |----------|---------|---------|
-| `KC_HOSTNAME` | Public-facing URL | `http://localhost:8080` |
-| `SYSTEM_HOME_ORK` | Tide network entry point | `https://sork1.tideprotocol.com` |
-| `USER_HOME_ORK` | User-facing ORK URL | `https://sork1.tideprotocol.com` |
-| `THRESHOLD_T` | Signing threshold | `3` |
-| `THRESHOLD_N` | Total ORK nodes | `5` |
-| `PAYER_PUBLIC` | Payer ORK public key | hex string |
+| `SYSTEM_HOME_ORK` | Tide network entry point | baked in: `https://ork1.tideprotocol.com` |
+| `USER_HOME_ORK` | User-facing ORK URL | baked in: `https://ork1.tideprotocol.com` |
+| `THRESHOLD_T` | Signing threshold | baked in: `14` |
+| `THRESHOLD_N` | Total ORK nodes | baked in: `20` |
+| `PAYER_PUBLIC` | Payer ORK public key | baked in (hex string) |
 
-**Anti-pattern:** Omitting Tide env vars. Without `SYSTEM_HOME_ORK`, `USER_HOME_ORK`, `THRESHOLD_T`, `THRESHOLD_N`, and `PAYER_PUBLIC`, the Tide IdP provider does not initialize. Required actions like `link-tide-account-action` never register, and the init script fails with "Could not find configuration for Required Action". VERIFIED.
+`THRESHOLD_T` / `THRESHOLD_N` are read **every time a Tide token is signed**. A blank or non-numeric override does not fail at startup; it surfaces later as a 500 at the token endpoint (`TOKEN_ENV_CONFIG_INVALID`). That is the concrete reason not to override them.
+
+`KC_HOSTNAME` is not a Tide variable and has no baked value. It is optional on this image only because the hostname check is non-strict; set it, with `KC_PROXY_HEADERS`, behind a reverse proxy.
+
+**Anti-pattern:** Blanking or overriding the Tide env vars. They are `ENV` in the image, so they cannot be "omitted" — only replaced. Without working values for `SYSTEM_HOME_ORK`, `USER_HOME_ORK`, `THRESHOLD_T`, `THRESHOLD_N`, and `PAYER_PUBLIC`, the Tide IdP provider does not initialize. Required actions like `link-tide-account-action` never register, and the init script fails with "Could not find configuration for Required Action". VERIFIED.
 
 ---
 
+## Before anything is created: licence email and Terms & Conditions (AP-90)
+
+`setUpTideRealm` licenses the realm to an **email address**, under Tide's **Terms & Conditions**:
+**https://tide.org/legal**. Both belong to the person who owns the deployment.
+
+VERIFIED from Tide's own setup flows: `sources/example-app-keylessh/script/tidecloak/init-tidecloak.sh`
+prompts *"Enter an email to manage your license"* and *"I agree to the Terms & Conditions"*, and
+loops until the answer is `y`/`yes`; the `@tidecloak/create-nextjs` CLI asks the same two questions once (on "no" it skips initialisation and makes no server call)
+(`sources/example-app-tidecloak-test-cases/step_definitions/create-nextjs.steps.js`).
+
+**Rule. Ask the user both questions, and wait for their own answer, before starting TideCloak or
+creating a realm:**
+
+1. *"Which email address should manage your Tide licence?"* A real address they control.
+2. *"Tide's Terms & Conditions are at https://tide.org/legal. Do you agree to them? (yes/no)"*
+   Show the link. Do not paraphrase the terms.
+
+- Never invent the email. `admin@example.com`, `admin@yourorg.com` and similar are not answers.
+- Only the user can agree. "Just set it up" is not agreement. Silence is not agreement.
+- If they decline, stop. Do not start a container, create a realm, or call `setUpTideRealm`.
+- Ask once per realm. If `.env` already holds both from the user's earlier answer, do not ask again.
+
+**Every init script — including the one you write yourself — must fail closed.** The pack's scripts
+(`templates/shared/bootstrap-tidecloak.sh`, the template `init-tidecloak.sh` files) prompt at a
+terminal and otherwise exit with code 2. Put this at the TOP of any script you write, before the
+container starts, so that declining leaves nothing behind:
+
+```bash
+TIDE_TERMS_URL="https://tide.org/legal"
+if [ -t 0 ] && [ -t 1 ]; then          # a person at a terminal: ask them
+  [ -n "${TIDE_LICENSE_EMAIL:-}" ] || read -r -p "Enter an email to manage your Tide licence: " TIDE_LICENSE_EMAIL
+  if [ "${TIDE_TERMS_ACCEPTED:-}" != "yes" ]; then
+    echo "Please review the Tide Terms & Conditions: $TIDE_TERMS_URL"
+    read -r -p "Do you agree to the Terms & Conditions? (yes/no): " a
+    case "$a" in y|Y|yes|Yes|YES) TIDE_TERMS_ACCEPTED=yes ;; *) echo "Not accepted. Nothing was created." >&2; exit 1 ;; esac
+  fi
+fi
+case "${TIDE_LICENSE_EMAIL:-}" in
+  ""|*@example.*|*@yourorg.com|*@yourdomain.com|*@test.com|*.invalid|*.test) ok=no ;; *@*.*) ok=yes ;; *) ok=no ;;
+esac
+if [ "$ok" != yes ] || [ "${TIDE_TERMS_ACCEPTED:-}" != "yes" ]; then
+  echo "STOP: nothing was created. ASK THE USER (do not answer for them):" >&2
+  echo "  1. Which email address should manage your Tide licence?" >&2
+  echo "  2. Do you agree to Tide's Terms & Conditions at $TIDE_TERMS_URL ? (yes/no)" >&2
+  echo "Then re-run with TIDE_LICENSE_EMAIL=<their email> TIDE_TERMS_ACCEPTED=yes" >&2
+  exit 2
+fi
+```
+
+An agent can type `TIDE_TERMS_ACCEPTED=yes` itself; nothing in a script can prevent that. Doing so
+without the user's answer is AP-90. The check exists so that a missing answer stops the run instead
+of defaulting silently, which is what happened before.
+
 ## Initialization Sequence
 
-Order matters. Do not skip or reorder steps.
+Order matters. Do not skip or reorder steps. Step 0 is the section above: licence email and Terms &
+Conditions, asked of the user.
 
 | # | Step | API / action | Produces |
 |---|------|-------------|----------|
@@ -181,7 +261,7 @@ Order matters. Do not skip or reorder steps.
 | 9 | **Set `tideInvitable`, drain, THEN** generate invite link | Three steps, in order: (1) `PUT /users/{id}` with `attributes.tideInvitable=["true"]`; (2) **drain the `SET_USER_ATTRIBUTE` change request**; (3) `POST /tideAdminResources/get-required-action-link` with `["link-tide-account-action"]` | URL for admin to link Tide account |
 | 10 | Wait for account linking | Poll user `tideUserKey` attribute until non-empty | Admin has Tide identity |
 | 11 | Approve role assignment change requests | `authorize` + `commit` on `/iga/change-requests` | Admin roles committed |
-| 12 | Update CustomAdminUIDomain | `PUT /identity-provider/instances/tide` then `POST /vendorResources/sign-idp-settings` | Enclave approval popups work from app origin |
+| 12 | Update CustomAdminUIDomain | `PUT /identity-provider/instances/tide` then `POST /vendorResources/sign-idp-settings` | Enclave approval popups work. ⚠️ **Which value is right is UNRESOLVED**: this file and Tide's two reference init scripts set the **app origin**; `templates/shared/bootstrap-tidecloak.sh` sets the realm's **tide-console URL** and says "not the app URL". The 2026-10-07 source audit could not determine what the enclave checks. Do not "correct" one to match the other without a live approval-popup test |
 | 13 | Export adapter JSON | `GET /vendorResources/get-installations-provider?clientId={uuid}&providerId=keycloak-oidc-keycloak-json` | `tidecloak.json` with `jwk`, `vendorId`, `homeOrkUrl` |
 
 ---
@@ -192,7 +272,7 @@ Order matters. Do not skip or reorder steps.
 
 - Path: `POST /admin/realms/{realm}/vendorResources/setUpTideRealm`
 - Content-Type: `application/x-www-form-urlencoded` (NOT JSON)
-- Body: `email=admin@yourorg.com` (required, URL-encoded)
+- Body: `email=$TIDE_LICENSE_EMAIL` (required, URL-encoded) — the address the user gave, never a placeholder (AP-90)
 - Handles license activation automatically. No manual "Manage License" step needed.
 
 **Anti-pattern:** Using `/tide-admin/setUpTideRealm`. Wrong path. Returns 404. VERIFIED.
@@ -321,7 +401,7 @@ trailing slash in the URL.
 drain reports "0 change requests" while the queue fills behind it. The bootstrap log stays completely
 green and you end up with a realm containing zero roles and zero users. VERIFIED (LEARNINGS-agent-quorum-001 L-12).
 - Authorize (sign): `POST /admin/realms/{realm}/iga/change-requests/{id}/authorize` (body `{}` optional; records an approval, does **not** commit; simple firstAdmin/Tideless lane — refuses multiAdmin CRs)
-- Batch authorize (bootstrap): `POST /admin/realms/{realm}/iga/change-requests/bulk-authorize` with `{ "actionTypeIn": ["CREATE","DELETE"], "limit": 100 }`
+- Authorize (bootstrap), per id: `POST .../iga/change-requests/{id}/authorize` (body `{}`) for each pending request, skipping `DISABLE_IGA`, `DELETE_REALM` and `OFFBOARD_REALM`. `bulk-authorize` needs real granular action types such as `["ADOPT_ROLE","CREATE_USER"]`
 - Approve (multiAdmin): `POST /admin/realms/{realm}/iga/change-requests/{id}/approve` (enclave lane; approves AND auto-commits once quorum met — the console "Authorize" button)
 - Commit: `POST /admin/realms/{realm}/iga/change-requests/{id}/commit` (explicit apply-only; 412 if under threshold / unmet dependency)
 - FirstAdmin/Tideless: authorize signs server-side. Tide MultiAdmin: use the `{id}/approval-model` enclave exchange, then `approve`.
@@ -421,7 +501,7 @@ already wired. Do not hand the user a `cp` command.
 
 ```
 POST /admin/realms/{realm}/tideAdminResources/get-required-action-link
-     ?userId=...&clientId=...&redirectUri=...&lifespan=43200
+     ?userId=...&client_id=...&redirect_uri=...&lifespan=43200
 Body: ["link-tide-account-action"]
 
 → HTTP 400
@@ -455,7 +535,7 @@ ENABLED` and look fine. The cause is the undrained change request. VERIFIED (LEA
 When creating the admin user, always set `firstName` and `lastName`:
 
 ```json
-{"username":"admin","email":"admin@yourorg.com","firstName":"Admin","lastName":"User","enabled":true}
+{"username":"admin","email":"<TIDE_LICENSE_EMAIL — the address the user gave>","firstName":"Admin","lastName":"User","enabled":true}
 ```
 
 If these fields are empty, TideCloak's `VERIFY_PROFILE` required action fires before the Tide account linking flow, blocking bootstrap. Alternatively, disable `VERIFY_PROFILE` as a default required action on the realm. VERIFIED (session-001).
@@ -560,9 +640,9 @@ DPoP (`useDPoP: { mode: 'strict', alg: 'EdDSA' }`) may not be supported on all h
 
 | Aspect | Dev (this canon) | Production |
 |--------|-----------------|------------|
-| Database | H2 embedded | External PostgreSQL (not documented — contact Tide) |
-| Image | `tidecloak-dev` — always | Despite the `-dev` suffix this IS the production image and the only supported one |
-| Threshold | T=3/N=5 minimum | T=14/N=20 on live network |
+| Database | H2 embedded | External PostgreSQL via the standard `KC_DB*` variables on the `tideorg/tidecloak` image (no pack playbook — contact Tide) |
+| Image | `tideorg/tidecloak-dev` — the only image this pack supports | `tideorg/tidecloak` is the production server image. `tidecloak-dev` is a development build |
+| Threshold | **T=14/N=20, live network** — baked into `tidecloak-dev` | T=14/N=20 on live network |
 | SSL | `sslRequired: external` (HTTP on localhost OK) | HTTPS required everywhere |
 | Admin password | Hardcoded in script | Secret management system |
 | VRK keys | Per-environment, never shared | Per-environment, never shared |
