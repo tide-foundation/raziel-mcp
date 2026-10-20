@@ -2,7 +2,11 @@
 import * as appInsights from "applicationinsights";
 import express from "express";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
-import { createServer } from "./server.js";
+import { createServer, readServablePackFile, listServablePackFiles, PACK_ROOT } from "./server.js";
+import { execFileSync } from "node:child_process";
+import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 // Optional usage telemetry — ONLY active when a connection string is provided
 // (i.e. the hosted server). npx/self-host users get NO telemetry. We track each
@@ -54,9 +58,55 @@ if (API_TOKEN) {
   });
 }
 
+// --- Pack files -------------------------------------------------------------------------------
+// A caller of the hosted server does not have the pack on disk, so every `templates/...` path a
+// tool names has to be fetchable. Two routes, both read-only and unauthenticated (the content is
+// the same as the public npm package):
+//   GET /pack/templates.tgz    everything servable, for `curl | tar -xz`
+//   GET /pack/<path>           one file, byte-exact
+// The archive is built once at startup with the system `tar`. If that fails the single-file route
+// still works and tools are told not to advertise the archive.
+let packArchive: Buffer | null = null;
+try {
+  const tmp = mkdtempSync(join(tmpdir(), "tide-pack-"));
+  const out = join(tmp, "templates.tgz");
+  const list = join(tmp, "files.txt");
+  writeFileSync(list, listServablePackFiles().join("\n") + "\n");
+  execFileSync("tar", ["-czf", out, "-C", PACK_ROOT, "-T", list]);
+  packArchive = readFileSync(out);
+} catch (e) {
+  console.warn("pack archive not built (single-file route still works):", (e as Error).message);
+}
+
+app.get("/pack/templates.tgz", (_req, res) => {
+  if (!packArchive) {
+    res.status(404).json({ error: "Archive unavailable. Fetch files individually from /pack/<path>." });
+    return;
+  }
+  res.status(200).type("application/gzip").send(packArchive);
+});
+
+app.get("/pack/*path", (req, res) => {
+  const parts = (req.params as { path?: string[] | string }).path;
+  const rel = Array.isArray(parts) ? parts.join("/") : String(parts ?? "");
+  const body = readServablePackFile(rel);
+  if (!body) {
+    res.status(404).json({ error: "Not found" });
+    return;
+  }
+  // octet-stream on purpose: these are files to save byte-exact, never pages to render from this
+  // origin, and no proxy should be tempted to transform them.
+  res.status(200).set({ "Content-Type": "application/octet-stream", "X-Content-Type-Options": "nosniff" }).send(body);
+});
+
+// What callers should use to reach this server. Behind Azure Container Apps the request's own
+// protocol/host (trust proxy is on) is the public one; PUBLIC_BASE_URL overrides it.
+const publicBaseUrl = (req: express.Request) =>
+  process.env.PUBLIC_BASE_URL || `${req.protocol}://${req.get("host")}`;
+
 // MCP endpoint — stateless (new server + transport per request)
 app.post("/mcp", async (req, res) => {
-  const server = createServer();
+  const server = createServer({ publicBaseUrl: publicBaseUrl(req), packArchive: packArchive !== null });
   const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined });
   res.on("close", () => {
     transport.close();

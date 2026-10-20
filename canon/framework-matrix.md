@@ -34,8 +34,9 @@ The Tide SDK is split across multiple packages. Each exports different classes. 
 | Package | Key exports | Used for |
 |---------|------------|----------|
 | `@tidecloak/js` | `IAMService`, `TideCloak`, `Tools` (re-exports `TideMemory`), `Models` (re-exports `BaseTideRequest`, `Policy`, `ApprovalType`, `ExecutionType`, `Doken`) | Auth, admin API, context, core primitives |
-| `@tidecloak/nextjs` | `TideCloakContextProvider`, `useTideCloak` | Next.js provider and hooks. Does NOT export `Models`, `PolicySignRequest`, or signing classes |
-| `@tidecloak/react` | `TideCloakProvider`, `useTideCloak` | React provider (prefer `@tidecloak/nextjs` for Next.js) |
+| `@tidecloak/nextjs` | `TideCloakProvider`, `TideCloakContextProvider`, `useTideCloak`, `Authenticated`, `Unauthenticated`, `HasRealmRole`, `HasClientRole` | Next.js provider and hooks. Does NOT export `Models`, `PolicySignRequest`, or signing classes |
+| `@tidecloak/nextjs/server` | `createTideCloakProxy`, `createTideCloakMiddleware`, `verifyTideCloakToken`, `createDpopRoute` (re-export merged 2026-10-07; check your installed version) | Server-only helpers. The proxy/middleware are NOT exported from the package root |
+| `@tidecloak/react` | `TideCloakContextProvider`, `useTideCloak`, `AdminAPI` | React provider. It does NOT export `TideCloakProvider` (prefer `@tidecloak/nextjs` for Next.js) |
 | `@tideorg/js` | `BaseTideRequest`, `Policy`, `TideMemory`, `Doken` | Core primitives (prefer accessing via `@tidecloak/js` re-exports to avoid ESM issues) |
 | `asgard-tide` | `BasicCustomRequest`, `DynamicPayloadCustomRequest` | Building ORK signing requests. NOT in `@tidecloak/js` or `@tideorg/js` |
 | `heimdall-tide` | `PolicySignRequest`, `RequestEnclave`, `ApprovalEnclave` | Policy deployment, enclave UI |
@@ -49,6 +50,13 @@ The Tide SDK is split across multiple packages. Each exports different classes. 
 See [SDK Internals](concepts.md#sdk-internals) for architecture details.
 
 ### Webpack Workarounds (Required)
+
+> **Possibly no longer needed — DIFFERS ON `main`, not re-built.** On `tidecloak-js` `main` the
+> packages write `{"type":"commonjs"}` / `{"type":"module"}` markers into their `dist` folders, the
+> published `@tidecloak/react` CJS build is real CommonJS, and the vendor's own Next 16 scaffold runs
+> on Turbopack with an empty `next.config.js` and plain `next dev`. That removes the stated reason for
+> both fixes below. Nobody has built this pack's templates without them, so they stay until someone
+> does: confirm with a build against the SDK version you install before deleting them.
 
 Two webpack fixes are required for `@tidecloak/*` packages in Next.js:
 
@@ -177,22 +185,29 @@ The provider reads all config (auth-server-url, realm, resource/clientId, redire
 | Component | From | Props |
 |---|---|---|
 | `TideCloakProvider` | `@tidecloak/nextjs` | **`{ config, children }` ONLY.** Init options must be folded **into `config`** |
-| `TideCloakContextProvider` | `@tidecloak/react` | `configUrl` + `initOptions` + `useDPoP` as siblings |
+| `TideCloakContextProvider` | `@tidecloak/react` | `config`, `configUrl`, `authMode`, `adapter` and callbacks. **No `useDPoP` or `initOptions` prop.** Options go in `config`, which is merged over the adapter fetched from `configUrl` |
 
 ```typescript
 // @tidecloak/nextjs — TideCloakProvider. Its type is { config: Record<string, any>; children: ReactNode }
 <TideCloakProvider config={{ ...tcConfig, useDPoP: { mode: 'strict', alg: 'ES256' } }}>
 
-// @tidecloak/react — TideCloakContextProvider takes them as separate props
-<TideCloakContextProvider configUrl="/tidecloak.json" useDPoP={{ mode: 'strict', alg: 'ES256' }}>
+// @tidecloak/react — TideCloakContextProvider: options ALSO go inside `config`.
+// It is merged over the adapter JSON fetched from configUrl.
+<TideCloakContextProvider configUrl="/tidecloak.json" config={{ useDPoP: { mode: 'strict', alg: 'ES256' } }}>
 ```
 
-⚠️ Passing `useDPoP` or `initOptions` as a **sibling prop** to the Next.js `TideCloakProvider`
-**silently does nothing** — the type accepts only `config` and `children`, so extra props are ignored
-rather than rejected. Fold them into `config`. VERIFIED against the shipped
-`TideCloakProviderProps` type (LEARNINGS-agent-quorum-001 L-10).
+⚠️ Passing `useDPoP` or `initOptions` as a **sibling prop** to EITHER provider **silently does
+nothing** — neither type declares them, so they are ignored rather than rejected, and the app runs
+with plain bearer tokens. Fold them into `config`. VERIFIED 2026-10-07 against `tidecloak-js` `main`:
+`TideCloakProvider` props are `{ config, children }`; `TideCloakContextProviderProps` has no
+`useDPoP` / `initOptions` (`packages/tidecloak-react/src/contexts/TideCloakContextProvider.tsx`).
+An earlier revision of this file showed them as sibling props on the React provider; that left DPoP off.
 
-ES256 is the default and recommended algorithm. EdDSA also supported. DPoP is required for Tide's full security guarantees — and needs the relay page and CSP wiring in **Browser Prerequisites** below.
+**DPoP is opt-in on the client.** With no `useDPoP` in `config` the SDK issues plain bearer tokens and
+says nothing. Modes are `'strict'` and `'auto'`: `strict` throws at init if the realm does not
+advertise DPoP; `auto` silently runs without it. Use `strict`.
+
+ES256 is the default and recommended algorithm. ES384, ES512 and EdDSA are also supported. DPoP is required for Tide's full security guarantees — and needs the relay page and CSP wiring in **Browser Prerequisites** below.
 
 ---
 
@@ -240,7 +255,9 @@ export async function GET(req: NextRequest) {
   }
 
   try {
-    const jwt = await verifyTideJWT(authHeader.replace('Bearer ', ''));
+    // With DPoP on, secureFetch sends `Authorization: DPoP <token>`, not `Bearer`. Accept both
+    // schemes here, then verify the proof (see DPoP Verification below) when the token has cnf.jkt.
+    const jwt = await verifyTideJWT(authHeader.replace(/^(Bearer|DPoP) /i, ''));
 
     // Check role
     if (!jwt.realm_access?.roles?.includes('admin')) {
@@ -317,8 +334,9 @@ export function loadTideConfig(): TideConfig {
 ```
 
 **Agent implication**:
-- Use embedded JWKS from adapter JSON only. Do not use `createRemoteJWKSet`. Do not fetch from `{realm}/protocol/openid-connect/certs`. If `jwk` is missing, re-export adapter with IGA enabled. (I-04)
-- `jwk` field is only present when IGA is enabled on the realm. Validate at startup.
+- Use embedded JWKS from adapter JSON only. Do not use `createRemoteJWKSet`. Do not fetch from `{realm}/protocol/openid-connect/certs`. If `jwk` is missing, the realm has no Tide vendor key yet: finish `setUpTideRealm` and re-export the adapter. (I-04)
+- `jwk` is present once the realm has a `tide-vendor-key` component with an EdDSA key. It is NOT gated on IGA (VERIFIED 2026-10-07, `tidecloak-idp-extensions` `VendorResource.java`). Validate at startup.
+- ⚠️ **`verifyTideCloakToken` does not enforce this for you.** When `config.jwk` is absent it silently falls back to `createRemoteJWKSet(<issuer>/protocol/openid-connect/certs)`. Assert `config.jwk` yourself before calling it. It also returns `null` for a bad token AND for an infrastructure failure, and verifies the JWT only — no DPoP proof, no `cnf.jkt`. VERIFIED 2026-10-07, `tidecloak-js` `packages/tidecloak-verify/src/TideJWT.js`.
 
 ### Server-Side JWT Verification via `@tidecloak/verify`
 
@@ -344,7 +362,8 @@ const payload = await verifyTideCloakToken(config, token, allowedRoles);
 import { verifyTideCloakToken } from '@tidecloak/verify';
 
 async function authenticate(req, res, next) {
-  const token = req.headers.authorization?.substring(7);
+  // `Bearer <token>` or, with DPoP on, `DPoP <token>` — do not assume a 7-character prefix.
+  const token = req.headers.authorization?.replace(/^(Bearer|DPoP) /i, '');
   if (!token) return res.status(401).json({ message: "No token" });
 
   try {
@@ -372,7 +391,7 @@ app.use("/api/*", authenticate);
 
 ```typescript
 // lib/auth/dpop.ts
-import { jwtVerify, decodeJwt } from 'jose';
+import { jwtVerify, decodeJwt, decodeProtectedHeader } from 'jose';
 import { createHash } from 'crypto';
 
 const jtiCache = new Map<string, number>();  // jti -> expiry timestamp
@@ -387,12 +406,14 @@ export async function verifyDPoP(
     throw new Error('DPoP header missing');
   }
 
-  // Decode without verification first to get jwk
-  const unverified = decodeJwt(dpopHeader);
+  // `typ`, `alg` and `jwk` live in the JWS PROTECTED HEADER, not the payload. Reading them with
+  // decodeJwt() (payload) makes this check throw on every proof. Use decodeProtectedHeader (jose).
+  const unverified = decodeProtectedHeader(dpopHeader);
   if (unverified.typ !== 'dpop+jwt') {
     throw new Error('Invalid DPoP type');
   }
-  if (unverified.alg !== 'ES256' && unverified.alg !== 'EdDSA') {
+  // The SDK can sign ES256, ES384, ES512 or EdDSA.
+  if (!['ES256', 'ES384', 'ES512', 'EdDSA'].includes(String(unverified.alg))) {
     throw new Error('Invalid DPoP algorithm');
   }
 
@@ -604,6 +625,19 @@ policy *or* opt in with `Allow-CSP-From`. Omitting it is precisely what refuses 
 **3. Static rewrite, never a route handler.** The Next dev server injects its own hash-based CSP on
 route-handler responses, which blocks the relay's inline script. Static rewrites bypass that pipeline.
 
+> **MEASURED 2026-10-07, not yet reconciled with the rule above** (Next.js 16.4.0, `@tidecloak/js`
+> 0.14.34, `createDpopRoute` from `@tidecloak/js/dpop-route` in `app/tide_dpop/[...path]/route.ts`):
+>
+> - With **no** `next.config` header rules, the route handler served the page byte-exact with its own
+>   hash-pinned CSP and `Allow-CSP-From: *`, in `next dev` and `next start`. No injected CSP appeared.
+> - With the catch-all `/:path*` CSP rule this pack recommends, the served CSP was the **catch-all's**
+>   (`frame-src 'self' *`): a `next.config` header rule replaces a CSP set by the handler. Excluding
+>   the path from the catch-all (`source: "/((?!tide_dpop/).*)"`) restored the handler's CSP.
+>
+> These are served-header measurements only. **No login was run through a route handler**, so the
+> rewrite stays the instruction (it is the path verified by real logins). Upstream documents the
+> route handler as the supported setup from 0.14.34; switching the pack needs a live login first.
+
 **4. Order the specific rule last.** For the same header key, the later matching rule wins — path
 specificity does **not** decide it. Exactly one `Content-Security-Policy` header is sent per response.
 
@@ -671,9 +705,13 @@ So "the popup appears every time" means *the iframe path is broken*; no CSP sett
 Once the rewrite and headers are right, the popup should appear only when the browser genuinely blocks
 third-party storage access.
 
-**The relay URL is driven entirely from the enclave side.** `grep -c tide_dpop` in
-`@tidecloak/js/dist/esm/lib/tidecloak.js` returns **0** — reasoning about the app-side SDK source will
-never find this.
+**The relay URL is built on the TideCloak side and loaded by the enclave.** The Tide IdP builds
+`<client origin>/tide_dpop/iss/<hex issuer>/aud/<hex client id>` from the login request's
+`redirect_uri`, and the enclave appends `/tide_dpop_auth.html?version=1&openerOrigin=<enclave origin>`
+(VERIFIED 2026-10-07, `tidecloak-idp-extensions` `TideIdentityProvider.java` and the ORK enclave's
+`CMKOnlyEnclave.js`). `lib/tidecloak.js` itself never mentions the path, but from `@tidecloak/js`
+0.14.34 the SDK ships the page and probes this URL at init when `useDPoP` is set, logging a console
+error on a 404.
 
 ---
 
@@ -789,15 +827,15 @@ import { TideCloakContextProvider } from '@tidecloak/react';
 import App from './App';
 
 // Config file must be in public/tidecloak.json — do NOT import as a JS module
-// DPoP is on by default (useDPoP defaults to { mode: 'strict' }). Pass useDPoP to pin the alg
-// or relax the mode. There is no `enableDpop` flag. ES256 is the default algorithm.
-const initOptions = { useDPoP: { mode: 'strict', alg: 'ES256' } };
+// DPoP is OPT-IN: without useDPoP the SDK issues plain bearer tokens, silently. It goes inside
+// `config` — the provider has no `useDPoP` or `initOptions` prop. There is no `enableDpop` flag.
+const options = { useDPoP: { mode: 'strict', alg: 'ES256' } };
 
 ReactDOM.createRoot(document.getElementById('root')!).render(
   <React.StrictMode>
     <TideCloakContextProvider
       configUrl="/tidecloak.json"
-      initOptions={initOptions}
+      config={options}
     >
       <App />
     </TideCloakContextProvider>
@@ -814,7 +852,7 @@ import { useTideCloak, Authenticated, Unauthenticated } from '@tidecloak/react';
 
 function App() {
   return (
-    <TideCloakContextProvider configUrl="/tidecloak.json" initOptions={{ useDPoP: { mode: 'strict', alg: 'ES256' } }}>
+    <TideCloakContextProvider configUrl="/tidecloak.json" config={{ useDPoP: { mode: 'strict', alg: 'ES256' } }}>
       <AppContent />
     </TideCloakContextProvider>
   );
@@ -961,11 +999,12 @@ import { verifyDPoP } from './lib/auth/dpop';
 export function requireAuth(requiredRole?: string) {
   return async (req: express.Request, res: express.Response, next: express.NextFunction) => {
     const authHeader = req.headers.authorization;
-    if (!authHeader || !authHeader.startsWith('Bearer ')) {
+    // secureFetch sends `DPoP <token>` when DPoP is on; a Bearer-only check rejects every such request.
+    if (!authHeader || !/^(Bearer|DPoP) /i.test(authHeader)) {
       return res.status(401).json({ error: 'Unauthorized' });
     }
 
-    const token = authHeader.substring(7);
+    const token = authHeader.replace(/^(Bearer|DPoP) /i, '');
 
     try {
       // Verify DPoP if present
@@ -1062,7 +1101,7 @@ await iam.initIAM({ ...config, useDPoP: { mode: 'strict', alg: 'ES256' } });
 // Listen to auth events
 iam.on('tokenExpired', () => {
   console.log('Token expired, redirecting to login');
-  iam.doLogin({ redirectUri: window.location.origin });
+  iam.doLogin();   // optional string returnUrl; the redirect URI comes from config.redirectUri
 });
 
 iam.on('authRefreshSuccess', async () => {
@@ -1073,7 +1112,7 @@ iam.on('authRefreshSuccess', async () => {
 
 iam.on('authRefreshError', (error) => {
   console.error('Refresh failed', error);
-  iam.doLogin({ redirectUri: window.location.origin });
+  iam.doLogin();   // optional string returnUrl; the redirect URI comes from config.redirectUri
 });
 ```
 
@@ -1083,15 +1122,21 @@ iam.on('authRefreshError', (error) => {
 
 ### Login / Logout
 
+`doLogin(returnUrl?: string)` takes an optional return path, not an options object, and `doLogout()`
+takes nothing. The redirect URI is `config.redirectUri`, defaulting to `<origin>/auth/redirect`.
+`IAMService` has **no `getUserInfo()`** on `tidecloak-js` `main`; examples in this file that call it
+predate that — read identity from the token claims instead. VERIFIED 2026-10-07,
+`packages/tidecloak-js/src/IAMService.js`.
+
 ```typescript
 // Login
 document.getElementById('login-btn').addEventListener('click', () => {
-  iam.doLogin({ redirectUri: window.location.origin });
+  iam.doLogin();   // optional string returnUrl; the redirect URI comes from config.redirectUri
 });
 
 // Logout
 document.getElementById('logout-btn').addEventListener('click', () => {
-  iam.doLogout({ redirectUri: window.location.origin });
+  iam.doLogout();  // takes no arguments
 });
 ```
 
@@ -1215,10 +1260,12 @@ function loadTideConfig() {
 ```typescript
 function extractToken(req: Request): string {
   const authHeader = req.headers.get('authorization') || req.headers.authorization;
-  if (!authHeader || !authHeader.startsWith('Bearer ')) {
+  // `Bearer <token>`, or `DPoP <token>` when the client has DPoP on (secureFetch sends the latter).
+  const m = /^(Bearer|DPoP) (.+)$/i.exec(authHeader ?? '');
+  if (!m) {
     throw new Error('Missing or invalid Authorization header');
   }
-  return authHeader.substring(7);
+  return m[2];
 }
 ```
 

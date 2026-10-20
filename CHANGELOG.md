@@ -2,6 +2,441 @@
 
 All notable changes to `@tideorg/mcp` (the Tide Agent Pack) are documented here.
 
+## 1.9.33 — `RelationshipAttestation:1` is the default for encrypted-data access
+
+The ORK's built-in `RelationshipAttestation:1` contract is on ORK `main` (VERIFIED from source
+`c69fc4f6`, 2026-10-16). It lets a named user, a group, or holders of a role encrypt and/or decrypt
+one record's data. A realm admin approves one policy; nothing is written, compiled or deployed.
+
+- **New scenario `relationship-attestation`** with manifest, roles, bootstrap, anti-patterns, and
+  `templates/relationship-attestation/relationship.ts` (build, sign, encrypt, decrypt).
+- **Scenarios moved off custom contracts.** `organisation-password-manager` drops the `appUser`
+  and `orgOwner` custom contracts: each shared vault has one `RelationshipAttestation:1` policy
+  (vault id = `assignmentId` = the only tag; subject an org role with `clientId`, a team group, or
+  a member). `encrypted-communication`'s shared variant uses it instead of a custom contract.
+- **Signing scenarios keep custom contracts** and now say why: the built-in contract refuses every
+  request model except policy-enabled encryption and decryption (`policy-governed-signing`,
+  `attested-provenance-registry`, `git-pr-signing-service`, `attestation`'s signed statements).
+- **Playbooks lead with it.** `setup-forseti-e2ee` opens with "Start here: the built-in contract";
+  `configure-e2ee-roles-and-policies` and `deploy-forseti-policy` point to it first. Any response
+  about a custom contract tells the agent to check the built-in one first.
+- **Realm templates** (shared, nextjs-customer-portal, nextjs-e2ee-vault) declare realm roles
+  `_tide_encryptor` and `_tide_decryptor` (names fixed by the contract, not in default roles) and
+  the `groups` protocol mapper (claim name mandated, full path), before IGA, so the adopt-scan
+  attests them. The mapper was MEASURED on a local stack; the roles are INFERRED to behave the same.
+- **Canon** default-contract tables list it as the default.
+- **MEASURED end to end** on ORK `main` by Sasha Le (2026-10-16): `User`, `Group`, realm-`Role`
+  and client-`Role` policies worked, and refusals were checked. GAP-078 resolved by runtime test.
+- **Enclave pop-up blocked (T-27).** New troubleshooting entry: when the enclave iframe fails and the
+  browser blocks the pop-up fallback, approvals and signing stall. `@tidecloak/js` and
+  `heimdall-tide` `0.14.41-staging` show a "Pop-ups are currently blocked" notice and add
+  `registerPopupErrorCallback` (tidecloak-js #158, heimdall #102, merged). `latest` (`0.14.34`) has
+  neither. Covers the safe registration call, keeping enclave actions inside the click, and not
+  silencing the notice.
+
+## 1.9.32 — Deploying a custom Forseti contract is not self-service
+
+A Forseti contract decides what the network will sign, so an open one can be written to sign
+anything. Putting one onto a realm or the network is experimental, works on test networks only, and
+is done by the Tide team, who see the contract before it runs. Until that changes, this server does
+not show a member of the public the upload step.
+
+Writing a contract and compile-checking it stay public. So do the four scenarios built on one, the
+contract templates and the compile harness.
+
+This restricts what the pack **says and ships**. It does not stop someone who already knows the
+endpoint; the platform enforces that, separately.
+
+- **Withheld.** Every response passes through one filter that removes the upload: the REST endpoint
+  and its payload, and the SDK call that carries the contract source to the network inside a
+  signing request. A section about the upload goes whole; a table row or bullet goes alone; a
+  signing-flow code block keeps its code and marks the one line.
+- **Said up front.** A response that had something withheld, and every response about a scenario
+  or playbook that ends in a deployed contract, starts with a note: write and compile-check it
+  here, do not upload it, do not reconstruct the step, the contract goes to the Tide team to be
+  reviewed and deployed. The scenario list marks those scenarios. The server instructions carry one
+  line (still under the 2000-character client limit).
+- **Not in the public files.** `scripts/redact-public.mjs` rewrites a tree's Markdown through the
+  same filter and fails if an upload step is left. `scripts/sync-to-raziel.sh` runs it before
+  staging. Downloadable template files are checked to be clean already, because `/pack` serves raw.
+- **Doctor.** `tide-doctor.sh` warns when an app uploads a contract itself, and notes when an app
+  contains one that it goes to the Tide team to deploy.
+- **The Tide team's build.** `TIDE_PACK_INTERNAL=1` (or `createServer({ internal: true })`), run
+  from the private workshop, serves everything.
+- **A lever for later.** `RESTRICTED` in `src/server.ts` can also name a document, scenario or
+  template directory to withhold whole. Nothing is listed today.
+
+Gate: `test/restricted.test.mjs` walks every response the public server can give, over stdio and
+hosted, and fails on any upload line. It runs the redaction script over a copy of the published
+folders and checks the result. The whole gate also passes inside a redacted tree.
+
+## 1.9.31 — New scenario: attestation
+
+"Attest that this user was added to my close friends group" had nowhere to go. The pack's only
+attestation scenario signs claims about content for third parties; any request about a fact
+concerning people matched it on the word "attest" and got the wrong design.
+
+- **Scenario `attestation`** (`reference-apps/attestation/`). A fact about people becomes a
+  statement the network signs, and the app relies on it only while the signature verifies, so a
+  database write cannot create it. One shape covers the cases:
+
+  > **Issuer** attests **Claim** about **Subject**, optionally regarding an **Object**, with a
+  > **Value**, until an **Expiry**.
+
+  The scenario carries a catalogue mapping requests to it: membership of a group, sharing,
+  delegation, consent, acceptance, assignment, verification, approval, endorsement.
+- **Who may issue is enforced by the network**, in one of three modes: `self` (about yourself — the
+  only one that proves the subject agreed), `owner` (about something you own), `role` (you hold a
+  role that lets you). The signer must always be the named issuer. A rule lists the claim types it
+  may sign, so rules stay narrow.
+- **How.** The statement is itself a policy, signed with `Policy:1` under an IMPLICIT/PRIVATE rule
+  that admins sign once; after that, attesting needs no approver. The pattern is taken from a
+  production app (`OBSERVED_PATTERN`), where it signs one kind of fact; the pack generalises it.
+- **Template `templates/attestation/`**: `AttestationContract.cs`; `attestation.ts`
+  (`buildAttestation`, `signAttestation`, `verifyAttestation`, `buildSigningRule`,
+  `readSigningRule`, and `statements.*` helpers for the catalogue); `mint-rule.mjs`.
+- **Routing.** The bare words attest / attestation now route here; the provenance scenario needs a
+  content, authorship, time or third-party signal. A request with both is offered both, with the
+  question that separates them. `canon/custom-contracts.md` gains "Two ways to attest something".
+- **Stated limits**, in the scenario and to be told to the user: revocation is not attested (a
+  compromised server can restore a withdrawn fact), time is not attested (an expiry is enforced by
+  the app's server), agreement is proved only in `self` mode, and a background job cannot attest.
+
+MEASURED 2026-10-07. The contract passed 49 checks against the real ORK SDK: its own context,
+policy and credential types, its compiler, its IL vetter with determinism enforced, and its
+parameter binder, across all three modes. The TypeScript builders are byte-identical to the SDK's
+`Policy.DataToVerify` for three statement shapes and three rule shapes; those bytes are kept in the
+gate as known answers.
+
+Not measured: a signing round against a live enclave, and uploading the contract and signing a rule
+on a live realm. `signAttestation` follows the exemplar's code, including its use of a private SDK
+handle.
+
+Gate: 455 checks (was 379).
+
+## 1.9.30 — Start from a working template; one command that finds and fixes faults
+
+A build used to mean reading about nine playbooks and retyping an app the pack already ships. Two
+new tools change the default path, and building the templates to support that found four defects in
+them.
+
+### `tide_scaffold` — copy a working app instead of writing one from prose
+
+Picks a template from what the user asked for and returns the commands to copy it, name it, install,
+bootstrap and check it. It leads with the licence-email and terms questions, writes out the
+`.gitignore` (npm drops it from the published package), and says plainly when a template is
+client-only and cannot protect an API. It is step 4 of the work order.
+
+### `tide_doctor` — and it repairs, rather than reporting
+
+`templates/shared/tide-doctor.sh`. A fault with exactly one correct, mechanical repair is fixed on
+the spot and re-checked: a missing or stale DPoP page is re-copied byte-exact, a rewrite on the exact
+path `/tide_dpop` becomes the wildcard, `.env` is added to `.gitignore`. Anything that needs a
+decision — which routes need which roles, where a provider option goes, a CSP, bootstrapping a realm
+— is left alone and printed with its fix, for the agent to apply. The output says so: what remains is
+the agent's job, and the user is asked only what only they can answer. `--check` changes nothing;
+`--url` checks what a running app serves; `--realm` reads the realm and never changes it.
+
+### The templates did not all work
+
+Found by installing and building them, which nothing had done:
+
+- **`nextjs-customer-portal` did not build.** It had no `tsconfig.json`, so every `@/` import failed
+  to resolve.
+- **`react-vite-internal-dashboard` did not build.** It imported `TideCloakProvider` from
+  `@tidecloak/react`, which exports `TideCloakContextProvider`.
+- **Both Next.js templates verified the token and not the DPoP proof.** A bound token replayed as a
+  plain `Bearer` passed — the AP-43 hole the pack documents. The pack's tested verifier
+  (`templates/dpop-verify/verifyDpop.ts`) is now copied into both and called from `withAuth`.
+- **`vanilla-js-secure-form` never turned DPoP on** and called `getUserInfo()`, `doLogin({...})` and
+  `doLogout({...})`, none of which match the SDK. The doctor found the first of these on its first
+  run against the pack's own templates.
+
+MEASURED 2026-10-07 after the fixes: all three buildable templates install and build (Next.js 16.4,
+Vite 6.4, `@tidecloak/js` 0.14.34 resolved). The built portal's protected API was called eight ways:
+a bound token with a valid proof returns 200; no header, a `Bearer` replay of the bound token, no
+proof, a proof from another key, a proof for another URL, an unbound token and a token from another
+realm key all return 401.
+
+Not measured: a login through any template, the vanilla template in a browser, and a bootstrap
+against a real TideCloak.
+
+Gate: 379 checks (was 316). The new suite scaffolds each template, runs the doctor against it, breaks
+it in each of the ways it claims to catch, and runs `--url` and `--realm` against mock servers.
+
+## 1.9.29 — Source audit: the pack checked against every project's own code
+
+Nine read-only audits compared what the pack says with the source of `tidecloak-idp-extensions`,
+`tidecloak-iga-extensions`, `tidecloak-js`, `tide-js`, `ork`, `keycloak-IGA`, `ragnarok`,
+`tidecloak-override`, and `Midgard` / `master-libs` / `tidecloak`. Nothing was built or run.
+
+**Rule used.** A statement wrong on every build is corrected. Where `main` differs from something
+the pack **measured on a live build**, the measurement stays and the difference is flagged
+**DIFFERS ON `main`**: several projects' `main` is ahead of what is published (`tide-js` `main` has
+thresholds 3/5 and policy version 4; npm has 14/20 and 3), so aligning to `main` would make the pack
+wrong for what users install today.
+
+### Errors that left an app unprotected while appearing to work
+
+- **`createTideCloakProxy(tcConfig)` protected nothing.** Two playbooks showed it. The function takes
+  `{ config, protectedRoutes }`; passed the adapter directly, the route list is empty and every
+  request passes unverified.
+- **The React provider example left DPoP off.** `useDPoP` / `initOptions` were shown as props on
+  `TideCloakContextProvider`. Neither prop exists; they are ignored. They go inside `config`.
+- **A `withAuth` comment still said not to verify DPoP proofs**, in the playbook whose Step 4 says
+  the opposite. The example now verifies the proof.
+- **Four server snippets accepted only `Bearer`**, while the SDK sends `Authorization: DPoP` when
+  DPoP is on. One DPoP snippet read `typ`/`alg` from the JWT payload instead of the header and
+  would always throw.
+- **`verifyTideCloakToken` is not "embedded key only".** It silently falls back to a remote JWKS
+  when `config.jwk` is missing, returns `null` for outages as well as bad tokens, and checks no
+  DPoP proof. Now stated.
+
+### Bootstrap scripts
+
+- **They could not tell whether licensing succeeded.** The `setUpTideRealm` response was discarded.
+  `NEED_PAYMENT` is an HTTP 200 and means not licensed; a 303 is a paid-checkout redirect. All three
+  scripts now read the response and stop on either.
+- **`toggle-iga` is a flip on `main`.** A second call queues a `DISABLE_IGA` change request. The
+  scripts now read the realm's IGA state first and call it only when off.
+- **Drain loops approved anything pending.** They now skip `DISABLE_IGA`, `DELETE_REALM` and
+  `OFFBOARD_REALM` (three bash loops, the Python drain, five documented loops).
+
+### Governance API
+
+- **One approval lane.** `POST /iga/change-requests/{id}/approve` serves every mode: `{}` first,
+  then `{ "requestModel": ... }` if the reply is `mode: "needs-approval"`. The server and the admin
+  console agree; `approval-model` and `authorize` are back-compat. Canon, the admin-panel playbook
+  and the governance scenario are rewritten around it.
+- **Statuses are `PENDING`, `APPROVED`, `DENIED`, `CANCELLED`.** `DRAFT` and `ACTIVE` never existed;
+  `APPROVED` means committed. Action types are granular, never `CREATE` / `SET`.
+- **`actionTypeIn: ["CREATE","DELETE"]` was still shown as an example in several places**, including
+  the canon that warns it authorizes nothing.
+- **AP-89's explanation corrected.** Filing a request does not auto-approve the filer; each caller
+  counts once, so proxied approvals collapse into one.
+- Invite-link parameters are `redirect_uri` / `client_id`; the camelCase names were ignored.
+- The legacy `/tide-admin/change-set/*` routes are removed, not deprecated.
+
+### Other corrections
+
+- **`tidecloak-dev` is not "the production image".** It is a development build of the server
+  (H2, a pre-imported `myrealm`) wired to the production network: ork1, **14-of-20**. The T=3/N=5
+  and `sork1` values in the environment table were staging values. Reworded throughout the pack.
+- **Offboarding.** The "correct" `createChangeRequest({ type: 'FABRIC_OFFBOARDING' })` never
+  existed. Real trigger, the three-admin floor, the password reset every user needs, and local
+  signing are documented from the `ragnarok` source. A one-admin realm cannot offboard.
+- **Forseti.** `ctx.Data` is `byte[]?` (settled from ORK source). Lambdas, method groups and static
+  field initialisers compile and are rejected by the ORK's IL vetter. `long` / `decimal`
+  `[PolicyParam]`s never bind. `ForsetiSdk.Claim("country")` reads policy parameters, not the
+  caller's location. `RequireDistinctOrgs(…, 2)` can never pass. The ORK source cap is 256 KB. The
+  compile harness README lists what it cannot catch.
+- **Licensing.** The email selects the free tier; a blank one silently switches to paid checkout.
+  No terms parameter exists and nothing server-side records acceptance. AP-90 said the
+  `create-nextjs` CLI loops on the terms question; it asks once.
+- VRK is the Vendor **Rotating** Key. Two VRK endpoint names that do not exist are replaced.
+- The DPoP popup error comes from the ORK enclave, not tide-js. The enclave pins the page's script
+  by hash; its exact frame policy is recorded.
+- Vouchers: the browser fetches them from TideCloak and the ORK validates with the payer. Sign and
+  decrypt vouchers are granted on the same role condition.
+
+### Flagged, not changed (needs a live check)
+
+`bulk-authorize` committing; `toggle-iga` ignoring its parameter; the `setUpTideRealm` response
+body; `isRagnarokEnabled=true` making `email` a required profile attribute; policy version 4;
+.NET 10 references on the ORK; `RequestId` on executor/approver contexts; whether the webpack
+workarounds are still needed; which value `CustomAdminUIDomain` should hold (the pack contradicts
+itself and the audit could not settle it).
+
+Gates: 18 new regression checks. On first run they caught seven more occurrences the audits had not
+listed.
+
+## 1.9.28 — Licence email and Terms & Conditions are asked first; responses fit; routing fixed
+
+### A realm was being licensed to a placeholder, under terms nobody was shown (AP-90)
+
+`setUpTideRealm` licenses the realm to an email address under Tide's Terms & Conditions
+(https://tide.org/legal). Tide's own flows ask a person for both — VERIFIED in the keylessh init
+script and the `@tidecloak/create-nextjs` CLI prompts. The pack's bootstraps defaulted the email to
+`admin@yourorg.com` / `admin@example.com` and never mentioned the terms.
+
+- **The scripts fail closed.** All three bootstraps check for `TIDE_LICENSE_EMAIL` and
+  `TIDE_TERMS_ACCEPTED=yes` before the container starts. At a terminal they prompt, reject
+  placeholder addresses, and exit if the terms are declined. Without a terminal they exit with code
+  2 and print the two questions for the agent to put to the user. The email default is gone.
+- **Every realm-setup response leads with the ask**: `tide_hosting`, `tide_scenario_bootstrap`, and
+  the five bootstrap-shaped playbooks. It is step 1 of the work order and is in the server
+  instructions, ahead of the hosting question.
+- **The rule is where agents learn to write their own init script**: a new section and a paste-in
+  fail-closed block in `canon/tidecloak-bootstrap.md`, a note above Phase 1 of all six reference-app
+  bootstrap sequences, and above the licensing step in the playbooks. Eleven literal addresses in
+  snippets replaced with `$TIDE_LICENSE_EMAIL`.
+- **Only the user can agree.** The text says so in each place: no accepting on their behalf, no
+  inferring agreement from "just set it up", stop if they decline.
+
+Limit, stated in canon: a script cannot stop an agent typing `TIDE_TERMS_ACCEPTED=yes` itself. The
+check turns a missing answer into a stop instead of a silent default.
+
+Gates: each script is RUN with no terminal across six cases and must exit 2 having started nothing;
+no snippet may license to a literal address; every setup response must lead with the ask.
+
+### Six responses the client rejected, and a chooser that matched substrings
+
+Both found by measuring every response and a battery of ordinary requests, not from a report.
+
+- **Six tool responses were over the client's result limit.** Claude Code rejects an MCP result over
+  about 25k tokens: the agent gets an error and a file path instead of content. `tide_blast_radius` —
+  one of the pack's two headline paths — failed exactly that way against the live server (129 KB).
+  Also over: `breach-precedents` (213 KB), `anti-patterns` (147 KB), the `tide-red-team` skill,
+  `tide_gaps`, `tide_security_analysis`. Nothing now leaves the server above 60 KB. A larger document
+  is delivered in parts, split at headings, never inside a code fence, losslessly; each part says how
+  to get the next. Tools that return documents take an optional `part`.
+- **`section` reads one entry.** Documents point at single entries ("see AP-62", "T-26"), and the
+  only way to follow that was to fetch the whole file. `tide_canon` and `tide_skill` take `section`:
+  `tide_canon(name: "anti-patterns", section: "AP-62")` returns 1 entry, not 147 KB. Part 1 of a
+  long document lists its headings.
+- **The chooser matched keywords as substrings.** `pr` (from `git-pr-signing-service`) is inside
+  "protect", "express", "prototype" and "production", so "protect my ASP.NET Core API", "express api
+  that checks tide tokens" and "deploy to production" were all routed to the git-signing scenario
+  with a nine-playbook sequence. `new` matched "renew". Keywords are now whole terms, and a scenario
+  needs a score of 3 before `tide_choose_playbook` prescribes its sequence.
+- **Four playbooks were unreachable from the chooser**: `protect-aspnet-core-asgard`,
+  `migrate-from-existing-auth`, `configure-e2ee-roles-and-policies`,
+  `initialize-admin-and-link-account`. A .NET request got the Next.js API playbook. All four have
+  rules now; gate: every playbook is reachable.
+- **Diagnosis wins.** "users are missing roles in their token" returned two build playbooks. A
+  broken-login or missing-role request now returns only the diagnostic playbook.
+- **Framework note.** The playbooks are written for Next.js. A React/Vite, vanilla, Node-backend or
+  other-backend request now says which template and `framework-matrix` section to use, or states
+  plainly that the stack has no playbook.
+- **A manifest named a playbook that does not exist** (`setup-github-app-signing`, RB-104). The
+  response now marks it NOT WRITTEN YET instead of listing it as if it could be read.
+
+Gates: every document the server can return is walked and must fit, part by part; splitting is
+checked lossless on the five largest files; fifteen routing cases, each one a measured misroute.
+
+Not changed: the three large MCP *prompts* (`tide-build-from-scenario` is about 95 KB). Prompts are
+inserted by the user, not returned as tool results, so the limit above does not apply to them.
+
+## 1.9.27 — Users had to ask for the DPoP page by name. Four separate causes.
+
+Reported as: *"users need to be specific about stuff, for example adding the dpop html page
+specifically to get dpop to work."* Each cause below was measured, not inferred.
+
+- **The asset tools were broken on every shipped surface.** `templates/` was in neither the Docker
+  image nor the npm `files` list. Against the live `mcp.tide.org` (1.9.23), `tide_dpop_asset`
+  returned `tide_dpop_auth.html not found in any pack template` and `tide_branding` returned
+  `Branding assets missing`. The gate stayed green because it runs from a checkout where the files
+  exist. `templates/` and `scripts/check-dpop-asset.sh` now ship in both; gate **4c** checks the
+  artifact definitions instead of the disk, and `npm run test:remote` calls the asset tools.
+- **A working tool still named a file the caller could not reach.** Its first instruction was
+  `cp "<path on the server>"`. For a hosted server that is a path inside the container, so the agent
+  fell through to retyping 9 KB of HTML — AP-88. Tools are now told which transport they run under:
+  stdio prints the local path; HTTP prints a fetch command against two new read-only routes,
+  `GET /pack/templates.tgz` and `GET /pack/<path>`. Only `templates/` and the DPoP checker are
+  servable; traversal, build output and `.env` files are refused.
+- **Most of the server instructions never arrived.** The block was 6.8 KB. Claude Code cut it at
+  about 2 KB, mid-sentence, so branding, onboarding, `.env`, hosting and the only mention of DPoP were
+  dropped. It is now under 1.5 KB and only routes the agent to its first call. The tidify/EdDSA
+  warning moved into the chooser response for existing-app requests. Gate: instructions <= 2000 chars.
+- **Nothing on the default path led to the DPoP tool.** `tide_choose_playbook` returned one playbook
+  name. `tide_choose_scenario` and `tide_choose_playbook` now end every build response with a
+  numbered **work order**: hosting question, pack file location, the two end-user questions, the four
+  DPoP pieces, server-side verification, wire checks. A pure diagnosis gets a one-line DPoP pointer.
+
+Also:
+
+- **`@tidecloak/js` ships `tide_dpop_auth.html` from 0.14.34.** VERIFIED against the published
+  tarball: same sha256 as the pack copy. `tide_dpop_asset` now copies from `node_modules` first and
+  falls back to the pack. Six "NOT shipped in the npm packages" statements corrected.
+- **Three skills still asserted the page must contain no `window.opener`** (`tide-diagnostics`,
+  `tide-reviewer`, `tide-integration`) — the AP-62 inversion, which gate 1g missed because it only
+  matched the shell forms. A reviewer following them would flag the correct file. Fixed; 1g extended
+  to the prose forms and verified to fire on the old text.
+- **Route handler vs rewrite: measured, not changed.** On Next.js 16.4.0 with `createDpopRoute`, no
+  injected CSP appeared on the route-handler response; what replaced the handler's CSP was the pack's
+  own catch-all `next.config` header rule. No login was run that way, so the rewrite remains the
+  instruction. Recorded in `canon/framework-matrix.md`.
+- `tide_onboarding` no longer ends with a `cp templates/onboarding-modal/...` step that contradicted
+  its own "WRITE THIS FILE NOW".
+
+Known, not fixed: npm drops nested `.gitignore` files from a tarball, so templates installed through
+`npx @tideorg/mcp` arrive without theirs. The `/pack` archive keeps them.
+
+## 1.9.26 — nightfabric: the pack was teaching an exploitable DPoP pattern
+
+`AP-43` carried a **`✅ CORRECT`** marker on "verify JWT signature only", and
+`verify-jwt-server-side.md` Step 4 called proof verification *"Optional Defense-in-Depth"*. Both are
+now reversed: a bare-`Bearer` replay of a sender-constrained token returned **`200`** against a live
+deployment following that guidance (L-01).
+
+- **The premise was false and it is measurable.** The old advice rested on "secureFetch sends a
+  Tide-specific format, not standard RFC 9449". Read from `@tidecloak/js@0.14.20`
+  (`generateDPoPProof`), the proof is an ordinary compact JWS: `{alg, typ:"dpop+jwt", jwk}` /
+  `{jti, htm, htu, iat, ath}`. The original `Invalid Compact JWS` came from verifying with the
+  **realm's** key instead of the `jwk` in the proof's own header.
+- **New `templates/dpop-verify/`** — a verifier plus a test with **13 assertions**, proofs built
+  exactly as the SDK builds them. The first assertion is the Bearer replay.
+- **`htu` behind a proxy** (L-02): the SDK signs the origin the *browser* saw, so
+  `req.nextUrl.origin` behind cloudflared makes every legitimate request fail htu and the app 401s
+  entirely. Reconstructed from `x-forwarded-host`/`x-forwarded-proto`, verified in both the tunnelled
+  and direct-localhost cases.
+- **AP-89** (L-03): `approve` credits the **caller**, so proxying approvals through the app server
+  records every human signature under its service account — and since filing auto-authorises the
+  filer, one identity both proposes and approves. Approvals must go browser → TideCloak with the
+  admin's own token.
+- **L-04**: read `authorizationCount` / `authorizers[]`; fall back to `readyToCommit`, never to `0`.
+- **L-09**: both Skycloak version-discovery endpoints now `400 "Invalid parameter: cluster_id"` on
+  prod — the pack's own helper failed identically. It now falls back to the verified floor **loudly
+  on stderr, marked ASSUMED**, rather than blocking provisioning, and still never walks the list
+  downward.
+- **L-12**: the pack's own `get_token` sent `password=password`, contradicting its AP-41. Fixed in
+  the shipped script and five docs.
+- Gates **2c** (nothing may teach skipping proof verification; a tested verifier must ship) and
+  **2d** (no hardcoded `password=password`). Both verified to fire.
+
+## 1.9.25 — The two questions now lead every bootstrap tool response
+
+Sixth request for the same thing. Five previous placements each failed for a different reason —
+MCP `instructions` (advisory, and stale for a live session), the pack's own bootstrap scripts
+(agents write their own), a playbook section, canon, and the reference-app sequences (all read as
+background, mid-document).
+
+They now lead the **response body** of every bootstrap-shaped tool, above the document:
+`tide_scenario_bootstrap`, and playbooks matching bootstrap / initialize-admin / provision-tidecloak
+/ start-tidecloak / deploy-tidecloak-docker. An agent building a realm must call one of these to know
+what to do, so it is the last position where the message is unavoidable.
+
+The block names both tools to call (`tide_branding`, `tide_onboarding` with the chosen fields),
+points at the invite-link step as the moment to ask, and says explicitly not to choose and report
+afterwards.
+
+- Gate **2b** asserts the block exists, demands asking rather than deciding, is prepended by both
+  tools, and — the part that matters for coverage — that **no playbook containing
+  `get-required-action-link` is left out of the match pattern**. That check immediately caught
+  `deploy-tidecloak-docker`, which generates invite links and was missing.
+- Fixed gate **1t**, which sliced the instructions block to the first `].join("\n")` *in the file*.
+  The new constant ends with one earlier, so the slice returned empty and produced three false
+  failures. It now searches from the start of the instructions block.
+
+## 1.9.24 — Copy tide_dpop_auth.html, never regenerate it (AP-88)
+
+`tide_dpop_asset` handed over 9 KB of HTML with *"write this verbatim"* — an instruction an agent
+cannot reliably follow. Reproducing that much markup silently normalises quotes, indentation or line
+endings, and the result reviews as correct: structure present, logic present, hash wrong.
+
+It now leads with a byte-exact copy from an absolute path plus a mandatory `sha256sum`, and marks the
+listing as a fallback for when the pack is not on the machine (a remote MCP server). Gate **2a**
+enforces that ordering.
+
+**AP-88** also records the distinction that makes this non-obvious: the opposite rule applies to
+`ProfileOnboarding.tsx`, which is *meant* to be customised per app, so the MCP emits a built version
+to write. Copy-exactly and generate-per-app are both right — for different files. The test is whether
+anything downstream verifies the bytes.
+
+Measured while investigating: the copies in all four local apps that have one (Undertow, pharma, wfh,
+cyberpunk) are **byte-identical to the known-good** — 9120 bytes, correct sha256. So nothing had
+rewritten them; the tool was simply inviting a failure that had not landed yet.
+
 ## 1.9.23 — Put the requirement where agents WRITE scripts, not where the pack ships them
 
 Fourth *"decisions I made without asking"* report (Undertow). The previous fixes all landed in

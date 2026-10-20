@@ -1,0 +1,179 @@
+# Relationship Attestation — Scenario Manifest
+
+id: relationship-attestation
+title: Relationship Attestation
+category: policy-governed-encryption
+description: Gives a named user, a group or a role access to ONE record's encrypted data, enforced by the network at decryption time. The relationship (this subject is assigned to this assessment, case or record) is a policy a realm admin approves once; the built-in RelationshipAttestation contract then lets only that subject encrypt (holding _tide_encryptor) or decrypt (holding _tide_decryptor) data tagged with that record's id, and only if the policy grants that operation. No custom contract is written or deployed.
+
+status: The contract is built into the ORK, on ORK main (c69fc4f6, 2026-10-16). Rules read from that source (User/Group/Role subjects). MEASURED end to end on ORK main by Sasha Le (2026-10-16): User, Group, realm-Role and client-Role (clientId) policies worked and the refusals (not the subject, missing _tide_decryptor, wrong or extra tag) were checked. The ORK repo has no unit tests for it. A network running an ORK build from before 2026-10-16 does not have it.
+
+frameworks:
+  - nextjs
+
+core_patterns:
+  - policy-governed-encryption
+  - default-contract
+  - relationship-attestation
+  - per-user-policy
+  - per-group-policy
+  - per-role-policy
+  - per-record-access
+  - tag-bound-encryption
+  - doken
+  - dpop
+  - iga
+  - oidc
+  - e2ee
+  - admin-approved-policy
+
+match_keywords:
+  - relationship attestation
+  - relationship based access
+  - relationship-based access
+  - assigned to an assessment
+  - assigned to a case
+  - assigned to a record
+  - assigned to a patient
+  - assigned clinician
+  - assigned assessor
+  - assigned reviewer
+  - only the assigned
+  - only assigned users can decrypt
+  - only people assigned can read
+  - per record access
+  - per-record access
+  - per record decryption
+  - per case access
+  - per assessment access
+  - access to one record
+  - access to a single record
+  - one user one record
+  - case assignment
+  - assessment assignment
+  - caseload
+  - care team access
+  - need to know access
+  - _tide_encryptor
+  - _tide_decryptor
+  - read only access to a record
+  - RelationshipAttestation
+  - decrypt only their assigned
+  - grant a user access to a record
+  - grant access to an assessment
+  - revoke access to a record
+  - care team for this patient
+  - only the care team
+  - group-based access to a record
+  - role-based access to a record
+  - subjectType
+  - share encrypted data with a group
+  - share encrypted documents with a group
+  - encrypted documents with a group
+  - with a group of users
+  - a group can decrypt
+  - group can decrypt
+  - members of a group can decrypt
+  - only the group can read
+  - role can decrypt
+  - decrypt by role
+  - role-based decryption
+  - only managers can read
+  - managers can read
+  - managers can decrypt
+  - only managers can decrypt
+  - only admins can decrypt
+  - team can decrypt
+
+bootstrap_required: true
+requires_admin_preapproval: true
+requires_iga: true
+requires_e2ee: true
+encryption_mode: policy-governed (default contract)
+
+default_roles:
+  - _tide_enabled
+
+# REALM roles, with exactly these names: the contract checks them by name on the caller's credential.
+policy_roles:
+  - _tide_encryptor
+  - _tide_decryptor
+
+required_protocol_mappers:
+  - name: tideUserKey
+    mapper: oidc-usermodel-attribute-mapper
+    user_attribute: tideUserKey
+    claim_name: tideuserkey
+  - name: vuid
+    mapper: oidc-usermodel-attribute-mapper
+    user_attribute: vuid
+    claim_name: vuid
+  # For Group subjects. Claim name mandated: exactly "groups", in the ACCESS token. Shipped in every
+  # pack realm template, so it is attested by the enable-IGA adopt-scan with no approval.
+  - name: groups
+    mapper: oidc-group-membership-mapper
+    claim_name: groups
+    access_token_claim: true
+    full_path: true
+    notes: subjectId must equal the claim value exactly - the full path, e.g. "/clinic-a/nurses"
+
+default_contract:
+  id: "RelationshipAttestation:1"
+  deployed_by: Tide (compiled into the ORK; nothing to write, compile or hand over)
+  model_ids:
+    - "PolicyEnabledEncryption:1"
+    - "PolicyEnabledDecryption:1"
+  approval_type: IMPLICIT
+  execution_type: PRIVATE
+  policy_params:
+    - name: subjectType
+      type: string
+      required: true
+      notes: User, Group or Role (case-insensitive)
+    - name: subjectId
+      type: string
+      required: true
+      notes: User - the grantee's tideuserkey claim, verbatim. Group - the group exactly as in the groups claim. Role - the role name
+    - name: clientId
+      type: string
+      required: false
+      notes: Role only - the role is a client role of this client; omit for a realm role
+    - name: assignmentId
+      type: string
+      required: true
+      notes: the record's id; every item must carry it as its only tag
+    - name: roles
+      type: string
+      required: true
+      notes: a JSON array string of what the policy permits - _tide_decryptor (read), _tide_encryptor (write), or both
+  enforces:
+    data: the request is an encryption or decryption; there is at least one item; every item has at least one tag; every tag equals assignmentId; the policy's roles include _tide_encryptor for an encryption or _tide_decryptor for a decryption
+    executor: the caller holds realm role _tide_encryptor (encryption) or _tide_decryptor (decryption); then the subject check - User, the caller's key is subjectId; Group, subjectId is in the caller's groups claim; Role, the caller holds role subjectId (client role of clientId if set)
+  one_policy_per: subject (user, group or role) and record
+  each_policy_needs: one tide-realm-admin approval in the enclave
+
+template: templates/relationship-attestation
+
+default_playbooks:
+  - start-tidecloak-dev
+  - bootstrap-realm-from-template
+  - initialize-admin-and-link-account
+  - add-auth-nextjs-fresh
+  - protect-api-nextjs
+  - verify-jwt-server-side
+
+discriminating_question: Must ONE record's data be decryptable only by a named user, group or role, even if the app server is compromised? Then this scenario. If everyone holding a role may decrypt, use organisation-password-manager. If the fact is only something your server checks later (membership, consent, verification) and gates no decryption, use attestation.
+
+valid_only_when: Access is per record and limited to a user, group or role, the data is encrypted with Tide, and an admin approving each grant is acceptable. Requires a network whose ORKs include the RelationshipAttestation contract.
+
+notes: >
+  The policy IS the relationship. Granting access is an admin approving one policy; ending it is
+  deleting that policy and, for certainty, removing the role or letting the policy expire. Names are
+  fixed by the contract: the params subjectId, subjectType, assignmentId, roles and optional clientId, and the realm roles
+  _tide_encryptor and _tide_decryptor. The "assignment" can be to any record - a case, an
+  assessment, a patient file, a document. A policy can be read-only, write-only or both.
+
+# This scenario IS the built-in contract.
+builtin_contract:
+  id: "RelationshipAttestation:1"
+  availability: ORK main (VERIFIED from source c69fc4f6, 2026-10-16)
+  covers: who may encrypt and/or decrypt one record's data - a named user (User), a group (Group) or a role (Role) - under one admin-approved policy per subject and record

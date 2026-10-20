@@ -30,12 +30,12 @@ TIDECLOAK_URL="${TIDECLOAK_URL:-http://localhost:8080}"
 REALM_NAME="${REALM_NAME:-myapp}"
 CLIENT_NAME="${CLIENT_NAME:-myclient}"
 CLIENT_APP_URL="${CLIENT_APP_URL:-http://localhost:3000}"
-ADMIN_EMAIL="${ADMIN_EMAIL:-admin@yourorg.com}"
+ADMIN_EMAIL="${TIDE_LICENSE_EMAIL:?ask the user which email should manage their Tide licence (AP-90)}"
 
 get_token() {
   curl -s -X POST "$TIDECLOAK_URL/realms/master/protocol/openid-connect/token" \
     -H "Content-Type: application/x-www-form-urlencoded" \
-    -d "username=admin&password=password&grant_type=password&client_id=admin-cli" \
+    --data-urlencode "username=$KC_BOOTSTRAP_ADMIN_USERNAME" --data-urlencode "password=$KC_BOOTSTRAP_ADMIN_PASSWORD" -d "grant_type=password&client_id=admin-cli" \
     | jq -r '.access_token'
 }
 
@@ -154,7 +154,7 @@ approve_all_pending() {
   # See canon/iga-change-requests-api.md.
   ids=$(curl -s "$TIDECLOAK_URL/admin/realms/$REALM_NAME/iga/change-requests?status=PENDING" \
     -H "Authorization: Bearer $TOKEN" 2>/dev/null \
-    | jq -r 'if type=="array" then .[].id else empty end' 2>/dev/null)
+    | jq -r 'if type=="array" then (.[] | select(.actionType | IN("DISABLE_IGA","DELETE_REALM","OFFBOARD_REALM") | not) | .id) else empty end' 2>/dev/null)
   for id in $ids; do
     TOKEN="$(get_token)"
     curl -s -X POST "$TIDECLOAK_URL/admin/realms/$REALM_NAME/iga/change-requests/$id/authorize" \
@@ -165,7 +165,7 @@ approve_all_pending() {
     TOKEN="$(get_token)"
     ready=$(curl -s "$TIDECLOAK_URL/admin/realms/$REALM_NAME/iga/change-requests?status=PENDING" \
       -H "Authorization: Bearer $TOKEN" 2>/dev/null \
-      | jq -r '.[] | select(.readyToCommit==true) | .id' 2>/dev/null)
+      | jq -r '.[] | select(.actionType | IN("DISABLE_IGA","DELETE_REALM","OFFBOARD_REALM") | not) | select(.readyToCommit==true) | .id' 2>/dev/null)
     [ -z "$ready" ] && break
     for id in $ready; do
       TOKEN="$(get_token)"

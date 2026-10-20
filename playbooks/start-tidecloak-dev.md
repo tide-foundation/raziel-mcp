@@ -1,6 +1,6 @@
 # Start TideCloak for Development
 
-Start a TideCloak container for local development. This produces a running server — no realm, no client, no admin user yet.
+Start a TideCloak container for local development. This produces a running server with no realm of yours, no client and no Tide admin yet. The image does import one realm of its own on every start, `myrealm` (with clients `myclient`/`mytest` and open registration): leave it alone and do not name your realm `myrealm`.
 
 ---
 
@@ -26,9 +26,9 @@ Start a TideCloak container for local development. This produces a running serve
 
 ### Step 1: Image
 
-**Always use `tideorg/tidecloak-dev:latest`.** Despite the `-dev` suffix, this **is** the production image — it carries the full Tide protocol and is the only image the pack supports, for development and production alike.
+**Always use `tideorg/tidecloak-dev:latest`.** It carries the full Tide protocol and is the only image the pack supports. It is a development build of the server (H2, non-strict hostname) wired to the **production** Tide network — ork1, 14-of-20 — so local development on it talks to live ORKs. The production server image is `tideorg/tidecloak`; see `canon/tidecloak-bootstrap.md`.
 
-Do **not** use `tideorg/tidecloak-stg-dev`. That is an internal pre-release/staging build: it lags or leads production unpredictably, and it requires ORK, threshold and payer configuration to be supplied by hand, which is an easy way to end up on a broken threshold config. If you believe you need it, you are testing unreleased Tide behaviour — coordinate with the Tide team rather than reaching for it from a playbook.
+Do **not** use `tideorg/tidecloak-stg-dev`. That is an internal pre-release/staging build: it lags or leads production unpredictably, and it targets a **different ORK network** (staging defaults are baked in, not missing), which is an easy way to end up on a broken threshold config. If you believe you need it, you are testing unreleased Tide behaviour — coordinate with the Tide team rather than reaching for it from a playbook.
 
 **Do not append `start-dev` or any command** to `docker run`. TideCloak images have a pre-configured entrypoint. Appending `start-dev` (a vanilla Keycloak convention) breaks Tide initialization.
 
@@ -82,7 +82,7 @@ TideCloak typically takes 30–60 seconds to start. If it does not respond after
 ## Verification
 
 - [ ] `docker ps` shows `tidecloak` running
-- [ ] `curl -sf http://localhost:8080` returns 200
+- [ ] `curl -sf http://localhost:8080` succeeds (the root answers **302** to `/realms/master/tide-console/`; `-f` treats that as success. The stock admin console is at `/kc`)
 - [ ] `docker logs tidecloak` shows no fatal errors
 
 ---
@@ -101,7 +101,7 @@ TideCloak typically takes 30–60 seconds to start. If it does not respond after
 ## Anti-Patterns
 
 - **Do not** mount project root as data volume. Use `./data` subdirectory.
-- **Do not** use `tideorg/tidecloak-stg-dev` or any `-stg` image. `tideorg/tidecloak-dev:latest` is the production image and the only supported one.
+- **Do not** use `tideorg/tidecloak-stg-dev` or any `-stg` image. `tideorg/tidecloak-dev:latest` is the only supported one.
 - **Do not** set `SYSTEM_HOME_ORK`, `USER_HOME_ORK`, `THRESHOLD_T`, `THRESHOLD_N` or `PAYER_PUBLIC`. The image has working defaults; overriding them by hand risks a broken threshold configuration.
 - **Do not** use `THRESHOLD_T=1` anywhere. Single-ORK compromise.
 - **Do not** reuse data directory across environments. Clean between setups.

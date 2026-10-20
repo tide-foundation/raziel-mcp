@@ -3,10 +3,17 @@
 All steps must complete before users can attest anything. **Order matters**, and phase 5 is the one
 that costs a human enclave approval — everything catchable before it should be caught before it.
 
+> **⛔ Before Phase 1 — ask the user, and wait (AP-90).** Setting up the realm licenses it to an
+> email address under Tide's Terms & Conditions (**https://tide.org/legal**). Ask: (1) *which email
+> address should manage your Tide licence?* and (2) *do you agree to the Terms & Conditions at that
+> link? (yes/no)*. Never invent the email, never accept for them, and stop if they decline. Pass the
+> answers as `TIDE_LICENSE_EMAIL` and `TIDE_TERMS_ACCEPTED=yes`. Any init script you write must exit
+> non-zero without both — the block to paste is in canon `tidecloak-bootstrap`.
+
 ## Phase 1: TideCloak infrastructure
 
 1. **Start TideCloak**
-   - Use `tideorg/tidecloak-dev:latest` — despite the `-dev` suffix this IS the production image and
+   - Use `tideorg/tidecloak-dev:latest` — it is wired to the production Tide network (ork1, 14-of-20), though it is a development build of the server and
      the only supported one. Do not append `start-dev` (AP-39).
    - Mount `./data`, never the project root (AP-34).
    - Wait for readiness: `curl http://localhost:8080/health/ready` returns 200.
@@ -40,7 +47,7 @@ that costs a human enclave approval — everything catchable before it should be
 
 5. **License the realm**
    - `POST /admin/realms/{realm}/vendorResources/setUpTideRealm`
-   - `Content-Type: application/x-www-form-urlencoded`, body `email=admin@example.com`.
+   - `Content-Type: application/x-www-form-urlencoded`, body `email=$TIDE_LICENSE_EMAIL` — the address the user gave (AP-90).
    - Returns licensing JSON as `text/plain`.
 
 6. **Enable IGA**
@@ -129,7 +136,6 @@ Everything from step 14 onward costs an operator approval to retry. Do 12 and 13
     - Full list: [playbooks/deploy-forseti-policy.md](../../playbooks/deploy-forseti-policy.md).
 
 14. **Upload the contract source** (scriptable — no enclave)
-    - `POST /admin/realms/{realm}/iga/forseti-contracts` with `{ "contractCode": "...", "name": "..." }`.
     - Requires `manage-realm`. **Do not** use the response's `contractHash` as the policy's
       `contractId` — that is SHA-256, an internal dedup key. The policy needs **SHA-512 uppercase**.
 

@@ -76,3 +76,6 @@ discriminating_question: Does the app produce cryptographic signatures (SSH chal
 valid_only_when: App needs ORK-mediated threshold signing, not encryption.
 
 notes: No encryption layer. Signing roles and policies are created by admin at runtime via app UI or API. Forseti contracts validate data, approvers, and executor before ORKs produce signature. Uses BasicCustomRequest or DynamicCustomRequest pattern. Replace <prefix>:<name> with app-specific pattern (e.g., ssh:root, sign:document, tx:payment).
+
+# No built-in ORK contract covers signing; this scenario needs a custom contract (Tide team deploys).
+builtin_contract: none

@@ -95,20 +95,8 @@ policy and costs a fresh enclave approval.
 10. Editing the contract at all — even a comment — changes the SHA-512 and **invalidates the
     deployed policy**. Compare the deployed `contractId` against a fresh hash at boot or in CI.
 
-## Contract transport structure
 
-The policy-deployment draft is:
-
-1. Policy bytes (`policy.toBytes()`)
-2. Contract transport — **three** nested levels:
-
-```
-[ "forseti", [ <empty>, [ contractSource, "Contract" ] ] ]
-```
-
-Prefer `PolicySignRequest.New(policy).addForsetiContractToUpload(source)` from `heimdall-tide`,
-which builds this correctly. Omitting the outer `"forseti"` level yields `Unknown contract type ''`
-from every ORK — **after** the enclave approval (AP-64, GAP-069).
+> _Withheld: uploading a custom Forseti contract is done by the Tide team (experimental, test networks only). Do not reconstruct this step._
 
 ## Signing request identity
 

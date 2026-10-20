@@ -9,6 +9,8 @@
     "realm": [
       { "name": "appUser", "description": "Standard application user" },
       { "name": "_tide_enabled", "description": "Represents a tide user thats allowed perform actions on tide" },
+      { "name": "_tide_encryptor", "description": "RelationshipAttestation:1: may encrypt records a policy grants to this user (name fixed by the ORK contract). Capability only; the policy subject decides which records." },
+      { "name": "_tide_decryptor", "description": "RelationshipAttestation:1: may decrypt records a policy grants to this user (name fixed by the ORK contract). Capability only; the policy subject decides which records." },
       {
         "name": "default-roles-REALM_NAME",
         "description": "${role_default-roles}",
@@ -44,6 +46,21 @@
         "tide.createdViaConsole": "true"
       },
       "protocolMappers": [
+        {
+          "name": "groups",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-group-membership-mapper",
+          "consentRequired": false,
+          "config": {
+            "claim.name": "groups",
+            "full.path": "true",
+            "access.token.claim": "true",
+            "id.token.claim": "false",
+            "userinfo.token.claim": "false",
+            "introspection.token.claim": "true",
+            "lightweight.claim": "true"
+          }
+        },
         {
           "name": "Tide User Key",
           "protocol": "openid-connect",

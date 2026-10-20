@@ -85,3 +85,6 @@ discriminating_question: Does the app need a custom admin UI for reviewing and a
 valid_only_when: App requires a custom governance dashboard for IGA change request lifecycle management. Not needed if built-in TideCloak Admin Console handles all governance.
 
 notes: No encryption layer. This is a governance/admin tool. At least two linked admin users required for quorum. Content-type asymmetry between endpoints (JSON for sign/commit, FormData for add-review/add-rejection). Enclave popup flow required for MultiAdmin signing mode.
+
+# The ORK's built-in RelationshipAttestation contract - see scenario.md
+builtin_contract: none   # no encryption; Group/Role membership changes that grant record access are approved here

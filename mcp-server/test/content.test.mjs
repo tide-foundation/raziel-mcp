@@ -1,10 +1,14 @@
 // Content-consistency checks: catch doctrine drift a protocol test can't see.
 // These are the regression gate for reconciliations like the IGA API migration.
 import { PACK_ROOT, packRead, packExists, listDir, walkFiles, Checks } from "./harness.mjs";
-import { readFileSync } from "node:fs";
+import { readFileSync, mkdtempSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import { tmpdir } from "node:os";
 import { createHash } from "node:crypto";
 import { join } from "node:path";
+import { RESTRICTED } from "../dist/server.js";
 
+const parseJsonSafe = (t) => { try { return JSON.parse(t || ""); } catch { return null; } };
 const existsSyncSafe = (p) => { try { return readFileSync(p, "utf8") !== null; } catch { return false; } };
 const rel = (abs) => abs.replace(PACK_ROOT, "").replace(/\\/g, "/").replace(/^\//, "");
 
@@ -27,7 +31,7 @@ export async function run() {
   c.ok("no stray legacy /tide-admin/change-set endpoints in active files", leaks.length === 0, leaks.join("  "));
 
   // 1b. No realm template may declare a `tide-*` protocol-mapper provider.
-  //     MEASURED on tideorg/tidecloak-dev:latest (the production image): /admin/serverinfo lists
+  //     MEASURED on tideorg/tidecloak-dev:latest: /admin/serverinfo lists
   //     24 openid-connect protocolMapperTypes and NONE contains "tide". `tide-roles-mapper` does
   //     not exist, and a realm import declaring it returns 201 Created with the mapper SILENTLY
   //     DROPPED — so roles go missing from tokens with no error anywhere. Stock types only:
@@ -143,7 +147,9 @@ export async function run() {
           dpopBad.push(`${r}:${i + 1} (stale source path)`);
         }
         // asserting window.opener is absent / must not be added
-        if (/(!\s*grep[^\n]*window\.opener|window\.opener[^\n]{0,40}#\s*want 0|do not add[^\n]{0,30}window\.opener|never\s+`?window\.opener)/i.test(ln)) {
+        // ...including the prose forms that outlived the first correction in three skill files:
+        // "(no `window.opener`)", "must contain no `window.opener`", "adding `window.opener` ... fails".
+        if (/(!\s*grep[^\n]*window\.opener|window\.opener[^\n]{0,40}#\s*want 0|do not add[^\n]{0,30}window\.opener|never\s+`?window\.opener|(\(|—\s*)no\s+`?window\.opener`?\)|contain no\s+`?window\.opener|adding\s+`?window\.opener`?[^\n]{0,40}fails)/i.test(ln)) {
           dpopBad.push(`${r}:${i + 1} (asserts window.opener absent — inverted)`);
         }
       });
@@ -323,10 +329,12 @@ export async function run() {
   //     the only two things the END USER sees, and both defaults are bad -- Tide's logo on someone
   //     else's login screen, and an unstyled Keycloak form showing a 64-hex username. Branding was
   //     reactive-only for exactly this reason and never got offered; the user had to point it out.
-  const instrBlock = brandingTool.slice(
-    brandingTool.indexOf("instructions: ["),
-    brandingTool.indexOf("].join(\"\\n\")"),
-  );
+  // Slice from `instructions: [` to the FIRST terminator AFTER it -- not the first in the file.
+  // Another array in server.ts (END_USER_ASK) also ends with `].join("\n")`, and searching from
+  // index 0 picked that one up, silently producing an empty block and three false failures.
+  const instrStart = brandingTool.indexOf("instructions: [");
+  const instrEnd = brandingTool.indexOf("].join(\"\\n\")", instrStart);
+  const instrBlock = instrStart === -1 ? "" : brandingTool.slice(instrStart, instrEnd);
   const checkpoint = /ONCE A REALM IS BOOTSTRAPPED[\s\S]{0,2000}/.exec(instrBlock)?.[0] ?? "";
   c.ok(
     "server instructions ask about BRANDING proactively after bootstrap",
@@ -528,6 +536,118 @@ export async function run() {
     seqMissing.join("  "),
   );
 
+  // 2a. tide_dpop_auth.html must be COPIED, never regenerated. It is a relay page the enclave loads
+  //     during login, integrity-relevant to the byte, and an agent asked to reproduce 9 KB of HTML
+  //     will silently normalise quotes, indentation or line endings. The tool must therefore lead
+  //     with an absolute-path `cp` plus a mandatory hash check, and only fall back to a listing.
+  //     Note the inversion risk here is the OPPOSITE of tide_onboarding, where emitting the file is
+  //     correct: that component is meant to be customised, this one must not be touched at all.
+  const dpopSrc = packRead("mcp-server/src/server.ts") || "";
+  const dpopIdx = dpopSrc.indexOf('"tide_dpop_asset"');
+  const dpopBlock = dpopIdx === -1 ? "" : dpopSrc.slice(dpopIdx, dpopIdx + 6000);
+  // 2b. The two end-user questions must lead the RESPONSE of every bootstrap-shaped tool, above the
+  //     document. Five builds running ended with the agent deciding both itself and reporting them
+  //     as "decisions I made without asking" (AP-87). Every previous placement -- MCP instructions,
+  //     the pack's own scripts, a playbook section, canon -- was somewhere the agent either did not
+  //     read or read as background. A tool response it must call to build the realm is the last
+  //     position left. Matched on playbook NAME, so unrelated playbooks stay clean.
+  const srvSrc = packRead("mcp-server/src/server.ts") || "";
+  c.ok(
+    "END_USER_ASK exists and demands asking, not deciding",
+    /const END_USER_ASK = \[/.test(srvSrc) &&
+      /TWO QUESTIONS YOU MUST ASK/.test(srvSrc) &&
+      /Do not choose/.test(srvSrc) &&
+      /tide_onboarding/.test(srvSrc) &&
+      /tide_branding/.test(srvSrc),
+    "the block must name both tools and forbid deciding on the user's behalf",
+  );
+  c.ok(
+    "every bootstrap-shaped tool response leads with it",
+    // Both now leave through deliver(), which puts `lead` above part 1 of the document.
+    /const BOOTSTRAP_LEAD = LICENSE_ASK \+ END_USER_ASK;/.test(srvSrc) &&
+      /deliver\([^\n]*tide_scenario_bootstrap[^\n]*\{ lead: BOOTSTRAP_LEAD \}\)/.test(srvSrc) &&
+      /lead: isBootstrap \? BOOTSTRAP_LEAD : ""/.test(srvSrc),
+    "tide_scenario_bootstrap and bootstrap playbooks must both prepend it",
+  );
+  // Every playbook that generates an invite link is a realm bootstrap and must carry the ask.
+  const askPattern = srvSrc.match(/const isBootstrap =\s*\n?\s*\/([^/]+)\/i\.test\(name\)/)?.[1];
+  const missedPlaybooks = [];
+  if (askPattern) {
+    const re = new RegExp(askPattern, "i");
+    for (const f of walkFiles(join(PACK_ROOT, "playbooks"), [".md"])) {
+      const base = rel(f).replace(/^playbooks\//, "").replace(/\.md$/, "");
+      const t = readFileSync(f, "utf8");
+      if (/get-required-action-link/.test(t) && !re.test(base)) missedPlaybooks.push(base);
+    }
+  }
+  c.ok(
+    "no invite-link playbook is left out of the bootstrap ask",
+    askPattern !== undefined && missedPlaybooks.length === 0,
+    missedPlaybooks.join("  "),
+  );
+
+  // 2c. Nothing may teach that verifying the JWT signature alone is sufficient when tokens carry
+  //     cnf.jkt. That was the pack's guidance, carried a "CORRECT" marker, and is exploitable: a
+  //     bare-Bearer replay of a sender-constrained token returned 200 on a live deployment. The
+  //     "secureFetch sends a non-RFC-9449 format" premise is false -- measured against
+  //     @tidecloak/js@0.14.20, the proof is an ordinary compact JWS. AP-43.
+  //     Retractions are allowed: the correction has to quote the claim to reverse it.
+  const dpopSkip = [];
+  for (const d of ["canon", "playbooks", "skills", "adapters", "prompts", "reference-apps", "templates"]) {
+    for (const f of walkFiles(join(PACK_ROOT, d), [".md"])) {
+      const r = rel(f);
+      readFileSync(f, "utf8").split("\n").forEach((ln, i) => {
+        const teaches =
+          /skip (the )?dpop proof|no need to re-verify the proof|verify jwt signature only|dpop proof verification is optional|optional defense-in-depth/i.test(ln) ||
+          (/tide-specific format/i.test(ln) && !/false|wrong|was not|claim/i.test(ln));
+        const retracts =
+          /was (false|wrong|inverted)|previously|corrected|do not|never|AP-43|exploitable|read that failure|original report|conclusion/i.test(ln);
+        if (teaches && !retracts) dpopSkip.push(`${r}:${i + 1} (AP-43 — the proof MUST be verified)`);
+      });
+    }
+  }
+  c.ok(
+    "nothing teaches that a cnf.jkt token needs no proof verification (AP-43)",
+    dpopSkip.length === 0,
+    dpopSkip.join("  "),
+  );
+  c.ok(
+    "a tested DPoP proof verifier ships with the pack",
+    packExists("templates/dpop-verify/verifyDpop.ts") &&
+      packExists("templates/dpop-verify/verifyDpop.test.mjs") &&
+      /calculateJwkThumbprint/.test(packRead("templates/dpop-verify/verifyDpop.ts") || "") &&
+      /x-forwarded-host/.test(packRead("templates/dpop-verify/verifyDpop.ts") || ""),
+    "verifier must check the thumbprint and reconstruct htu behind a proxy",
+  );
+
+  // 2d. The pack's own snippets must not send `password=password` -- that is AP-41, its own rule.
+  const hardcodedPw = [];
+  for (const d of ["playbooks", "templates", "canon", "reference-apps", "skills"]) {
+    for (const f of walkFiles(join(PACK_ROOT, d), [".md", ".sh"])) {
+      const r = rel(f);
+      if (r === "canon/anti-patterns.md") continue;
+      readFileSync(f, "utf8").split("\n").forEach((ln, i) => {
+        if (/password=password\b/.test(ln) && !/never|do not|don'?t|wrong|AP-41|\*\*Mistake\*\*|❌/i.test(ln)) {
+          hardcodedPw.push(`${r}:${i + 1} (AP-41 — read KC_BOOTSTRAP_ADMIN_PASSWORD)`);
+        }
+      });
+    }
+  }
+  c.ok(
+    "no pack snippet sends a hardcoded password=password (AP-41)",
+    hardcodedPw.length === 0,
+    hardcodedPw.join("  "),
+  );
+
+  c.ok(
+    "tide_dpop_asset leads with a byte-exact copy, not 'write this verbatim'",
+    /COPY IT, do not retype it/.test(dpopBlock) &&
+      /cp "\$\{sourcePath\}"/.test(dpopBlock) &&
+      /sha256sum/.test(dpopBlock) &&
+      /Fallback listing/.test(dpopBlock),
+    "the tool must emit cp + sha256sum first and mark the listing as a fallback",
+  );
+
   c.ok(
     "tide_onboarding emits a finished component to write (not a cp instruction)",
     /WRITE THIS FILE NOW/.test(srv) && /componentPath/.test(srv) && /mount\[fw\]/.test(srv),
@@ -682,7 +802,8 @@ export async function run() {
   // 4b. tide_dpop_auth.html must be byte-identical across every template and the
   //     canonical exemplar. The Tide enclave integrity-checks this file, so ANY local
   //     modification makes login fail with an unexplained 500 at the token exchange.
-  //     It is not shipped in the @tidecloak/* npm packages, so nothing else catches drift.
+  //     @tidecloak/js ships it only from 0.14.34, and the pack copy is what older SDKs and the
+  //     hosted /pack route hand out, so nothing else catches drift here.
   //     Canonical = the popup-safe page that posts to `window.opener || window.parent`
   //     with a self-post guard (AP-62 / GAP-068); scripts/check-dpop-asset.sh is the
   //     authority. The exemplar lives in sources/ (private — not synced or shipped); when
@@ -723,6 +844,200 @@ export async function run() {
     }
   }
 
+  // 4c. The files the asset tools READ must be in every shipped artifact. templates/ was in neither
+  //     the Docker image nor the npm package, so on mcp.tide.org and under `npx @tideorg/mcp`
+  //     tide_dpop_asset, tide_branding and tide_onboarding all returned "not found" errors --
+  //     MEASURED against the live server 2026-10-07. This gate passed throughout, because it runs
+  //     from a checkout where the files exist. So check the ARTIFACT definitions, not the disk.
+  const dockerfile = packRead("Dockerfile") || "";
+  c.ok("Dockerfile copies templates/ into the image", /^COPY\s+templates\/\s+\.\/templates\/\s*$/m.test(dockerfile),
+    "tide_dpop_asset / tide_branding / tide_onboarding read templates/ at runtime");
+  const pkgFiles = parseJsonSafe(packRead("package.json"))?.files ?? [];
+  c.ok("package.json `files` ships templates/", pkgFiles.includes("templates/"), `files=${JSON.stringify(pkgFiles)}`);
+  // Every path the server reads from disk at runtime must sit under a shipped directory.
+  const shippedDirs = pkgFiles.filter((f) => f.endsWith("/")).map((f) => f.slice(0, -1));
+  const runtimeReads = [...(packRead("mcp-server/src/server.ts") || "").matchAll(/"(templates|scripts|canon|playbooks|skills|prompts|adapters|reference-apps)\/[^"]*"/g)]
+    .map((m) => m[0].slice(1, -1));
+  const unshipped = [...new Set(runtimeReads)].filter((p) => !shippedDirs.some((d) => p.startsWith(d + "/")) && !pkgFiles.includes(p));
+  c.ok("every pack path named in server.ts is inside a shipped directory", unshipped.length === 0, unshipped.join("  "));
+  for (const copied of [...dockerfile.matchAll(/^COPY\s+(\S+)\s/gm)].map((m) => m[1].replace(/\/$/, ""))) {
+    if (copied.startsWith("mcp-server")) continue;
+    c.ok(`Dockerfile COPY source exists: ${copied}`, packExists(copied), "the image build fails on a missing COPY source");
+  }
+  // The public product repo is regenerated from an allowlist; a path the Dockerfile copies but the
+  // allowlist omits breaks the image build THERE, not here. (The script is absent in that repo.)
+  const syncScript = packRead("scripts/sync-to-raziel.sh");
+  if (syncScript) {
+    const publish = syncScript.slice(syncScript.indexOf("PUBLISH=("), syncScript.indexOf("\n)", syncScript.indexOf("PUBLISH=(")));
+    const notSynced = [...dockerfile.matchAll(/^COPY\s+(\S+)\s/gm)].map((m) => m[1].replace(/\/$/, ""))
+      .filter((p) => !p.startsWith("mcp-server"))
+      .filter((p) => !new RegExp("(^|\\s)" + p.split("/")[0].replace(/\./g, "\\.") + "(\\s|$)").test(publish) && !publish.includes(p));
+    c.ok("everything the Dockerfile copies is in the sync-to-raziel allowlist", notSynced.length === 0, notSynced.join("  "));
+  }
+
+  // 4d. A realm is licensed to an EMAIL under Tide's TERMS & CONDITIONS, and both must come from
+  //     the user (AP-90). Tide's own flows prompt for them; the pack defaulted the email to
+  //     admin@yourorg.com and never mentioned the terms. Enforced where it cannot be skipped: the
+  //     scripts refuse to run, every realm-setup response leads with the ask, and the material an
+  //     agent reads while writing its OWN init script carries the rule.
+  const TERMS = "https://tide.org/legal";
+  const licBootstraps = [
+    "templates/shared/bootstrap-tidecloak.sh",
+    "templates/nextjs-customer-portal/scripts/init-tidecloak.sh",
+    "templates/nextjs-e2ee-vault/scripts/init-tidecloak.sh",
+  ];
+  for (const b of licBootstraps) {
+    const t = packRead(b) || "";
+    const gateAt = t.indexOf("TIDE_TERMS_ACCEPTED");
+    // Everything executable (helpers, container start, API calls) sits below this marker; the
+    // behavioural check further down proves nothing runs before the gate.
+    const firstAction = t.indexOf("# --- Helpers ---");
+    c.ok(`${b} checks licence email + terms before it does anything`,
+      t.includes(TERMS) && t.includes("TIDE_LICENSE_EMAIL") && gateAt !== -1 && firstAction !== -1 && gateAt < firstAction,
+      `gate=${gateAt} firstAction=${firstAction}`);
+    c.ok(`${b} carries no default email`, !/ADMIN_EMAIL="\$\{ADMIN_EMAIL:-[^}]*@/.test(t) && !/LICENSE_EMAIL:-[^}$]*@/.test(t));
+    c.ok(`${b} sends the user's address to setUpTideRealm`, /email=\$ADMIN_EMAIL|email=\$LICENSE_EMAIL|email=\$TIDE_LICENSE_EMAIL/.test(t));
+  }
+  // Behaviour, not text: run each script with no terminal. It must stop, say why, and start nothing.
+  if (process.platform !== "win32") {
+    const cases = [
+      ["nothing supplied", {}],
+      ["email but no acceptance", { TIDE_LICENSE_EMAIL: "owner@tide.org" }],
+      ["acceptance but no email", { TIDE_TERMS_ACCEPTED: "yes" }],
+      ["a placeholder email", { TIDE_LICENSE_EMAIL: "admin@example.com", TIDE_TERMS_ACCEPTED: "yes" }],
+      ["the old default via ADMIN_EMAIL", { ADMIN_EMAIL: "admin@yourorg.com", TIDE_TERMS_ACCEPTED: "yes" }],
+      ["acceptance spelled anything but yes", { TIDE_LICENSE_EMAIL: "owner@tide.org", TIDE_TERMS_ACCEPTED: "true" }],
+    ];
+    for (const b of licBootstraps) {
+      const refused = [];
+      for (const [label, env] of cases) {
+        const cwd = mkdtempSync(join(tmpdir(), "tide-lic-"));
+        const run = spawnSync("bash", [join(PACK_ROOT, b)], {
+          cwd, input: "", encoding: "utf8", timeout: 20000,
+          // PATH without docker/sudo on purpose is not possible portably; the gate runs before either.
+          env: { PATH: process.env.PATH, HOME: cwd, KC_BOOTSTRAP_ADMIN_PASSWORD: "x", TIDECLOAK_URL: "http://127.0.0.1:1", ...env },
+        });
+        const out = (run.stdout || "") + (run.stderr || "");
+        if (run.status !== 2 || !out.includes(TERMS) || !/ASK THE USER/.test(out) || /Cleaning previous state|Starting TideCloak|==> /.test(out)) {
+          refused.push(`${label}: exit=${run.status} out=${out.slice(0, 80).replace(/\n/g, " ")}`);
+        }
+      }
+      c.ok(`${b} refuses to run without the user's email and agreement (6 cases)`, refused.length === 0, refused.join("  ||  "));
+    }
+  }
+  // No snippet anywhere may license a realm to a literal address.
+  const literalEmail = [];
+  for (const d of ["canon", "playbooks", "reference-apps", "templates", "skills", "adapters", "prompts"]) {
+    for (const f of walkFiles(join(PACK_ROOT, d), [".md", ".sh", ".template", ".example"])) {
+      const r = rel(f);
+      if (r === "canon/anti-patterns.md") continue; // AP-90 quotes the wrong form to forbid it
+      readFileSync(f, "utf8").split("\n").forEach((ln, i) => {
+        if (/email=[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+/.test(ln) || /ADMIN_EMAIL:-[^}]*@/.test(ln)) literalEmail.push(`${r}:${i + 1}`);
+      });
+    }
+  }
+  c.ok("no snippet licenses a realm to a literal or default email (AP-90)", literalEmail.length === 0, literalEmail.join("  "));
+  // Every document that shows a setUpTideRealm CALL must state the rule, so it cannot be copied without it.
+  const callsWithoutRule = [];
+  for (const d of ["canon", "playbooks", "reference-apps"]) {
+    for (const f of walkFiles(join(PACK_ROOT, d), [".md"])) {
+      const t = readFileSync(f, "utf8");
+      if (/vendorResources\/setUpTideRealm/.test(t) && /email=/.test(t) && !(t.includes(TERMS) || /AP-90/.test(t))) callsWithoutRule.push(rel(f));
+    }
+  }
+  c.ok("every doc that shows the licensing call states the ask-first rule", callsWithoutRule.length === 0, callsWithoutRule.join("  "));
+  const bootCanonLic = packRead("canon/tidecloak-bootstrap.md") || "";
+  c.ok("bootstrap canon carries the rule and the fail-closed block for scripts the agent writes",
+    bootCanonLic.includes(TERMS) && /AP-90/.test(bootCanonLic) && /TIDE_TERMS_ACCEPTED/.test(bootCanonLic) && /exit 2/.test(bootCanonLic) && /Only the user can agree/.test(bootCanonLic));
+  const seqNoLic = [];
+  for (const f of walkFiles(join(PACK_ROOT, "reference-apps"), [".md"])) {
+    if (!rel(f).endsWith("bootstrap-sequence.md")) continue;
+    const t = readFileSync(f, "utf8");
+    const at = t.indexOf(TERMS);
+    if (at === -1 || !/AP-90/.test(t) || at > t.indexOf("## Phase 1")) seqNoLic.push(rel(f));
+  }
+  c.ok("every reference-app bootstrap sequence asks for email + terms before Phase 1", seqNoLic.length === 0, seqNoLic.join("  "));
+  c.ok("AP-90 exists and is classified", /^## AP-90:/m.test(packRead("canon/anti-patterns.md") || "") && /^\| AP-90 \|/m.test(packRead("canon/anti-patterns.md") || ""));
+  for (const e of ["templates/shared/.env.template", "templates/nextjs-customer-portal/.env.example", "templates/nextjs-e2ee-vault/.env.example"]) {
+    const t = packRead(e) || "";
+    c.ok(`${e} documents both variables and leaves them EMPTY`, /^TIDE_LICENSE_EMAIL=\s*$/m.test(t) && /^TIDE_TERMS_ACCEPTED=\s*$/m.test(t) && t.includes(TERMS));
+  }
+
+  // 4e. Source-audit regressions (2026-10-07). Each of these was in the pack, was wrong against the
+  //     projects' own source on every build, and several left an app unprotected while appearing
+  //     to work. A line that quotes the wrong form in order to warn against it is allowed.
+  const docDirs = ["canon", "playbooks", "skills", "adapters", "prompts", "reference-apps", "templates"];
+  const scan = (exts, test, allow) => {
+    const hits = [];
+    for (const d of docDirs) {
+      for (const f of walkFiles(join(PACK_ROOT, d), exts)) {
+        readFileSync(f, "utf8").split("\n").forEach((ln, i) => {
+          if (test(ln) && !(allow && allow.test(ln))) hits.push(`${rel(f)}:${i + 1}`);
+        });
+      }
+    }
+    return hits;
+  };
+  const WARNS = /protects NOTHING|earlier revision|Earlier revision|not real|NOT valid|NOT bulk|matches nothing|authorizes? (zero|ZERO)|do NOT|Do NOT|❌|silently|ignored/;
+
+  // createTideCloakProxy takes ONE options object. Passed the adapter directly, protectedRoutes is
+  // empty and every request passes unverified, with no error.
+  let bad = scan([".md", ".ts", ".tsx"], (ln) => /createTideCloak(Proxy|Middleware)\(\s*[A-Za-z_][\w.]*\s*\)/.test(ln), WARNS);
+  c.ok("no createTideCloakProxy(<adapter>) call — it protects nothing", bad.length === 0, bad.join("  "));
+
+  // Neither provider has a useDPoP / initOptions PROP. As a sibling prop it is ignored and DPoP stays off.
+  bad = scan([".md", ".ts", ".tsx"], (ln) => /<TideCloak\w*Provider[^>]*\s(useDPoP|initOptions)=/.test(ln) || /^\s*(useDPoP|initOptions)=\{/.test(ln), WARNS);
+  c.ok("no provider example passes useDPoP / initOptions as a JSX prop", bad.length === 0, bad.join("  "));
+
+  // CREATE / DELETE are not action types; that filter authorizes nothing and returns 200.
+  bad = scan([".md", ".sh", ".py"], (ln) => /actionTypeIn"?\s*:\s*\[\s*"CREATE"\s*,\s*"DELETE"\s*\]/.test(ln), WARNS);
+  c.ok('no copyable bulk-authorize with actionTypeIn ["CREATE","DELETE"]', bad.length === 0, bad.join("  "));
+
+  // The invite-link query parameters are the OIDC names; camelCase ones are silently ignored.
+  bad = scan([".md", ".sh"], (ln) => /get-required-action-link|userId=/.test(ln) && /[?&](redirectUri|clientId)=/.test(ln) && !/get-installations-provider/.test(ln), WARNS);
+  c.ok("invite-link examples use redirect_uri / client_id", bad.length === 0, bad.join("  "));
+
+  // tidecloak-dev is a development build wired to the production network, not "the production image".
+  bad = scan([".md", ".sh"], (ln) => /\bIS\*{0,2} the production image|\*\*is\*\* the production image/.test(ln), /Earlier revisions/);
+  c.ok('nothing calls tidecloak-dev "the production image"', bad.length === 0, bad.join("  "));
+
+  // These statuses do not exist; APPROVED means committed.
+  bad = scan([".md"], (ln) => /^\|\s*`(DRAFT|ACTIVE)`\s*\|/.test(ln));
+  c.ok("no change-request status table lists DRAFT or ACTIVE", bad.length === 0, bad.join("  "));
+
+  // The DPoP popup error comes from the ORK enclave, not tide-js.
+  bad = scan([".md", ".sh"], (ln) => /tide-js\s+reports/.test(ln));
+  c.ok('the DPoP popup error is not attributed to tide-js', bad.length === 0, bad.join("  "));
+
+  // Offboarding has no createChangeRequest({type:'FABRIC_OFFBOARDING'}) API.
+  bad = scan([".md"], (ln) => /type:\s*'FABRIC_OFFBOARDING'/.test(ln), WARNS);
+  c.ok("no invented FABRIC_OFFBOARDING change-request call", bad.length === 0, bad.join("  "));
+
+  // A drain must never approve these as a side effect: a stray second toggle-iga queues DISABLE_IGA.
+  const drains = [
+    "templates/shared/bootstrap-tidecloak.sh",
+    "templates/nextjs-customer-portal/scripts/init-tidecloak.sh",
+    "templates/nextjs-e2ee-vault/scripts/init-tidecloak.sh",
+    "templates/shared/drain-change-requests.py",
+  ];
+  for (const d of drains) {
+    const t = packRead(d) || "";
+    c.ok(`${d} never drains DISABLE_IGA / DELETE_REALM / OFFBOARD_REALM`,
+      t.includes("DISABLE_IGA") && t.includes("DELETE_REALM") && t.includes("OFFBOARD_REALM") &&
+      !/jq -r 'if type=="array" then \.\[\]\.id else empty end'/.test(t));
+  }
+  // A 200 from setUpTideRealm is not proof of a licence (NEED_PAYMENT is also a 200), and toggle-iga
+  // must not be called on a realm that already has IGA on.
+  for (const b of licBootstraps) {
+    const t = packRead(b) || "";
+    const call = t.slice(t.indexOf("vendorResources/setUpTideRealm\" \\"), t.indexOf("vendorResources/setUpTideRealm\" \\") + 500);
+    c.ok(`${b} reads the setUpTideRealm response instead of discarding it`,
+      /NEED_PAYMENT/.test(t) && /SETUP_CODE/.test(t) && !/isRagnarokEnabled=true" > \/dev\/null/.test(call), call.slice(0, 120));
+    const stateAt = t.indexOf(".attributes.isIGAEnabled");
+    const toggleAt = t.indexOf("tide-admin/toggle-iga\" \\");
+    c.ok(`${b} reads the IGA state before calling toggle-iga`, stateAt !== -1 && toggleAt !== -1 && stateAt < toggleAt, `state=${stateAt} toggle=${toggleAt}`);
+  }
+
   // 5. Security gap mapping is complete: SG-01 .. SG-18 all present.
   const sg = packRead("canon/security-gap-mapping.md") || "";
   for (let i = 1; i <= 18; i++) {
@@ -733,14 +1048,15 @@ export async function run() {
   // 6. Every reference-app scenario has manifest.yaml + scenario.md.
   for (const app of listDir("reference-apps").filter((n) => !n.endsWith(".md"))) {
     c.ok(`scenario '${app}' has manifest.yaml`, packExists(`reference-apps/${app}/manifest.yaml`));
-    c.ok(`scenario '${app}' has scenario.md`, packExists(`reference-apps/${app}/scenario.md`));
+    // A scenario built on a custom contract is manifest-only in the public tree (scripts/redact-public.mjs).
+    c.ok(`scenario '${app}' has scenario.md`, packExists(`reference-apps/${app}/scenario.md`) || RESTRICTED.scenarios.includes(app));
   }
 
   // 7. Playbooks recommended by tide_choose_playbook actually exist as files.
   const server = packRead("mcp-server/src/server.ts") || "";
   const recommended = [...server.matchAll(/name:\s*"([a-z0-9-]+)",\s*reason:/g)].map((m) => m[1]);
   for (const p of new Set(recommended)) {
-    c.ok(`recommended playbook '${p}' exists`, packExists(`playbooks/${p}.md`), "referenced by choose_playbook but file missing");
+    c.ok(`recommended playbook '${p}' exists`, packExists(`playbooks/${p}.md`) || RESTRICTED.playbooks.includes(p), "referenced by choose_playbook but file missing");
   }
 
   // 8. GAP register summary arithmetic: category counts sum to the stated Total.
@@ -792,6 +1108,48 @@ export async function run() {
   const versions = { serverTs: serverVer, rootPkg: rootVer, mcpPkg: mcpPkgVer, pluginJson: pluginVer };
   const allMatch = serverVer && [rootVer, mcpPkgVer, pluginVer].every((v) => v === serverVer);
   c.ok("versions are in sync across server.ts / package.json / plugin.json", allMatch, JSON.stringify(versions));
+
+  // The `groups` mapper (claim name mandated by Tide) must ship in every realm the pack creates, BEFORE
+  // IGA, so the enable-IGA adopt-scan attests it with no approval (MEASURED 2026-10-15). Full path on,
+  // so same-named subgroups under different parents never collapse into one value. RelationshipAttestation
+  // Group subjects compare against exactly this claim (ORK Doken.GroupExists: exact string match).
+  const groupsMapperOk = (json) => {
+    try {
+      const d = JSON.parse(json);
+      return (d.clients ?? []).every((c) => (c.protocolMappers ?? []).some((m) =>
+        m.protocolMapper === "oidc-group-membership-mapper" && m.config?.["claim.name"] === "groups" &&
+        m.config?.["access.token.claim"] === "true" && m.config?.["full.path"] === "true"));
+    } catch { return false; }
+  };
+  for (const t of ["templates/shared/realm.json.template", "templates/nextjs-customer-portal/scripts/realm.json.template", "templates/nextjs-e2ee-vault/scripts/realm.json.template"]) {
+    c.ok(`${t} ships the "groups" mapper (access token, full path) on every client`, groupsMapperOk(packRead(t) ?? ""));
+  }
+  const deployPb = packRead("playbooks/deploy-tidecloak-docker.md") ?? "";
+  c.ok("deploy-tidecloak-docker's inline realm template carries the groups mapper",
+       /"protocolMapper": "oidc-group-membership-mapper"[\s\S]{0,200}"claim\.name": "groups"[\s\S]{0,40}"full\.path": "true"/.test(deployPb));
+
+  // RelationshipAttestation:1 checks realm roles `_tide_encryptor` / `_tide_decryptor` (names fixed by
+  // the ORK contract). Every realm the pack creates declares them, and never in the default composite.
+  for (const t of ["templates/shared/realm.json.template", "templates/nextjs-customer-portal/scripts/realm.json.template", "templates/nextjs-e2ee-vault/scripts/realm.json.template"]) {
+    let d = null;
+    try { d = JSON.parse(packRead(t) ?? ""); } catch { d = null; }
+    const realmRoles = (d?.roles?.realm ?? []).map((r) => r.name);
+    const defaults = (d?.roles?.realm ?? []).find((r) => /^default-roles-/.test(r.name))?.composites?.realm ?? [];
+    c.ok(`${t} declares _tide_encryptor and _tide_decryptor (not in default-roles)`,
+      realmRoles.includes("_tide_encryptor") && realmRoles.includes("_tide_decryptor") &&
+      !defaults.includes("_tide_encryptor") && !defaults.includes("_tide_decryptor"));
+  }
+
+  // T-27: the enclave pop-up-blocked notice and registerPopupErrorCallback. Published only in the
+  // 0.14.41-staging packages (2026-10-16); `latest` 0.14.34 still stalls silently.
+  const tsDoc = packRead("canon/troubleshooting.md") ?? "";
+  const t27 = tsDoc.slice(tsDoc.indexOf("## T-27"));
+  c.ok("T-27 documents the pop-up-blocked notice and registerPopupErrorCallback with its release status",
+       tsDoc.includes("## T-27") && /registerPopupErrorCallback/.test(t27) && /0\.14\.41-staging/.test(t27) &&
+       /`latest` \(`0\.14\.34`\) does not/.test(t27) && /Pop-ups are currently blocked/.test(t27));
+  c.ok("T-27 warns against a no-op popup error callback", /no-op/.test(t27));
+  c.ok("T-27 has a quick-lookup row", /\| Approve \/ sign \/ an enclave action silently does nothing/.test(tsDoc));
+  c.ok("T-27 carries no Asgard-specific guidance", !/asgard/i.test(t27));
 
   return c.results;
 }

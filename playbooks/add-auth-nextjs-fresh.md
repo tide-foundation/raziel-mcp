@@ -199,19 +199,24 @@ All **four** pieces are required together. Missing any one breaks login, usually
 > in the wild and the keylessh repo contains **both** — the one at its repo root is the stale one.
 > Corrected 2026-08-17 from a real user report. AP-62 / GAP-068.
 
-The enclave loads this page during login to prove DPoP key possession. **Get it from the MCP** — that
-hands you the verified content directly, and is the only source that cannot give you the stale copy:
+The enclave loads this page during login to prove DPoP key possession. **Call the MCP tool** — it
+prints the exact copy command for this machine, the hash, and the next.config wiring:
 
 ```
-tide_dpop_asset      # MCP tool: returns the file, the hash, and the next.config wiring
+tide_dpop_asset
 ```
 
-Or copy it from a pack template (all four ship the known-good file):
+The command it prints is this. Copy the file; never retype it (AP-88):
 
 ```bash
 mkdir -p public
-cp <pack>/templates/nextjs-customer-portal/public/tide_dpop_auth.html public/
+# 1. From the SDK (@tidecloak/js >= 0.14.34 ships the file — VERIFIED against the published tarball)
+cp node_modules/@tidecloak/js/tide_dpop_auth.html public/ \
+  || cp <pack>/templates/nextjs-customer-portal/public/tide_dpop_auth.html public/   # 2. from the pack
 ```
+
+`<pack>` is wherever the pack's files are on your machine; the work order returned by
+`tide_choose_playbook` says where, and how to fetch them when the MCP server is remote.
 
 **Verify — the checks below are the corrected ones:**
 
@@ -237,7 +242,7 @@ What the correct page does: it reads `version` and `openerOrigin` from the query
 IndexedDB name from the hex-encoded `iss`/`aud` path segments, reads the `dpopState` key, signs an
 enclave-supplied challenge prefixed with `dpop-auth-challenge:` (a deliberate anti-blind-signing
 measure), and posts messages to **`window.opener || window.parent`** — the popup has an opener, the
-iframe has a parent. It carries no styling.
+iframe has a parent. It carries an inline `<style>` block and shows a "Session verified" mark.
 
 **Why the popup case matters**: the relay runs in an **iframe** first and needs unpartitioned IndexedDB
 via `document.requestStorageAccess({ indexedDB: true })`. When that fails, the SDK falls back to a
@@ -245,10 +250,10 @@ via `document.requestStorageAccess({ indexedDB: true })`. When that fails, the S
 `window.parent.postMessage` page talks to itself. The enclave never receives `pageLoaded`, and you get
 `TIDE-SWE-UNHANDLED` or `Popup DPoP verification failed to load`.
 
-**It is version-bound and NOT shipped in the `@tidecloak/*` npm packages**, so upgrading the SDK does not update it. Re-copy it whenever you change SDK version. If the enclave rejects it (`Popup DPoP verification failed to load`) or the token exchange 500s after a bump, suspect this file first. VERIFIED (LEARNINGS-batch-005 L-05, LEARNINGS-batch-007 L-03).
+**It is version-bound, and the copy in `public/` is not updated by an SDK upgrade.** `@tidecloak/js` ships the file from 0.14.34; earlier versions do not. Re-copy it whenever you change SDK version. If the enclave rejects it (`Popup DPoP verification failed to load`) or the token exchange 500s after a bump, suspect this file first. VERIFIED (LEARNINGS-batch-005 L-05, LEARNINGS-batch-007 L-03).
 
 **Other rules for this page:**
-- The enclave requests it at `/tide_dpop/iss/<hex-issuer>/aud/<hex-client>/tide_dpop_auth.html`, which does not map to the static file — hence the rewrite. Note the **SDK itself never references this path**; the enclave fetches it from your origin, so grepping the SDK for `tide_dpop` finds nothing and proves nothing.
+- The enclave requests it at `/tide_dpop/iss/<hex-issuer>/aud/<hex-client>/tide_dpop_auth.html`, which does not map to the static file — hence the rewrite. The enclave fetches it from your origin. Older SDKs never reference this path; from `@tidecloak/js` 0.14.34 the SDK ships the page and, with `useDPoP` set, **probes this URL at startup** and logs a console error if it 404s — read the browser console after the first load.
 - **Do NOT use a route handler** (`app/tide_dpop/[...path]/route.ts`). Next.js injects a hash-based CSP on route-handler responses that blocks the page's inline script. Static files via rewrites are unaffected. VERIFIED (LEARNINGS-batch-005 L-04).
 - **Do NOT validate the issuer/client hex params.** The enclave already integrity-checks the HTML; server-side validation that fails returns 400 before the HTML loads, killing the popup. VERIFIED (LEARNINGS-batch-005 L-03).
 

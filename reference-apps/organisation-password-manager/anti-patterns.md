@@ -54,18 +54,31 @@ After IGA is enabled, client and user mutations create draft change-sets. If the
 
 Decrypted vault data must exist only in client memory. Do not cache decrypted values in server-side sessions, databases, or logs. Each decryption request must go through the ORK threshold path.
 
-## AP-S14: Not committing appUser PolicyApproval before user access
+## AP-S14: Encrypting into a vault before its policy is signed
 
-The `appUser` PolicyApproval must be committed with non-empty `signed_policy_data` before encryption works. If uncommitted, the crypto policy endpoint returns null and client-side encryption silently fails or errors.
+Each shared vault needs its `RelationshipAttestation:1` policy signed by a realm admin first. Without
+it there is nothing to pass to `doEncrypt`. Do not fall back to self-encryption: those items can
+never be shared. Block the vault and show an admin setup CTA.
 
-## AP-S15: Skipping orgOwner PolicyApproval
+## AP-S15: Treating `_tide_encryptor` / `_tide_decryptor` as the access control
 
-The `orgOwner` PolicyApproval with its Forseti contract (VVK verification, org-scope validation) must be committed before org admin operations work. Without it, user context signing fails and org-level policy enforcement is absent.
+Those realm roles are capabilities. The vault policy's **subject** is the boundary. A vault policy
+whose subject is a role or group everyone holds opens the vault to everyone.
 
-## AP-S16: Hardcoding org role names without UUID
+## AP-S16: Hardcoding org role names without UUID, or omitting `clientId`
 
-Org-scoped client roles must follow the `org:{uuid}:{suffix}` pattern. Hardcoding role names without the org UUID breaks multi-org support and causes the Forseti contract's `TryExtractOrgId` validation to fail.
+Org-scoped client roles must follow the `org:{uuid}:{suffix}` pattern, so each org's vault policy
+names only that org. A `Role` policy for a client role must carry `clientId`; without it the
+contract looks for a realm role of that name and refuses every member.
 
-## AP-S17: Serving crypto policy without verifying commitment status
+## AP-S17: Tagging entries with anything but the vault id
 
-The crypto policy endpoint should only return `signed_policy_data` from committed PolicyApprovals. Serving policy data from pending or draft approvals means the policy has not been validated by the required quorum.
+The contract requires every tag on every entry to equal the policy's `assignmentId`. Extra tags
+(field type, folder) make the ORKs refuse the request. Keep such metadata in the stored record, not
+in the tags.
+
+## AP-S18: Writing a custom contract for vault access
+
+Per-vault access is exactly what the built-in `RelationshipAttestation:1` does. A custom contract
+adds a review and deployment by the Tide team and a second thing to keep correct. Use one only if
+org owners must grant access without a realm admin.

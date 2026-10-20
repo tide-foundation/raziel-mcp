@@ -50,7 +50,6 @@ Self-encryption (this skill) is **permanently user-bound**. It cannot be upgrade
 **Tell the user the cost before they commit to sharing.** Shared (Forseti) encryption is strictly more work than self-encryption, and the difference is a human ceremony they cannot automate away:
 
 - **Self-encryption**: no policy, no contract, no signing ceremony. Roles + `doEncrypt`/`doDecrypt`. Fully scriptable end to end.
-- **Shared (Forseti)**: a C# contract, a policy, and **one browser signing ceremony by a `tide-realm-admin`** to produce the `policySig`. Everything else — contract upload (`POST /iga/forseti-contracts`), roles, storing the signed policy — is scriptable, but the signature is not. There is no server-side signing endpoint (`first-admin-sign-preview` performs no cryptography).
 
 If they only need "each user protects their own data", self-encryption is the right answer and avoids the ceremony entirely. Route to Forseti only when someone other than the encryptor genuinely must decrypt.
 

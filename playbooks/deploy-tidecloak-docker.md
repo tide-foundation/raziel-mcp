@@ -35,11 +35,18 @@ Deploy TideCloak in Docker, auto-initialize a realm with Tide licensing, IGA, ad
 
 ### Image
 
-**Always `tideorg/tidecloak-dev:latest`.** Despite the `-dev` suffix this **is** the production image, and it is the only image the pack supports.
+**Always `tideorg/tidecloak-dev:latest`.** It is the only image the pack supports.
+
+**What this image is — corrected 2026-10-07 from the image source** (`tidecloak-override`, `quarkus/container/Dockerfile-dev`, confirmed independently from the `tidecloak` tree):
+
+- It is the **development build of the server**: embedded H2, non-strict hostname, and it **imports a realm named `myrealm` on every start** (with open registration). It is not the production *server* image; that is `tideorg/tidecloak` (Postgres required, strict hostname, proxy headers), for which this pack has no playbook.
+- It is wired to the **production Tide network**: home ORK `https://ork1.tideprotocol.com`, **T=14, N=20**, and the production payer key are baked in. "Local dev" on this image talks to live ORKs. It is not a 3-of-5 test network; 3/5 and `sork1` belong to staging builds and Tide's internal local stack.
+- Earlier revisions said "despite the `-dev` suffix this IS the production image". That conflated the two points above.
 
 | Image | Use | Database | Tide Network |
 |-------|-----|----------|--------------|
-| `tideorg/tidecloak-dev:latest` | **All uses** — development and production | H2 (embedded) | Connected, via built-in defaults |
+| `tideorg/tidecloak-dev:latest` | Everything this pack covers | H2 (embedded) | **Production network** (ork1, 14-of-20), via built-in defaults |
+| `tideorg/tidecloak` | Production server (no pack playbook) | Postgres required | Production network |
 | `tideorg/tidecloak-stg-dev:latest` | **Not supported.** Internal pre-release build | — | — |
 
 It ships working ORK/threshold/payer defaults, so the full Tide protocol — licensing, IGA approval flows, admin invite links, E2EE — works out of the box with **no** ORK env vars. VERIFIED 2026-08-06: `setUpTideRealm` on this image returns 200 with a real gVRK and free-tier subscription in ~7s.
@@ -57,12 +64,12 @@ Note the embedded H2 database: for a real production deployment ask Tide about e
 | Variable | Purpose | Example | Required For |
 |----------|---------|---------|--------------|
 | `KC_BOOTSTRAP_ADMIN_USERNAME` | Initial admin user | `admin` | Both images |
-| `KC_BOOTSTRAP_ADMIN_PASSWORD` | Initial admin password | `password` | Both images |
-| `KC_HOSTNAME` | Public-facing URL | `https://auth.myapp.com` | Staging only |
-| `SYSTEM_HOME_ORK` | Tide network entry point | `https://sork1.tideprotocol.com` | Staging only |
-| `USER_HOME_ORK` | User-facing ORK URL | `https://sork1.tideprotocol.com` | Staging only |
-| `THRESHOLD_T` | Signing threshold | `3` | Staging only |
-| `THRESHOLD_N` | Total ORK nodes | `5` | Staging only |
+| `KC_BOOTSTRAP_ADMIN_PASSWORD` | Initial admin password | *(from `.env`; never a literal — AP-41)* | Both images |
+| `KC_HOSTNAME` | Public-facing URL | `https://auth.myapp.com` | Behind a reverse proxy |
+| `SYSTEM_HOME_ORK` | Tide network entry point | baked in: `https://ork1.tideprotocol.com` (staging builds: `sork1`) | Never set by hand |
+| `USER_HOME_ORK` | User-facing ORK URL | baked in: `https://ork1.tideprotocol.com` | Never set by hand |
+| `THRESHOLD_T` | Signing threshold | baked in: `14` (staging builds: `3`) | Never set by hand |
+| `THRESHOLD_N` | Total ORK nodes | baked in: `20` (staging builds: `5`) | Never set by hand |
 | `PAYER_PUBLIC` | Payer ORK public key | hex string | Staging only |
 | `KC_PROXY_HEADERS` | Trust forwarded headers from reverse proxy | `xforwarded` | Behind reverse proxy only |
 
@@ -205,6 +212,21 @@ Replace `REALM_NAME` and `CLIENT_NAME` with your values. Replace `CLIENT_APP_URL
             "claim.name": "vuid",
             "jsonType.label": "String"
           }
+        },
+        {
+          "name": "groups",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-group-membership-mapper",
+          "consentRequired": false,
+          "config": {
+            "claim.name": "groups",
+            "full.path": "true",
+            "access.token.claim": "true",
+            "id.token.claim": "false",
+            "userinfo.token.claim": "false",
+            "introspection.token.claim": "true",
+            "lightweight.claim": "true"
+          }
         }
       ]
     }
@@ -321,7 +343,7 @@ if lsof -i :8080 >/dev/null 2>&1; then
   exit 1
 fi
 
-# tideorg/tidecloak-dev IS the production image. It ships working ORK/threshold/payer
+# tideorg/tidecloak-dev is wired to the PRODUCTION Tide network. It ships working ORK/threshold/payer
 # defaults — do NOT set SYSTEM_HOME_ORK, USER_HOME_ORK, THRESHOLD_T/N or PAYER_PUBLIC.
 sudo docker run -d --name tidecloak \
   -v "$(pwd)/data:/opt/keycloak/data/h2" \
@@ -346,7 +368,7 @@ done
 get_token() {
   curl -s -X POST "$TIDECLOAK_URL/realms/master/protocol/openid-connect/token" \
     -H "Content-Type: application/x-www-form-urlencoded" \
-    -d "username=admin&password=password&grant_type=password&client_id=admin-cli" \
+    --data-urlencode "username=$KC_BOOTSTRAP_ADMIN_USERNAME" --data-urlencode "password=$KC_BOOTSTRAP_ADMIN_PASSWORD" -d "grant_type=password&client_id=admin-cli" \
     | jq -r '.access_token'
 }
 
@@ -366,11 +388,16 @@ curl -s -X POST "$TIDECLOAK_URL/admin/realms" \
 rm -f "$TMP_REALM"
 
 # 4. Initialize Tide realm + enable IGA
+#    The licence email and agreement to https://tide.org/legal are asked of the USER before this
+#    script is run. Check them at the TOP of your script, before the container starts.
+# Fail closed: both come from the user (AP-90). No default email, no implied acceptance.
+: "${TIDE_LICENSE_EMAIL:?ask the user which email should manage their Tide licence}"
+[ "${TIDE_TERMS_ACCEPTED:-}" = "yes" ] || { echo "The user has not agreed to https://tide.org/legal - ask them" >&2; exit 2; }
 TOKEN="$(get_token)"
 curl -s -X POST "$TIDECLOAK_URL/admin/realms/$REALM_NAME/vendorResources/setUpTideRealm" \
   -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/x-www-form-urlencoded" \
-  --data-urlencode "email=admin@yourorg.com" \
+  --data-urlencode "email=$TIDE_LICENSE_EMAIL" \
   --data-urlencode "isRagnarokEnabled=true"
 
 # Stamp iga.attestor=tide on the realm BEFORE enabling IGA so governance comes
@@ -405,7 +432,7 @@ approve_all_pending() {
   # See canon/iga-change-requests-api.md.
   ids=$(curl -s "$TIDECLOAK_URL/admin/realms/$REALM_NAME/iga/change-requests?status=PENDING" \
     -H "Authorization: Bearer $TOKEN" 2>/dev/null \
-    | jq -r 'if type=="array" then .[].id else empty end' 2>/dev/null)
+    | jq -r 'if type=="array" then (.[] | select(.actionType | IN("DISABLE_IGA","DELETE_REALM","OFFBOARD_REALM") | not) | .id) else empty end' 2>/dev/null)
   for id in $ids; do
     TOKEN="$(get_token)"
     curl -s -X POST "$TIDECLOAK_URL/admin/realms/$REALM_NAME/iga/change-requests/$id/authorize" \
@@ -418,7 +445,7 @@ approve_all_pending() {
     TOKEN="$(get_token)"
     ready=$(curl -s "$TIDECLOAK_URL/admin/realms/$REALM_NAME/iga/change-requests?status=PENDING" \
       -H "Authorization: Bearer $TOKEN" 2>/dev/null \
-      | jq -r '.[] | select(.readyToCommit==true) | .id' 2>/dev/null)
+      | jq -r '.[] | select(.actionType | IN("DISABLE_IGA","DELETE_REALM","OFFBOARD_REALM") | not) | select(.readyToCommit==true) | .id' 2>/dev/null)
     [ -z "$ready" ] && break
     for id in $ready; do
       TOKEN="$(get_token)"
@@ -436,7 +463,7 @@ TOKEN="$(get_token)"
 curl -s -X POST "$TIDECLOAK_URL/admin/realms/$REALM_NAME/users" \
   -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
-  -d '{"username":"admin","email":"admin@yourorg.com","firstName":"Admin","lastName":"User","enabled":true,"emailVerified":false,"attributes":{"tideInvitable":["true"]}}'
+  -d '{"username":"admin","email":"'"$TIDE_LICENSE_EMAIL"'","firstName":"Admin","lastName":"User","enabled":true,"emailVerified":false,"attributes":{"tideInvitable":["true"]}}'
 
 # 6b. Approve user creation (user is not queryable until committed with IGA enabled)
 sleep 2
@@ -559,7 +586,7 @@ CLIENT_NAME="myclient"
 
 TOKEN=$(curl -s -X POST "$TIDECLOAK_URL/realms/master/protocol/openid-connect/token" \
   -H "Content-Type: application/x-www-form-urlencoded" \
-  -d "username=admin&password=password&grant_type=password&client_id=admin-cli" \
+  --data-urlencode "username=$KC_BOOTSTRAP_ADMIN_USERNAME" --data-urlencode "password=$KC_BOOTSTRAP_ADMIN_PASSWORD" -d "grant_type=password&client_id=admin-cli" \
   | jq -r '.access_token')
 
 CLIENT_UUID=$(curl -s -X GET "$TIDECLOAK_URL/admin/realms/$REALM_NAME/clients?clientId=$CLIENT_NAME" \
@@ -608,7 +635,7 @@ curl -s -f http://localhost:8080
 ```bash
 curl -s -X POST "http://localhost:8080/realms/master/protocol/openid-connect/token" \
   -H "Content-Type: application/x-www-form-urlencoded" \
-  -d "username=admin&password=password&grant_type=password&client_id=admin-cli" \
+  --data-urlencode "username=$KC_BOOTSTRAP_ADMIN_USERNAME" --data-urlencode "password=$KC_BOOTSTRAP_ADMIN_PASSWORD" -d "grant_type=password&client_id=admin-cli" \
   | jq -r '.access_token'
 # Should return a JWT string, not null
 ```
@@ -618,7 +645,7 @@ curl -s -X POST "http://localhost:8080/realms/master/protocol/openid-connect/tok
 ```bash
 TOKEN=$(curl -s -X POST "http://localhost:8080/realms/master/protocol/openid-connect/token" \
   -H "Content-Type: application/x-www-form-urlencoded" \
-  -d "username=admin&password=password&grant_type=password&client_id=admin-cli" \
+  --data-urlencode "username=$KC_BOOTSTRAP_ADMIN_USERNAME" --data-urlencode "password=$KC_BOOTSTRAP_ADMIN_PASSWORD" -d "grant_type=password&client_id=admin-cli" \
   | jq -r '.access_token')
 
 curl -s -X GET "http://localhost:8080/admin/realms/myapp" \

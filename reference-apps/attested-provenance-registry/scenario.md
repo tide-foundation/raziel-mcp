@@ -21,6 +21,18 @@ Two security properties do the work, and **both live in the Forseti contract, no
 | **Authorship** — the named signer really signed | The signer's **vuid** sits at a fixed offset in the envelope; the contract byte-compares it to `DokenDto.UserId` | Without it, the network only proves *somebody holding the signing role* asked. The creator field would be the app's own assertion, and a compromised backend could put anyone's name on a claim while the signature still verified. |
 | **Freshness** — the claim cannot be backdated | The contract compares the client timestamp against **each ORK's own clock**, symmetrically | The app's clock is never consulted. To move an attested time an attacker must fool a majority of independently operated ORK clocks at once. |
 
+## Built-in contract: does not cover signing
+
+The ORK's built-in `RelationshipAttestation:1` contract (ORK `main`; VERIFIED from source `c69fc4f6`:
+it throws unless the policy names only `PolicyEnabledEncryption:1` / `PolicyEnabledDecryption:1`) only allows **encryption and decryption**
+of tagged data for a named user, group or role. It refuses every other request, so it cannot sign a claim about content or bind a time to it.
+
+This scenario therefore needs a **custom** contract. You can write it and compile-check it; putting
+it into service is done by the Tide team (info@tide.org or Discord: https://discord.gg/XBMd9ny2q5). Say this to the user before the build starts.
+
+If what the user actually needs is "a user, group or role may read one record's encrypted data", that is
+`relationship-attestation`, which needs no contract written or deployed.
+
 ## When to use this scenario
 
 Use when the user describes:
@@ -265,7 +277,6 @@ Consequences that shape the architecture:
 | `Not an <app> attestation envelope` | Draft is being wrapped, or wire format and contract have drifted. Pin them with a test |
 | Denied on clock skew | Working as intended, or the device clock is wrong. Guard client-side for a clear message |
 | `Model id '...' not found in registry` | `modelId` is not a built-in and not `BasicCustom<...>` (AP-65) |
-| `Unknown contract type ''` | Contract transport missing the outer `"forseti"` level (AP-64) |
 | `Policy refers to wrong contract` | Case → uppercase the SHA-512; entirely different → contract edited, redeploy |
 | Signature never verifies, key set fetched fine | Verifier pointed at the OIDC JWKS, not the VVK (GAP-071) |
 | Identity fields render blank/`—` but page works | Read a non-existent context property; use `getValueFromToken` and **fail closed** (AP-69) |

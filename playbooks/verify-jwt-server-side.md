@@ -31,8 +31,16 @@ import tcConfig from '../data/tidecloak.json';
 
 // Arg order: (config, token, allowedRoles=[]) — config FIRST.
 const payload = await verifyTideCloakToken(tcConfig, token, ['admin']);
-// payload = decoded claims on success, `false` on any failure.
+// payload = decoded claims on success, `null` on any failure (bad token OR infrastructure error).
 ```
+
+⚠️ **Two things this helper does not do.** VERIFIED 2026-10-07 against `tidecloak-js` `main`
+(`packages/tidecloak-verify/src/TideJWT.js`):
+
+1. **It does not enforce the embedded key.** If `tcConfig.jwk` is missing it silently fetches keys
+   from `<issuer>/protocol/openid-connect/certs`. Assert `tcConfig.jwk` at startup (I-04).
+2. **It verifies the JWT only.** No DPoP proof, no `cnf.jkt` check. A sender-constrained token still
+   needs Step 4 below.
 
 It does local-JWKS signature verification (embedded `jwk`), issuer + `azp` validation, time-claim checks with `clockTolerance`, and optional role enforcement across realm and client roles. For the majority of API-protection needs this is all you require — see [protect-api-nextjs.md](protect-api-nextjs.md).
 
@@ -193,25 +201,58 @@ export function extractToken(authHeader: string | null): string {
 
 ---
 
-### Step 4: DPoP Verification (Optional Defense-in-Depth)
+### Step 4: DPoP Verification — REQUIRED, not optional
 
-**Caveat: App-side DPoP proof re-verification is incompatible with `secureFetch`.** When the client uses `IAMService.secureFetch` from `@tidecloak/js`, the DPoP proofs it sends are in a Tide-specific format, not standard RFC 9449 compact JWS. Calling `jwtVerify()` on the `dpop` header fails with `401: Invalid Compact JWS`. DPoP binding is already enforced at TideCloak during token issuance — the `cnf.jkt` claim in the JWT proves the token was DPoP-bound. **JWT signature verification via embedded JWKS (VVK) is the primary security layer.** VERIFIED (LEARNINGS-batch-005 L-06).
+> ⚠️ **This step previously said "Optional Defense-in-Depth" and told you to skip proof
+> verification when using `secureFetch`. That was wrong and it is exploitable.** A bare-`Bearer`
+> replay of a sender-constrained token returned **`200`** against a real deployment that verified
+> only the JWT signature (LEARNINGS-nightfabric-001 L-01). Corrected 2026-08-21 — see AP-43.
 
-**If your app uses `secureFetch`** (the normal case): do not re-verify the proof — but DO assert the binding. Set the flag that drives the check in `lib/auth/protect.ts`:
+**`cnf.jkt` proves the token was *issued* bound to a key. It proves nothing about who is
+*presenting* it.** If the resource server does not verify the proof, a stolen token replays as a
+plain `Bearer` and succeeds — the binding provides none of DPoP's protection.
+
+**The "Tide-specific format" claim was false.** Measured against `@tidecloak/js@0.14.20`
+(`lib/tidecloak-dpop.js` → `generateDPoPProof`), `secureFetch` sends an ordinary RFC 9449 compact
+JWS:
+
+```js
+header  { alg, typ: "dpop+jwt", jwk: { crv, kty, x, y } }
+payload { jti, htm, htu: origin + pathname, iat, ath, nonce? }
+```
+
+The original `Invalid Compact JWS` came from verifying the proof with the **realm's** public key. A
+DPoP proof is signed by the client's ephemeral key and carries it in its own header — verify with
+`header.jwk`, not the VVK.
+
+**Use the shipped, tested verifier**: `templates/dpop-verify/verifyDpop.ts`, with
+`verifyDpop.test.mjs` covering 13 cases including the Bearer-replay rejection.
+
+```typescript
+const claims = await verifyTideJWT(token);   // signature, iss, azp, exp
+await verifyDpop(req, token, claims);        // RFC 9449 — throws if the binding does not hold
+```
+
+Two things that will bite:
+
+- **`htu` behind a proxy.** The SDK signs the origin the *browser* saw. Behind cloudflared or a load
+  balancer, `req.nextUrl.origin` is the internal origin, so every legitimate request fails htu and
+  the app 401s completely. Reconstruct from `x-forwarded-host` + `x-forwarded-proto`, and only trust
+  those headers behind a proxy you control.
+- **The `jti` replay cache must be shared.** A per-process `Map` does not prevent replay across
+  serverless instances (AP-44).
+
+Still assert the binding exists, so an unbound token cannot be accepted by an app that believes it is
+DPoP-protected:
 
 ```typescript
 // True whenever the realm issues DPoP-bound tokens — which the pack's realm
-// template does by default (dpop.bound.access.tokens=true). Turn this off ONLY
-// if you have deliberately disabled DPoP realm-side, which is not a supported
-// configuration (I-12).
+// template does by default (dpop.bound.access.tokens=true).
 const REQUIRE_DPOP = true;
 ```
 
-Asserting `cnf.jkt` costs nothing and closes the gap where an unbound token is accepted by an app that believes it is DPoP-protected. Skip only the *proof re-verification* below, never the binding assertion.
-
-**If your app uses `secureFetch`**: Skip the proof-verification step that follows. The `withAuth` middleware from Step 5 should check for `cnf.jkt` presence (proving DPoP binding at issuance) but should NOT attempt to re-verify the DPoP proof itself. Remove or disable the `verifyDPoP()` call in `withAuth`.
-
-**If your app uses manual DPoP (not `secureFetch`)**: The verification below applies. When the `TideCloakProvider` has `useDPoP={{ mode: 'strict', alg: 'ES256' }}`, TideCloak binds access tokens with a `cnf.jkt` claim.
+The reference implementation below is kept for context; prefer the shipped `verifyDpop.ts`, which is
+tested.
 
 ```typescript
 // lib/auth/dpop.ts
@@ -354,14 +395,13 @@ export function withAuth(handler: AuthHandler) {
         );
       }
 
-      // Do NOT re-verify the DPoP proof itself when the client uses
-      // secureFetch: its proofs are Tide-specific, not RFC 9449 compact JWS,
-      // so jwtVerify() on the `dpop` header throws "Invalid Compact JWS".
-      // cnf.jkt presence is the correct server-side assertion for that path —
-      // the binding was enforced by TideCloak at issuance.
-      // Only if you hand-roll RFC 9449 proofs (not secureFetch) add:
-      //   if (!req.headers.get('dpop')) return 401;
-      //   await verifyDPoP(req, token);
+      // VERIFY THE PROOF. cnf.jkt on the token is only half the binding: without checking
+      // the `DPoP` header a stolen token replays as a plain Bearer and passes (AP-43).
+      // secureFetch sends an ordinary RFC 9449 compact JWS, so this works for it. An earlier
+      // revision of this file said not to re-verify; that was wrong and exploitable.
+      if ((jwt as { cnf?: { jkt?: string } }).cnf?.jkt) {
+        await verifyDPoP(req, token);   // throws -> caught below -> 401
+      }
 
       return handler(req, jwt);
     } catch (err) {

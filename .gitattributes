@@ -9,3 +9,14 @@
 # CRLF, changing every byte, so an integrity check (and the gate's known-good sha256)
 # fails. Pin it to LF everywhere so it can never ship platform-mangled.
 tide_dpop_auth.html text eol=lf
+
+# The deterministic gate reads the pack's canon (.md), scenario manifests (.yaml),
+# and test suites (.mjs) and matches them with \n-exact regexes. A Windows autocrlf
+# checkout gives CRLF, so those regexes miss (builtin_contract:\n  id, ## AP-62, ...)
+# and the gate is red on Windows while green on Linux/CI. Pin them to LF so the gate
+# is deterministic on every platform. (Vendored CRLF under sources/ is untouched —
+# none of it uses these extensions.)
+*.md   text eol=lf
+*.yaml text eol=lf
+*.yml  text eol=lf
+*.mjs  text eol=lf

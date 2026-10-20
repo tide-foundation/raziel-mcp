@@ -144,7 +144,7 @@ curl -s -X POST "$URL/admin/realms/$REALM/vendorResources/set-branding" \
 # -> "Tide branding updated and settings re-signed successfully."
 ```
 
-The admin console's **Settings → Branding** tab does the same three steps with a live preview.
+The Keycloak admin UI (`keycloak-IGA`) has **no** Branding tab and applies no client-side checks to an uploaded image; when you upload through its Tide IdP settings page it does not call `set-branding`. An earlier revision of this file pointed at a "Settings → Branding" tab there; if one exists it is in a different console. Use the script above.
 
 ## Start here: [`BRANDING-FLOW.md`](BRANDING-FLOW.md)
 

@@ -8,6 +8,17 @@ This is a governance tool, not an end-user application. It sits alongside the ap
 
 ---
 
+## Built-in contract: not applicable, but its grants show up here
+
+This scenario encrypts nothing, so the ORK's built-in `RelationshipAttestation:1` contract has no
+role in it. Two things from that contract do reach a governance panel:
+
+- **Relationship policies are approved at signing, in the enclave** — not as IGA change requests.
+  They will not appear in the change-request list.
+- **`Group` and `Role` subjects make membership into access.** Adding a user to a group, or granting
+  a role, that a relationship policy names gives them that record. On an IGA realm those are change
+  requests, and this panel is where they are approved — label them so approvers know what they open.
+
 ## When to use this scenario
 
 Use when the app needs:
@@ -78,10 +89,10 @@ Endpoints use the current `/iga/change-requests/...` surface (replaces legacy `/
 2. Panel lists pending requests (`GET /iga/change-requests?status=PENDING`) and derives counts
 3. Panel groups pending CRs by `entityType` (users, roles, groups, clients, settings, policies)
 4. Admin reviews a change request's details, activity, and comments
-5. Admin approves: `POST /iga/change-requests/{id}/authorize` (body `{}`; 409 = four-eyes)
-   - If Tide MultiAdmin: complete the two-phase `GET`/`POST /iga/change-requests/{id}/approval-model` enclave exchange
-   - If FirstAdmin/Tideless: signed server-side immediately
-6. When `readyToCommit`: `POST /iga/change-requests/{id}/commit` (412 if under threshold)
+5. Admin approves: `POST /iga/change-requests/{id}/approve` (body `{}`), sent from the browser with the admin's own token (AP-89)
+   - Reply `mode: "recorded"`: done (FirstAdmin/Tideless, signed server-side)
+   - Reply `mode: "needs-approval"` (Tide MultiAdmin): sign the returned `requestModel` in the enclave, then POST `/approve` again with `{ "requestModel": "<base64>" }`
+6. `/approve` commits by itself once quorum is met; read `committed` in the reply
 7. Admin can reject: `POST /iga/change-requests/{id}/deny`
 8. Admin can add/edit/delete comments on change requests
 
@@ -106,13 +117,12 @@ Endpoints use the current `/iga/change-requests/...` surface (replaces legacy `/
 | Symptom | Likely cause | Fix |
 |---------|-------------|-----|
 | Authorize returns 401 | Token expired or DPoP not attached | Re-login; ensure `secureFetch` with DPoP |
-| Authorize returns 409 | Same admin re-signing (four-eyes) or CR not PENDING | Use a different admin; refresh the list |
-| MultiAdmin: authorize does not record | Enclave step skipped | Complete `{id}/approval-model` two-phase exchange |
+| Authorize returns 409 | This admin already signed, the CR is not PENDING, or the realm is multiAdmin (`MULTIADMIN_REQUIRES_APPROVAL_ENCLAVE`) | Use `/approve`; a different admin supplies further approvals |
+| MultiAdmin: approval does not record | The `needs-approval` reply was treated as success | Sign `requestModel` in the enclave and POST `/approve` again |
 | Commit returns 412 | Under threshold / unmet dependency | Collect more approvals; commit `dependsOn` CR first |
 | Change request stays PENDING after authorize | Missing commit step | Call `{id}/commit` once `readyToCommit` |
-| add-review returns 415 | Wrong content-type | Use `multipart/form-data`, not JSON |
+| add-review returns 410 Gone | The endpoint was removed | Approve through `POST /iga/change-requests/{id}/approve` |
 | Counts don't update after commit | Stale data | Refresh counts after every mutation |
-| Policy change requests don't appear | Realm policy not in pending state | Create pending realm policy first via `/tide-admin/realm-policy/pending` |
 | Forseti contracts tab empty | No contracts registered | Contracts deploy via SDK signing flow, not REST API |
 | 120s delay after commit before roles appear | Token refresh delay | Expected behavior; re-login or wait |
 

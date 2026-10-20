@@ -3,7 +3,7 @@
 id: organisation-password-manager
 title: Organisation Password Manager
 category: credential-vault
-description: Shared credential vault with self-encryption plus policy-governed encryption via Forseti contracts
+description: Shared credential vault. Private items use self-encryption; shared vaults use the ORK built-in RelationshipAttestation:1 contract (one admin-approved policy per vault). No custom contract.
 
 frameworks:
   - nextjs
@@ -15,12 +15,12 @@ core_patterns:
   - self-encryption
   - self-decryption
   - policy-governed-encryption
-  - forseti
+  - builtin-contract
+  - relationship-attestation
   - doken
   - dpop
   - iga
   - oidc
-  - vvk
   - credential-vault
   - password-manager
   - e2ee
@@ -56,16 +56,16 @@ bootstrap_required: true
 requires_admin_preapproval: true
 requires_iga: true
 requires_e2ee: true
-encryption_mode: self-encryption + policy-governed
+encryption_mode: self-encryption + RelationshipAttestation:1 (built-in contract)
 
 default_roles:
   - _tide_enabled
   - _tide_<tag>.selfencrypt
   - _tide_<tag>.selfdecrypt
 
-policy_roles:
-  - appUser
-  - orgOwner
+contract_roles:   # realm roles, names fixed by RelationshipAttestation:1
+  - _tide_encryptor
+  - _tide_decryptor
 
 org_role_pattern: "org:{uuid}:{owner|admin|user|manager}"
 
@@ -83,4 +83,13 @@ default_playbooks:
 discriminating_question: Do multiple users need to encrypt/decrypt the same data (shared credentials, team secrets)? If only the encrypting user decrypts, use self-encryption instead of this scenario.
 valid_only_when: Cross-user decryptability is required. At least two users share encrypted data.
 
-notes: Two encryption layers. Self-encryption for per-user vault data. Policy-governed encryption via appUser/orgOwner Forseti contracts for org-scoped access control. Replace <tag> with app name.
+notes: Two encryption layers, no custom contract. Self-encryption for a member's private items. One RelationshipAttestation:1 policy per shared vault (assignmentId = vault id, the only tag; subject Role org:{uuid}:user with clientId, a Group, or a User), signed by a realm admin. Replace <tag> with app name.
+
+# Shared vaults run on the ORK's built-in contract; nothing to write or deploy.
+builtin_contract:
+  id: "RelationshipAttestation:1"
+  scenario: relationship-attestation
+  availability: ORK main (VERIFIED from source c69fc4f6, 2026-10-16)
+  covers: who may encrypt and decrypt each shared vault (the vault id is the assignmentId and the only tag)
+  subjects: Role (org:{uuid}:user with clientId), Group (a team; groups claim, full path), User (one member)
+  does_not_cover: grants made by an org owner without a realm admin (that alone would need a custom contract)

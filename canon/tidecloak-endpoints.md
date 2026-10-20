@@ -25,7 +25,7 @@ GET /admin/realms/{realm}/vendorResources/get-installations-provider
   ?clientId={uuid}&providerId=keycloak-oidc-keycloak-json
 ```
 
-Returns the client adapter JSON with Tide-specific fields (`jwk`, `vendorId`, `homeOrkUrl`, `client-origin-auth-*`). The `jwk` field is only present when IGA is enabled. Save as `data/tidecloak.json`.
+Returns the client adapter JSON with Tide-specific fields (`jwk`, `vendorId`, `homeOrkUrl`, `client-origin-auth-*`). `clientId` is the client **UUID**, not its name. The `jwk` field (`{"keys":[...]}`) is present once the realm has a `tide-vendor-key` component with an EdDSA key; it is **not** gated on IGA (VERIFIED 2026-10-07, `tidecloak-idp-extensions` `VendorResource.java`). The browser SDK also needs `client-origin-auth-<origin>` for the origin the app is served from: a new redirect origin needs `sign-idp-settings` re-run and the adapter re-exported. Save as `data/tidecloak.json`.
 
 ### Public Tide Config
 
@@ -52,7 +52,7 @@ Each role-policy record carries the signed `policy` bytes and `policySig` used b
 POST /realms/{realm}/tidevouchers/fromUserSession?sessionId={sid}
 ```
 
-Gets vouchers for a user session. Role-based: `signin`/`updateaccount` always allowed; `vendorsign` requires `_tide_*` or authorizer role; `vendordecrypt` requires `_tide_*.selfdecrypt` role. The SDK constructs this URL internally.
+Gets vouchers for a user session. The **browser** (enclave/SDK) fetches the voucher from this TideCloak URL and hands it to the ORK, which validates it with the Payer; ORKs do not call TideCloak for vouchers. Role-based: `signin`/`updateaccount` always allowed. `vendorsign` **and** `vendordecrypt` are both granted on ONE condition: the user holds any role named `_tide_*`, a role with attribute `isAuthorizerRole=true`, or `tide-realm-admin`. There is no separate `.selfdecrypt` check at this endpoint (VERIFIED 2026-10-07, `tidecloak-idp-extensions` `VoucherResource.java`) — the realm default role's composites count for every user, so do not treat the voucher as the access-control boundary for decryption. The SDK constructs this URL internally.
 
 ```
 POST /realms/{realm}/tidevouchers/fromAuthSession?sessionId={sid}&tabId={tab}&clientId={id}
@@ -92,10 +92,23 @@ Used during realm initialization. Typically called by the init script, not by ap
 ```
 POST /admin/realms/{realm}/vendorResources/setUpTideRealm
 Content-Type: application/x-www-form-urlencoded
-Body: email=admin@yourorg.com
+Body: email=$TIDE_LICENSE_EMAIL   # the address the USER gave; ask first, with the Terms (AP-90)
 ```
 
-Full Tide realm setup: creates IDP, key provider, gets free-tier license. `isRagnarokEnabled` optional (default true). Content-Type MUST be form-encoded, not JSON.
+Full Tide realm setup: creates IDP, key provider, gets free-tier license. Content-Type MUST be form-encoded, not JSON. Requires `manage-realm`.
+
+Form parameters (VERIFIED 2026-10-07 against `tidecloak-idp-extensions` `main`, `VendorResource.java`):
+
+| Param | Default | Effect |
+|---|---|---|
+| `email` | — | **Selects the free tier.** Free tier + a non-blank email activates a licence immediately. A blank or missing email does **not** fail: it silently switches to a paid Stripe checkout session. |
+| `licensingTier` | `free` | Any non-free tier goes to Stripe checkout. |
+| `isRagnarokEnabled` | `true` | Turns offboarding **backup on**. See the Ragnarok notes in `canon/concepts.md`. |
+| `skipLicense` | `false` | Creates the IdP and returns early with `{"status":"idp-created"}`; no licence, no VRK. This is what the admin console sends. |
+
+No parameter carries Terms & Conditions acceptance, and nothing server-side records it. Agreement happens only where the operator is asked (AP-90).
+
+**Response — DIFFERS ON `main`.** This pack recorded a 200 with an `activationPackage` containing a `gVRK` (measured 2026-08-06 on `tidecloak-dev`). On `main` the body is plain text: **`CREATED`** (licensed and IdP settings signed), **`NEED_PAYMENT`** (also HTTP 200 — **not** licensed), or a **303** whose body is a Stripe checkout URL. A 200 is therefore not proof of a licence on either build. The pack's scripts fail on `NEED_PAYMENT` and on a 303.
 
 ### Enable IGA
 
@@ -105,7 +118,9 @@ Content-Type: application/x-www-form-urlencoded
 Body: isIGAEnabled=true
 ```
 
-Enables IGA governance for the realm. Sets EdDSA signature algorithm, configures Tide protocol mappers.
+Enables IGA governance for the realm. On enable it sets `iga.attestor=tide` and the EdDSA signature algorithm (when the realm has a `tide` IdP, a `tide-vendor-key` component and an active VRK), and invalidates every user session on the realm.
+
+⚠️ **DIFFERS ON `main`: it is a flip, not a setter.** `isIGAEnabled` is ignored and each call inverts the current state; a second call queues a `DISABLE_IGA` change request (202). Read `GET /admin/realms/{realm}/tide-admin/iga-status` first and call this once. A 200 can still carry `warnings` (a failed signing sweep leaves baseline requests PENDING and logins fail closed). See `canon/iga-change-requests-api.md`.
 
 ### Sign IDP Settings
 
@@ -119,11 +134,13 @@ Signs all Tide IDP settings with the VRK. Required after any IDP config change (
 
 ```
 POST /admin/realms/{realm}/tideAdminResources/get-required-action-link
-  ?userId={id}&redirectUri={uri}&clientId={id}&lifespan=43200
+  ?userId={id}&redirect_uri={uri}&client_id={id}&lifespan=43200
 Body: ["link-tide-account-action"]
 ```
 
-Generates a link for the admin user to link their Tide account. Time-limited (default 12 hours).
+Generates a link for the admin user to link their Tide account. Time-limited (default 12 hours). Returns the URL as text.
+
+The optional query parameters are the OIDC names **`redirect_uri`** and **`client_id`** (snake_case). `redirectUri` / `clientId` are not read and are silently ignored — earlier revisions of this file used them. VERIFIED 2026-10-07 against the server and the admin client, which agree. `GET /admin/realms/{realm}/tideAdminResources/users/{id}/committed` → `{committed}` tells you beforehand whether a link can be generated under IGA.
 
 ---
 
@@ -147,7 +164,7 @@ POST /admin/realms/{realm}/iga/change-requests/{id}/authorize    Body: {} (optio
 POST /admin/realms/{realm}/iga/change-requests/{id}/commit                              → 200/412
 ```
 
-Batch approve (bootstrap): `POST /admin/realms/{realm}/iga/change-requests/bulk-authorize` with `{ "actionTypeIn": ["CREATE","DELETE"], "limit": 100 }` (429 if a bulk run is already in progress). Bulk authorizes but does not commit — commit the CRs that become `readyToCommit`.
+Batch approve: `POST /admin/realms/{realm}/iga/change-requests/bulk-authorize` with real, granular action types, e.g. `{ "actionTypeIn": ["ADOPT_ROLE","CREATE_USER"], "limit": 100 }`, or `{ "crIdIn": [...] }` (429 if a bulk run is already in progress). **`["CREATE","DELETE"]` matches nothing and authorizes zero requests with a 200** — earlier revisions of this line showed exactly that. Whether it also commits differs between the measured build and `main`; read `results[].status`. Prefer the per-id loop in `canon/iga-change-requests-api.md`.
 
 ### Deny
 
@@ -155,30 +172,33 @@ Batch approve (bootstrap): `POST /admin/realms/{realm}/iga/change-requests/bulk-
 POST /admin/realms/{realm}/iga/change-requests/{id}/deny         → 204
 ```
 
-### Two-phase approval (Tide MultiAdmin, enclave)
+### Approve (every mode; two-phase with the enclave in Tide MultiAdmin)
 
 ```
-GET  /admin/realms/{realm}/iga/change-requests/{id}/approval-model   → { changeRequestId, requestModel(base64) }
-POST /admin/realms/{realm}/iga/change-requests/{id}/approval-model   Body: { "requestModel": "<base64 doken>" }
-                                                                     → { recorded, authCount, threshold }
+POST /admin/realms/{realm}/iga/change-requests/{id}/approve   Body: {}
+     → { mode: "recorded", committed, authCount, threshold, readyToCommit, status }       # done
+     → { mode: "needs-approval", changeRequestId, actionType, requestModel(base64) }      # sign in the enclave, then:
+POST /admin/realms/{realm}/iga/change-requests/{id}/approve   Body: { "requestModel": "<base64 signed request>" }
+     → { mode: "recorded", committed, authCount, threshold, readyToCommit, status }
 ```
+
+This is the only approval call the admin console makes. `.../{id}/approval-model` (GET/POST) is the older exchange: still present as back-compat, does not commit, no longer used by the console.
 
 ### Comments and ADOPT
 
 ```
-GET/POST /admin/realms/{realm}/iga/change-requests/{id}/comments        Body: { "comment": "..." } (≤2000)
+GET/POST /admin/realms/{realm}/iga/change-requests/{id}/comments        Body: { "body": "..." } (≤2000; `comment` also accepted)
 PUT/DELETE /admin/realms/{realm}/iga/change-requests/{id}/comments/{commentId}
 POST /admin/realms/{realm}/iga/adopt   Body: { "entityType": "USER", "entityId": "..." }   → 201/409
 GET  /admin/realms/{realm}/iga/change-requests/{id}/diagnostic-bundle
 ```
 
-**Legacy → current:** `change-set/{type}/requests` → `iga/change-requests?status=PENDING`; `change-set/sign[/batch]` → `iga/change-requests/{id}/authorize` (+ `bulk-authorize`); `change-set/commit[/batch]` → `iga/change-requests/{id}/commit`; `change-set/cancel` → `.../{id}/deny`; `tideAdminResources/add-review` → `.../{id}/approval-model`; field `draftRecordId` → `id`. Enabling IGA is unchanged: `POST /admin/realms/{realm}/tide-admin/toggle-iga`.
+**Legacy → current:** `change-set/{type}/requests` → `iga/change-requests?status=PENDING`; `change-set/sign[/batch]` → `iga/change-requests/{id}/authorize` (+ `bulk-authorize`); `change-set/commit[/batch]` → `iga/change-requests/{id}/commit`; `change-set/cancel` → `.../{id}/deny`; `tideAdminResources/add-review` (now 410 Gone) → `.../{id}/approve`; field `draftRecordId` → `id`. Enabling IGA is unchanged: `POST /admin/realms/{realm}/tide-admin/toggle-iga`.
 
 ---
 
-## Policy and Contract Endpoints
 
-Served under `@Path("iga")`. (The older `tide-admin/policy-templates`, `tide-admin/ssh-policies`, `tide-admin/realm-policy`, and `role-policy/{id}/init-cert` endpoints no longer exist on main.)
+> _Withheld: uploading a custom Forseti contract is done by the Tide team (experimental, test networks only). Do not reconstruct this step._
 
 ### Role Policies
 
@@ -195,30 +215,24 @@ POST body (`IgaRolePolicyRepresentation`): `{ name, policy, policySig, contractI
 
 ### Forseti Contracts
 
-```
-GET    /admin/realms/{realm}/iga/forseti-contracts
-GET    /admin/realms/{realm}/iga/forseti-contracts/{id}
-POST   /admin/realms/{realm}/iga/forseti-contracts
-DELETE /admin/realms/{realm}/iga/forseti-contracts/{id}
-```
-
-POST body (`IgaForsetiContractRepresentation`): `{ contractCode, name }`. Returns the stored contract with its `contractHash` (SHA-512 of the source).
-
----
+> _Withheld: uploading a custom Forseti contract is done by the Tide team (experimental, test networks only). Do not reconstruct this step._
 
 ## VRK and Licensing Endpoints
 
 Infrastructure-level. Used during initial setup and license rotation.
 
 ```
-POST /admin/realms/{realm}/vendorResources/generate-initial-key
-POST /admin/realms/{realm}/vendorResources/switch-vrk
+POST /admin/realms/{realm}/vendorResources/CreateTideVendorKey     # form: licensingTier (+ requestedUsers) → CREATED | NEED_PAYMENT | 303 Stripe URL
+POST /admin/realms/{realm}/vendorResources/force-gen-vrk
+POST /admin/realms/{realm}/vendorResources/force-rotate-vrk
+POST /admin/realms/{realm}/vendorResources/force-switch-vrk
+GET  /admin/realms/{realm}/vendorResources/latest-rotation-error
 GET  /admin/realms/{realm}/vendorResources/isPendingLicenseActive
 GET  /admin/realms/{realm}/vendorResources/getLicenseDetails
 GET  /admin/realms/{realm}/vendorResources/licenseHistory
 ```
 
-Initial license issuance is driven by `setUpTideRealm` (free-tier); ongoing license drafts/trigger/history are handled by the IGA licensing endpoints (`/iga/licensing/*`).
+`generate-initial-key` and `switch-vrk`, listed here in earlier revisions, do not exist on `tidecloak-idp-extensions` `main` (VERIFIED 2026-10-07). Initial license issuance is driven by `setUpTideRealm` (free-tier); ongoing license drafts/trigger/history are handled by the IGA licensing endpoints (`/iga/licensing/*`).
 
 ---
 

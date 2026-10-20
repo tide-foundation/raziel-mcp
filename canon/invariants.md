@@ -550,7 +550,7 @@ Omitting this is the silent failure mode: the app enables `useDPoP`, believes it
 
 **Client-side is four pieces, not one.** `useDPoP` alone is insufficient. You also need:
 
-1. `public/tide_dpop_auth.html` — not shipped in the npm packages; a stale copy breaks the popup fallback (AP-62)
+1. `public/tide_dpop_auth.html` — copied byte-exact (`tide_dpop_asset`); shipped in `@tidecloak/js` only from 0.14.34; a stale copy breaks the popup fallback (AP-62)
 2. the **wildcard** rewrite `/tide_dpop/:path*` → `/tide_dpop_auth.html`, as a **static rewrite, not a route handler**. The relay parses `iss`/`aud` out of its own URL path, so the enclave requests `/tide_dpop/iss/<hex>/aud/<hex>/tide_dpop_auth.html` and an exact-path rewrite 404s
 3. that path's CSP (`default-src 'self'; script-src 'unsafe-inline'`) **plus `Allow-CSP-From: *`** — this is CSP Embedded Enforcement; omitting the opt-in header is exactly what refuses the frame
 4. `secureFetch` for API calls; a plain `fetch` with a Bearer header carries no proof
@@ -570,9 +570,10 @@ Complete copyable config, the curl verification, and how to read the CSP error: 
 - The SDK requests `/tide_dpop/iss/<hex-issuer>/aud/<hex-client>/tide_dpop_auth.html`. This path does not map to the static file, so you must rewrite it.
 - **Use `next.config.ts` `rewrites()` to map `/tide_dpop/:path*` → `/tide_dpop_auth.html`**. Set CSP via `headers()` config targeting the `/tide_dpop/:path*` source: `script-src 'unsafe-inline'` and `Allow-CSP-From: *`.
 - **Do NOT use a route handler** (`app/tide_dpop/[...path]/route.ts`). Next.js 16 dev server injects its own hash-based CSP on route handler responses, overriding the `script-src 'unsafe-inline'` header. Static files served via rewrites are not processed through this pipeline. VERIFIED (LEARNINGS-batch-005 L-04).
-- **Do NOT validate issuer/client hex params in the handler**. The enclave already integrity-checks the HTML. Server-side issuer/client validation is defense-in-depth but when it fails (config loading timing, path resolution), it prevents login entirely by returning 400 before the HTML loads. VERIFIED (LEARNINGS-batch-005 L-03).
-- **The HTML must match the SDK version**. The only source is the pack template — the file is NOT shipped inside `@tidecloak/*` npm packages. If the pack template is stale and the enclave rejects it, contact the Tide team for the updated file. VERIFIED (LEARNINGS-batch-005 L-05, LEARNINGS-batch-007 L-03).
-- Without this: DPoP login fails with `Tide user did not provided a dpop bound token` or `Popup DPoP verification failed to load`. VERIFIED (learning-batch-004, L-07).
+- **Do NOT hand-roll issuer/client validation in a handler**. A hand-written check that fails (config loading timing, path resolution) prevents login entirely by returning 400 before the HTML loads. VERIFIED (LEARNINGS-batch-005 L-03). Note that upstream's own `createDpopRoute({ config })` (`@tidecloak/js` 0.14.34+) **does** validate both and answers 403 on a mismatch; that is upstream's supported path, not the hand-rolled one this rule warns about. No login has been run through it by this pack.
+- **What the enclave actually enforces** (VERIFIED 2026-10-07 from the ORK enclave source, `CMKOnlyEnclave.js`): it frames the page with `csp="default-src 'none'; script-src 'self' 'sha256-utc6UrebuHOyLd/2aiMXS/p1EDy9UZBDe/XEMKDw9Mc='; style-src 'unsafe-inline';"`. The page's inline **script is pinned by hash**, which is why a single changed byte breaks login. The page also has an inline `<style>` block: this pack's `default-src 'self'; script-src 'unsafe-inline'` header does not allow it, while upstream's header hash-pins it. Whether that costs anything beyond the "Session verified" styling was not tested.
+- **The HTML must match the SDK version**. Sources, in order: `node_modules/@tidecloak/js/tide_dpop_auth.html` (shipped from `@tidecloak/js` 0.14.34 — VERIFIED 2026-10-07 against the published tarball), then the pack template. Earlier SDKs do not ship it. If the enclave rejects a known-good copy, contact the Tide team for the updated file. VERIFIED (LEARNINGS-batch-005 L-05, LEARNINGS-batch-007 L-03).
+- Without this: DPoP login fails with `Popup DPoP verification failed to load` (the page did not load) or, at ORK sign time, `Tide user did not provided a dpop bound token but a dpop cnf claim was found in requested token` (the token is bound but the enclave sent no DPoP data). VERIFIED (learning-batch-004, L-07).
 
 **⚠️ Verify the copy — the page is distributed by copy-paste and stale copies break the popup fallback.**
 
@@ -586,7 +587,7 @@ an app its copy is stale**. Two versions are in circulation:
 
 `window.parent` is correct in an **iframe**. In a **popup** — which is what `_popupDPoPFallback` →
 `_openDPoPPopup` opens — `window.parent === window`, so the page messages **itself**, the opener
-never receives `pageLoaded`, and tide-js reports `Popup DPoP verification failed to load`.
+never receives `pageLoaded`, and the enclave (served by the ORK; `CMKOnlyEnclave.js`) throws `Popup DPoP verification failed to load`. The enclave tries the page in an iframe for 4 seconds, then in a popup for 10.
 
 **Two things make this near-undiagnosable:**
 - The popup is legitimately **blank**. The page has no markup, only a `<script>`; it renders text

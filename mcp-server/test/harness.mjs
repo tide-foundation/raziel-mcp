@@ -10,8 +10,9 @@ import { fileURLToPath } from "node:url";
 // repo root = two levels up from mcp-server/test/
 export const PACK_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..");
 
-export async function mkClient() {
-  const server = createServer();
+// opts are passed to createServer -- { publicBaseUrl } makes it behave as the hosted transport does.
+export async function mkClient(opts = {}) {
+  const server = createServer(opts);
   const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
   await server.connect(serverTransport);
   const client = new Client({ name: "tide-mcp-qa", version: "1.0.0" });

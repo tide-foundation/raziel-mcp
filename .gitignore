@@ -5,3 +5,6 @@ node_modules/
 # python bytecode from local checks
 __pycache__/
 *.pyc
+
+# browser-automation evidence from local QA runs
+.playwright-mcp/

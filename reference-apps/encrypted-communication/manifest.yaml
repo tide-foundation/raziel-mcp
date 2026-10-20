@@ -51,6 +51,9 @@ match_keywords:
   - zero-knowledge
   - real-time encryption
   - encrypted group chat
+  - room key
+  - room members
+  - chat room
   - encrypted video call
   - signal-like
   - whatsapp-like
@@ -98,3 +101,9 @@ discriminating_question: Does the app need real-time encrypted communication (ch
 valid_only_when: App requires runtime E2E encryption for real-time content (messages, media frames) using external crypto, with Tide protecting the private key material at rest.
 
 notes: Two encryption layers. Layer 1 is Tide self-encryption for private key storage. Layer 2 is an external client-side crypto library for runtime E2E. Tide does not handle Layer 2 directly. Replace <tag> with app-specific tag name.
+
+# The ORK's built-in RelationshipAttestation contract - see scenario.md
+builtin_contract:
+  id: "RelationshipAttestation:1"
+  optional: true
+  covers: storing a room key once under a Group-subject policy (INFERRED design, not run)

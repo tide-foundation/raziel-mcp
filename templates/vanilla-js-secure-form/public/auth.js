@@ -1,8 +1,9 @@
 // Tide auth initialization using IAMService.
 //
-// IAMService is the shipped singleton and supports DPoP. DPoP is enabled and
-// enforced by default; configure it via useDPoP: { mode: 'strict', alg: 'ES256' }
-// in the IAMService config. There is no enableDpop flag. See canon/framework-matrix.md.
+// IAMService is the shipped singleton and supports DPoP. DPoP is OPT-IN on the client: without
+// `useDPoP` in the config the SDK issues plain bearer tokens and says nothing, and a realm that
+// requires bound tokens (the pack's template does) then fails login with "DPoP proof is missing".
+// There is no enableDpop flag. See canon/framework-matrix.md.
 
 import { IAMService } from "@tidecloak/js";
 
@@ -13,7 +14,7 @@ const iam = IAMService;
 // Initialize from adapter JSON — pass the FULL config object, not {url, realm, clientId}. (AP-52)
 const configRes = await fetch("/tidecloak.json");
 const config = await configRes.json();
-await iam.initIAM(config);
+await iam.initIAM({ ...config, useDPoP: { mode: "strict", alg: "ES256" } });
 
 // UI bindings
 const loginBtn = document.getElementById("login-btn");
@@ -28,25 +29,26 @@ function updateUI() {
   formSection.style.display = authenticated ? "block" : "none";
 
   if (authenticated) {
-    const user = iam.getUserInfo();
-    userInfo.textContent = `Logged in as: ${user?.preferred_username || "unknown"}`;
+    // IAMService has no getUserInfo(); read identity from the ID token's claims.
+    const username = iam.getValueFromIdToken("preferred_username");
+    userInfo.textContent = `Logged in as: ${username || "unknown"}`;
   } else {
     userInfo.textContent = "";
   }
 }
 
 loginBtn.addEventListener("click", () => {
-  iam.doLogin({ redirectUri: window.location.origin + "/auth/redirect" });
+  iam.doLogin();   // the redirect URI comes from the config; doLogin takes an optional return path
 });
 
 logoutBtn.addEventListener("click", () => {
-  iam.doLogout({ redirectUri: window.location.origin + "/" });
+  iam.doLogout();  // takes no arguments
 });
 
 // Listen to auth events
 iam.on("authRefreshSuccess", updateUI);
 iam.on("authRefreshError", () => {
-  iam.doLogin({ redirectUri: window.location.origin + "/auth/redirect" });
+  iam.doLogin();   // the redirect URI comes from the config; doLogin takes an optional return path
 });
 
 // Initial state

@@ -10,6 +10,24 @@ This is a **hybrid encryption** pattern:
 
 ---
 
+## Built-in contract: share a room's key with its members
+
+Messages are encrypted outside Tide. What Tide protects is the **key store**. Today each member
+self-encrypts their copy of a room key. With the ORK's built-in `RelationshipAttestation:1`
+(`relationship-attestation`) a room key can instead be encrypted **once** under a policy whose
+subject is the room's member group:
+
+| Policy param | Value |
+|---|---|
+| `subjectType` / `subjectId` | `Group` / the room's group, exactly as in the `groups` claim (claim name mandated) |
+| `assignmentId` | the room id — also the only tag on the encrypted key |
+| `roles` | `["_tide_encryptor","_tide_decryptor"]` for members who may rotate the key, `["_tide_decryptor"]` for read-only members |
+
+Removing a member from the group stops them decrypting the **stored** key once their credential
+refreshes; rotate the room key as well, since they may hold the old one. This is an INFERRED design:
+it has not been built or run. The contract itself is on ORK `main` (VERIFIED from source
+`c69fc4f6`, 2026-10-16).
+
 ## When to use this scenario
 
 Use when the app needs:
@@ -42,7 +60,7 @@ Do NOT use when:
 
 **Not used in the default self-encryption path**: Policy-governed encryption, Forseti contracts, VVK shared encryption, doken-based signing.
 
-**Shared encryption variant**: If the app needs Tide-native shared encryption (recipients decrypt ciphertext via `IAMService.doDecrypt` with policy bytes), add `setup-forseti-e2ee` to the playbook sequence. This requires a Forseti contract, admin signing ceremony, and additional roles. See `role-policy-matrix.md` for details. VERIFIED (LEARNINGS-batch-009 L-06).
+**Shared encryption variant**: If the app needs Tide-native shared encryption (recipients decrypt ciphertext via `IAMService.doDecrypt` with policy bytes), use the built-in `RelationshipAttestation:1` contract as described in "Built-in contract" above: one admin-approved policy per room, nothing deployed. Do not write a custom contract for this. See `role-policy-matrix.md`.
 
 ---
 
