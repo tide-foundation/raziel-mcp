@@ -1,6 +1,5 @@
 # Raziel
 
-[![MCP QA Gate](https://github.com/tide-foundation/raziel-mcp/actions/workflows/qa-gate.yml/badge.svg)](https://github.com/tide-foundation/raziel-mcp/actions/workflows/qa-gate.yml)
 
 **Raziel is the Tide MCP** — it gives AI coding agents the knowledge to implement [TideCloak](https://tidecloak.com) correctly.
 
