@@ -2,6 +2,25 @@
 
 All notable changes to `@tideorg/mcp` (the Tide Agent Pack) are documented here.
 
+## 1.9.34 — Security: clear every advisory and upgrade the toolchain
+
+No behaviour change — this is a dependency and tooling release. `npm audit` now
+reports **0 vulnerabilities**.
+
+- **zod 3.25 → 4.6.7** — fixes the HIGH advisory GHSA-mrhx-c7xc-m3w5 (memory
+  exhaustion validating oversized constrained collections), reachable through
+  tool-input validation on the hosted endpoint. The MCP SDK already supports zod 4
+  and the server uses only basic schemas, so no code change.
+- **applicationinsights 2.9 → 3.17** — clears the 4 moderate advisories from the
+  transitive `@opentelemetry/core` (GHSA-8988-4f7v-96qf, unbounded memory in W3C
+  Baggage propagation). The hosted geo/usage telemetry in `http.ts` was adapted to
+  the 3.x API; local/`npx` runs still collect nothing.
+- **Toolchain bumps** — `@modelcontextprotocol/sdk` → 1.32, `express` → 5.3,
+  `typescript` → 7, `@types/node` → 26, Node engine `>=22`, plus an
+  `@azure/msal-node` override. Gate stays green (Linux CI, full suite).
+- **`RELEASE.md`** — added a lean, manual step-by-step for syncing the workshop to
+  `raziel-mcp`.
+
 ## 1.9.33 — `RelationshipAttestation:1` is the default for encrypted-data access
 
 The ORK's built-in `RelationshipAttestation:1` contract is on ORK `main` (VERIFIED from source

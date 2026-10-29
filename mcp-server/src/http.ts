@@ -14,14 +14,15 @@ import { join } from "node:path";
 // *where usage comes from* (it stores the geo, and masks the raw IP). We do NOT
 // inspect request bodies or MCP tool arguments. See PRIVACY.md.
 const AI_CONN = process.env.APPLICATIONINSIGHTS_CONNECTION_STRING;
-const aiClient = AI_CONN ? new appInsights.TelemetryClient(AI_CONN) : undefined;
+// v3 enables automatic instrumentation by default. Keep this client manual-only so telemetry
+// remains limited to the request metadata described in PRIVACY.md.
+const aiClient = AI_CONN ? new appInsights.TelemetryClient(AI_CONN, { useGlobalProviders: false }) : undefined;
 
 const app = express();
 app.set("trust proxy", true);
 
 // Geo/usage telemetry middleware (no-op unless AI is configured).
 if (aiClient) {
-  const ipKey = aiClient.context.keys.locationIp;
   app.use((req, res, next) => {
     const start = Date.now();
     // Behind Azure Container Apps' ingress the socket IP is Envoy, not the
@@ -36,7 +37,8 @@ if (aiClient) {
         resultCode: String(res.statusCode),
         success: res.statusCode < 400,
         time: new Date(start),
-        tagOverrides: { [ipKey]: clientIp },
+        // v3 maps this standard span attribute to the masked Application Insights location IP.
+        properties: { "client.address": clientIp },
       });
     });
     next();

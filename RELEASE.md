@@ -26,19 +26,37 @@ node -p "require('./.claude-plugin/plugin.json').version"   # 1.9.0
 grep -A1 '@tideorg/mcp' mcp-server/src/server.ts | grep version   # 1.9.0
 ```
 
-## 0. Publish from the public tree, not the workshop
+## 0. Sync to raziel-mcp (publish from there, not the workshop)
 
-The workshop documents how a custom Forseti contract is uploaded, which is not self-service (the
-Tide team deploys contracts). Sync first, then release from `raziel-mcp`:
+`raziel-mcp` is the public product and the publish source. Promote the workshop to it first.
+The sync reads committed `main` — merge your changes before running it, or they won't cross over.
 
 ```bash
-(cd mcp-server && npm ci && npm run build)
-scripts/sync-to-raziel.sh /path/to/raziel-mcp     # runs scripts/redact-public.mjs; stops if anything is left
+git checkout main && git pull --ff-only              # sync reads main, not your working tree
+(cd mcp-server && npm ci && npm run build)           # the redact step needs dist/server.js
+rm -rf /path/to/raziel-mcp/mcp-server/node_modules   # Windows: a locked node_modules fails the wipe
+scripts/sync-to-raziel.sh /path/to/raziel-mcp        # regenerates raziel, leak-checks, then STOPS
 ```
 
-The server also filters at runtime, so a package published from the workshop still withholds the
-step from its responses. But the files inside that package would contain it. Only the sync cleans
-the files.
+The script wipes raziel (keeping only `.git`, `LICENSE`, `server.json`), copies the publish
+allowlist from `main`, strips the non-self-service Forseti steps, re-brands to Raziel, and stages
+the result. It never commits. Then, in `raziel-mcp`:
+
+```bash
+# 1. Bump server.json "version" by hand — the sync never touches it.
+# 2. Gate must pass:
+(cd mcp-server && npm ci && npm test)
+# 3. Review and ship:
+git --no-pager diff --cached
+git commit -m "Sync <version>: <summary>" && git push
+```
+
+Watch for:
+- **`Leak check: OK`** in the output. `LEAK` means a private file (`sources/`, `notes/`, `evals/`,
+  `CLAUDE.md`, `AGENTS.md`) crossed over — do not push.
+- **`WARN: '<x>' … NOT classified`** means a new top-level path isn't in the allowlist. Decide where
+  it belongs in `sync-to-raziel.sh` before trusting the result.
+- **`server.json` left behind** ships the old version to the MCP Registry while npm ships the new one.
 
 ## 1. Publish to npm
 

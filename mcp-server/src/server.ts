@@ -603,7 +603,7 @@ const REFERENCE_APP_DIRS = listDirectories("reference-apps");
 
 // Single source of truth for the version inside this file. Kept in sync with
 // mcp-server/package.json / plugin.json / marketplace.json by a content gate.
-const VERSION = "1.9.33";
+const VERSION = "1.9.34";
 
 // Prepended to every bootstrap-shaped tool response. It sits ABOVE the document, because inside the
 // document it gets read as background and skipped: five successive builds ended with the agent

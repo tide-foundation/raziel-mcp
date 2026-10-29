@@ -9,11 +9,11 @@
 // you change the byte layout in attestation.ts or mint-rule.mjs, these fail - which is the point:
 // regenerate them from the SDK, never from the code under test.
 import { mkClient, callTool, Checks, PACK_ROOT, packRead } from "./harness.mjs";
-import ts from "typescript";
+import { createRequire } from "node:module";
 import { execFileSync } from "node:child_process";
 import { mkdtempSync, writeFileSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { pathToFileURL } from "node:url";
 
 const SDK = {
@@ -29,7 +29,10 @@ export async function run() {
   const c = new Checks("attestation");
   const dir = mkdtempSync(join(tmpdir(), "tide-att-"));
   const src = readFileSync(join(PACK_ROOT, "templates/attestation/attestation.ts"), "utf8");
-  writeFileSync(join(dir, "attestation.mjs"), ts.transpileModule(src, { compilerOptions: { module: "ESNext", target: "ES2022" } }).outputText);
+  // TypeScript 7 removed transpileModule. Use the installed compiler in emit-only mode.
+  writeFileSync(join(dir, "attestation.mts"), src);
+  const tsc = join(dirname(createRequire(import.meta.url).resolve("typescript/package.json")), "bin", "tsc");
+  execFileSync(process.execPath, [tsc, "attestation.mts", "--module", "ESNext", "--target", "ES2022", "--noCheck"], { cwd: dir });
   const M = await import(pathToFileURL(join(dir, "attestation.mjs")).href);
   const S = M.statements;
   const hex = (b) => Buffer.from(b).toString("hex");

@@ -1,7 +1,20 @@
 # Gap Register
 
 Uncertainties, missing information, and open questions from source audit.
-Updated: 2026-04-13 (full sync pass: status count corrected, no new gaps)
+Updated: 2026-10-29 (dependency maintenance; existing gap statuses unchanged)
+
+## Dependency maintenance — 2026-10-29
+
+- `ASSUMED`: Upgrade scope covers maintained npm packages and app templates. Copied evidence under `sources/` remains unchanged.
+- `VERIFIED`: Direct dependencies use npm registry `latest` releases. Existing lockfiles also refresh compatible transitive dependencies.
+- `VERIFIED`: Application Insights 3 requires Node.js 22+. The MCP server declares this minimum. VS Code typings and the extension minimum both use 1.144.
+- `VERIFIED`: TypeScript 7 removes `transpileModule`. The attestation test now uses the installed compiler with `--noCheck` for equivalent emission.
+- `VERIFIED`: Application Insights 3 replaces `tagOverrides` with span attributes. The HTTP server uses `client.address` for location and an isolated client for manual telemetry. SDK evidence: `applicationinsights/out/src/shim/telemetryClient.js` and `@azure/monitor-opentelemetry-exporter/dist/commonjs/utils/spanUtils.js`.
+- `VERIFIED`: Both Next.js templates and the Vite template build with test adapters. The vanilla template installs. These checks do not confirm live TideCloak authentication.
+- `VERIFIED`: The MCP QA gate passes 634/634 checks. The extension builds. `npm outdated --json` returns no outdated direct dependencies in the root, MCP server, or extension.
+- Open question: When will `@azure/identity` accept a fixed MSAL major? Its `^6.0.0` range retains the high-severity [MSAL advisory](https://github.com/advisories/GHSA-xcx6-jx8p-x3h5) in the MCP server and extension trees. `npm update` and `npm audit fix` do not resolve it. The root and template audits are clean.
+- Do not do this: Force a transitive MSAL major override without checking Azure Identity compatibility.
+- This maintenance entry does not introduce a Tide source gap or change existing gap statuses.
 
 Controlled status set:
 - `RESOLVED_BY_KEYLESSH` — fully answered by exemplar evidence; no runtime confirmation needed

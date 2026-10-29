@@ -2,11 +2,11 @@
   "name": "tide-agent-pack",
   "displayName": "Raziel",
   "description": "AI coding agents that implement TideCloak correctly — auth, threshold cryptography, E2EE, IGA governance, Forseti contracts, plus security gap analysis and hosting guidance",
-  "version": "1.9.33",
+  "version": "1.9.34",
   "publisher": "Tide",
   "icon": "icon.png",
   "engines": {
-    "vscode": "^1.99.0"
+    "vscode": "^1.144.0"
   },
   "categories": [
     "AI",
@@ -67,8 +67,8 @@
     "publish": "vsce publish"
   },
   "devDependencies": {
-    "@types/vscode": "^1.99.0",
-    "typescript": "^5.7.0",
-    "@vscode/vsce": "^3.0.0"
+    "@types/vscode": "^1.144.0",
+    "typescript": "^7.0.2",
+    "@vscode/vsce": "^4.1.0"
   }
 }

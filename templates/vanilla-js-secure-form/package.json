@@ -6,6 +6,6 @@
     "dev": "npx serve public"
   },
   "dependencies": {
-    "@tidecloak/js": "0.14.17"
+    "@tidecloak/js": "0.14.41"
   }
 }

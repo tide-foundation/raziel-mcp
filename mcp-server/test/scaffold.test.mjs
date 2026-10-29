@@ -71,7 +71,7 @@ export async function run_() {
     r.text.includes(`cp -R "${PACK_ROOT}/templates/nextjs-customer-portal/." "./"`));
   c.ok("scaffold derives a valid package name", r.text.includes("`mood-garden`") && r.text.includes("`mood-garden-client`"));
   c.ok("scaffold writes out the .gitignore and names the three .env values",
-    /```gitignore[\s\S]*\n\.env\n/.test(r.text) && r.text.includes("TIDE_LICENSE_EMAIL") && r.text.includes("TIDE_TERMS_ACCEPTED=yes") && r.text.includes("KC_BOOTSTRAP_ADMIN_PASSWORD"));
+    /```gitignore[\s\S]*\r?\n\.env\r?\n/.test(r.text) && r.text.includes("TIDE_LICENSE_EMAIL") && r.text.includes("TIDE_TERMS_ACCEPTED=yes") && r.text.includes("KC_BOOTSTRAP_ADMIN_PASSWORD"));
   c.ok("scaffold ends with the doctor, static then --url", r.text.includes("tide-doctor.sh\"\n") && r.text.includes("tide-doctor.sh\" --url http://localhost:3000"));
   const picks = [
     ["an encrypted notes app", "nextjs-e2ee-vault"], ["a React Vite dashboard", "react-vite-internal-dashboard"],
